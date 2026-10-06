@@ -1,4 +1,4 @@
---[[ Xeno MM2 helper — run this file (or execute.lua) ]]--
+--[[ Xeno V1.00 ]]--
 local Players = game:GetService("Players")
 local cref = cloneref or function(x) return x end
 local TCS = cref(game:GetService("TextChatService"))

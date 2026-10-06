@@ -1,4 +1,4 @@
---[[ Xeno V1.03 ]]--
+--[[ Xeno V1.0.4 ]]--
 local Players = game:GetService("Players")
 local cref = cloneref or function(x) return x end
 local TCS = cref(game:GetService("TextChatService"))
@@ -38,7 +38,6 @@ local hopState = G.MM_HopState
 _G.MM_StabBusy = _G.MM_StabBusy or false
 _G.MM_GunBusy = _G.MM_GunBusy or false
 _G.MM_ShootBusy = _G.MM_ShootBusy or false
-_G.MM_FlyBusy = _G.MM_FlyBusy or false
 _G.MM_OwnerDiedPendingReset = _G.MM_OwnerDiedPendingReset or false
 _G.MM_StabBusyUntil = _G.MM_StabBusyUntil or 0
 local OWNER_MURD_GUN_MSG = "Gun unavailable"
@@ -72,9 +71,7 @@ local function cleanupSession()
     _G.MM_StabBusy = false
     _G.MM_GunBusy = false
     _G.MM_ShootBusy = false
-    _G.MM_FlyBusy = false
     _G.MM_OwnerDiedPendingReset = false
-    if G.MM_StopFly then pcall(G.MM_StopFly) end
     if G.MM_AntiFlingShutdown then pcall(G.MM_AntiFlingShutdown) end
     if gui and gui.Parent then pcall(function() gui:Destroy() end) end
 end
@@ -237,6 +234,166 @@ local function findDroppedGun()
         if o:IsA("BasePart") and (o.Name == "GunDrop" or o.Name == "DroppedGun") then return o end
     end
 end
+
+-- MM2 GetPlayerData: Role, Dead, Killed. Killed = stabbed/shot. Dead without Killed = reset.
+G.MM_PlayerData = {}
+G.MM_HasKilledField = false
+G.MM_RoundLive = false
+G.MM_OnPlayerKilled = nil
+;(function()
+    local function parseKilled(info)
+        local k = info.Killed
+        if k == nil then k = info.killed end
+        if k == true or k == 1 then return true, nil end
+        if k == false or k == 0 or k == nil then return false, nil end
+        if type(k) == "string" then
+            local low = k:lower()
+            if low == "" or low == "false" or low == "none" or low == "nil" then return false, nil end
+            if low == "true" then return true, nil end
+            return true, k
+        end
+        return false, nil
+    end
+    local function parseInfo(info, old)
+        if type(info) == "string" then
+            return {Role = info, Dead = false, Killed = false, Killer = nil}
+        end
+        if type(info) ~= "table" then return end
+        if info.Killed ~= nil or info.killed ~= nil then
+            G.MM_HasKilledField = true
+        end
+        local killed, killer = parseKilled(info)
+        if not killer then
+            local kb = info.Killer or info.KilledBy or info.killedBy
+            if type(kb) == "string" and kb ~= "" then killer = kb end
+        end
+        local dead = info.Dead == true or info.dead == true
+        local role = info.Role or info.role
+        if (not role or role == "Unknown") and old and old.Role and old.Role ~= "Unknown" then
+            if dead or killed or old.Dead or old.Killed then
+                role = old.Role
+            end
+        end
+        return {Role = role, Dead = dead, Killed = killed, Killer = killer}
+    end
+    local function ingest(data)
+        if type(data) ~= "table" then return end
+        local n = 0
+        local sawRole = false
+        for name, info in pairs(data) do
+            n = n + 1
+            local old = G.MM_PlayerData[name]
+            local rec = parseInfo(info, old)
+            if rec then
+                if rec.Role == "Murderer" or rec.Role == "Sheriff" or rec.Role == "Hero" then
+                    sawRole = true
+                end
+                G.MM_PlayerData[name] = rec
+                if old and not old.Killed and rec.Killed then
+                    local cb = G.MM_OnPlayerKilled
+                    if cb then pcall(cb, name, rec) end
+                end
+            end
+        end
+        if n == 0 then return end
+        local playerCount = #Players:GetPlayers()
+        if sawRole then
+            G.MM_RoundLive = true
+        elseif n >= math.max(2, playerCount - 1) then
+            G.MM_RoundLive = false
+            for _, rec in pairs(G.MM_PlayerData) do
+                rec.Killed = false
+                rec.Dead = false
+            end
+        end
+    end
+    local function bindNamed(name, fn)
+        local ev = RS:FindFirstChild(name)
+        if not ev then ev = RS:FindFirstChild(name, true) end
+        if ev and ev.OnClientEvent then
+            trackConnection(ev.OnClientEvent:Connect(fn))
+        end
+    end
+    bindNamed("UpdatePlayerData", ingest)
+    bindNamed("Fade", ingest)
+    pcall(function()
+        local ev = RS:FindFirstChild("RoleSelect") or RS:FindFirstChild("RoleSelect", true)
+        if ev and ev.OnClientEvent then
+            trackConnection(ev.OnClientEvent:Connect(function(role)
+                local rec = G.MM_PlayerData[me.Name] or {Dead = false, Killed = false}
+                rec.Role = role or rec.Role
+                G.MM_PlayerData[me.Name] = rec
+                if rec.Role == "Murderer" or rec.Role == "Sheriff" or rec.Role == "Hero" then
+                    G.MM_RoundLive = true
+                end
+            end))
+        end
+    end)
+    pcall(function()
+        local rem = RS:FindFirstChild("Remotes")
+        local gp = rem and rem:FindFirstChild("Gameplay")
+        local re = gp and gp:FindFirstChild("RoundEndFade")
+        if not re then re = RS:FindFirstChild("RoundEndFade", true) end
+        if re and re.OnClientEvent then
+            trackConnection(re.OnClientEvent:Connect(function()
+                G.MM_PlayerData = {}
+                G.MM_RoundLive = false
+                G.MM_SuppressGunDrop = nil
+            end))
+        end
+    end)
+    G.MM_FindRole = function(want)
+        for _, p in ipairs(Players:GetPlayers()) do
+            local rec = G.MM_PlayerData[p.Name]
+            if rec and rec.Role == want and not rec.Dead then
+                return p
+            end
+        end
+        if want == "Murderer" then
+            if botHasKnife() then return me end
+            return findHolder({"Knife"})
+        end
+        if want == "Sheriff" or want == "Hero" then
+            if botHasGun() then
+                local rec = G.MM_PlayerData[me.Name]
+                if rec and rec.Role == want then return me end
+                if want == "Sheriff" and (not rec or rec.Role ~= "Hero") then return me end
+            end
+            local h = findHolder(G.MM_GunNames)
+            if not h then return end
+            local rec = G.MM_PlayerData[h.Name]
+            if rec and rec.Role == want then return h end
+            if not rec then return h end
+            if want == "Sheriff" and rec.Role ~= "Hero" then return h end
+            if want == "Hero" and rec.Role == "Hero" then return h end
+        end
+    end
+    G.MM_RoleOf = function(p)
+        if not p then return end
+        local rec = G.MM_PlayerData[p.Name]
+        if rec and rec.Role and rec.Role ~= "Unknown" then return rec.Role end
+        if playerHas(p, G.MM_KnifeNames) then return "Murderer" end
+        if playerHas(p, G.MM_GunNames) then
+            return "Sheriff"
+        end
+    end
+    G.MM_HasRoundRoles = function()
+        if G.MM_RoundLive then return true end
+        return G.MM_FindRole("Murderer") ~= nil
+    end
+    task.spawn(function()
+        while session.active do
+            pcall(function()
+                local rf = RS:FindFirstChild("GetPlayerData")
+                if not rf then rf = RS:FindFirstChild("GetPlayerData", true) end
+                if rf and rf:IsA("RemoteFunction") then
+                    ingest(rf:InvokeServer())
+                end
+            end)
+            task.wait(0.55)
+        end
+    end)
+end)()
 
 local function findPlayer(q)
     if not q or q == "" then return end
@@ -812,7 +969,6 @@ local function hopServer(reason, continuePingSearch, targetServerId)
     if hopBusy then return false end
     hopBusy = true
     stopFollow()
-    if G.MM_StopFly then pcall(G.MM_StopFly) end
     if continuePingSearch then
         hopState.pingSearchActive = true
         queuePingSearchOnTeleport()
@@ -987,16 +1143,10 @@ end
         end
     end
     local function sheriffFromData()
-        local rf = RS:FindFirstChild("GetPlayerData")
-        if not (rf and rf:IsA("RemoteFunction")) then return end
-        local data
-        if not pcall(function() data = rf:InvokeServer() end) then return end
-        if type(data) ~= "table" then return end
-        for _, p in ipairs(Players:GetPlayers()) do
-            local info = data[p.Name]
-            local role = type(info) == "table" and info.Role or info
-            if role == "Sheriff" or role == "Hero" then return p, role end
-        end
+        local hero = G.MM_FindRole and G.MM_FindRole("Hero")
+        if hero then return hero, "Hero" end
+        local sher = G.MM_FindRole and G.MM_FindRole("Sheriff")
+        if sher then return sher, "Sheriff" end
     end
     G.MM_GunWhere = function()
         if botHasGun() then return "Bot already has the gun" end
@@ -1353,16 +1503,30 @@ local function equipTool(tool)
     return tool and tool.Parent == me.Character
 end
 
---[[ Sheriff shoot + owner fly (scoped to stay under Luau's 200-local limit) ]]--
+--[[ Sheriff shoot (scoped to stay under Luau's 200-local limit) ]]--
+-- MM2 gun: ShootGun:InvokeServer(tick(), hitPos). Silent aim rewrites arg 2.
+-- Range is map-wide — do NOT TP onto the murderer (knife range ~16).
 do
-    local VIM = pcall(function() return cref(game:GetService("VirtualInputManager")) end)
-        and cref(game:GetService("VirtualInputManager")) or nil
-    local SHOOT_PREDICT_SEC = 0.16
-    local SHOOT_RANGE, SHOOT_HEIGHT = 12, 7
-    local SHOOT_RELOAD_MIN = 2.05
-    local SHOOT_TIMEOUT_SEC = 45
-    local FLY_UNDER, FLY_SPEED, FLY_CLIMB = 4.85, 56, 40
-    local flyActive, flyGen, flyConn = false, 0, nil
+    local SHOOT_RELOAD_MIN = 2.15
+    local SHOOT_TIMEOUT_SEC = 8
+    local SHOOT_MAX = 3
+    local KNIFE_DANGER = 22
+
+    G.MM_ComputeShootAim = function()
+        local target = G.MM_ShootTarget
+        if not (target and target.Character) then return end
+        local root = target.Character:FindFirstChild("HumanoidRootPart") or target.Character.PrimaryPart
+        local head = target.Character:FindFirstChild("Head")
+        if not root then return end
+        local vel = root.AssemblyLinearVelocity
+        if vel.Magnitude < 1e-3 then vel = root.Velocity end
+        local pingMs = getPingMs() or 80
+        local t = math.clamp((pingMs / 1000) * 0.45 + 0.08, 0.06, 0.22)
+        local lead = Vector3.new(vel.X, 0, vel.Z) * t
+        if lead.Magnitude > 12 then lead = lead.Unit * 12 end
+        local base = head and head.Position or (root.Position + Vector3.new(0, 1.2, 0))
+        return base + lead
+    end
 
     local function installShootHooks()
         if G.MM_ShootHooksInstalled then return true end
@@ -1372,9 +1536,12 @@ do
         local oldIndex, oldNamecall
         local okIndex, hookedIndex = pcall(function()
             oldIndex = hookmetamethod(game, "__index", wrap(function(self, key)
-                if G.MM_ShootActive and G.MM_ShootAimCf and self == mouse then
-                    if key == "Hit" then return G.MM_ShootAimCf end
-                    if key == "Target" and G.MM_ShootAimPart then return G.MM_ShootAimPart end
+                if G.MM_ShootActive and self == mouse then
+                    local aim = G.MM_ComputeShootAim and G.MM_ComputeShootAim()
+                    if aim then
+                        if key == "Hit" then return CFrame.new(aim) end
+                        if key == "Target" then return G.MM_ShootAimPart end
+                    end
                 end
                 if oldIndex then return oldIndex(self, key) end
             end))
@@ -1382,24 +1549,34 @@ do
         end)
         local okName, hookedName = pcall(function()
             oldNamecall = hookmetamethod(game, "__namecall", wrap(function(self, ...)
-                if G.MM_ShootActive and G.MM_ShootAimPart and G.MM_ShootAimCf then
+                if G.MM_ShootActive then
                     local method = getnamecallmethod and getnamecallmethod()
+                    local name = ""
+                    pcall(function() name = self.Name end)
                     local args = { ... }
-                    local pos = G.MM_ShootAimCf.Position
-                    local part = G.MM_ShootAimPart
-                    local tag = tostring(self)
-                    if method == "InvokeServer" and tag:find("ShootGun") then
-                        if args[2] ~= nil then args[2] = pos
-                        elseif args[1] ~= nil then args[1] = pos end
+                    local aim = G.MM_ComputeShootAim and G.MM_ComputeShootAim()
+                    if aim and method == "InvokeServer" and name == "ShootGun" then
+                        if typeof(args[2]) == "Vector3" then args[2] = aim
+                        elseif typeof(args[1]) == "Vector3" then args[1] = aim
+                        else args[2] = aim end
                         if oldNamecall then return oldNamecall(self, unpack(args)) end
                     end
-                    if method == "Raycast" and self == workspace then
+                    if aim and method == "FireServer" and (name == "ShootGun" or name == "Shoot") then
+                        if typeof(args[2]) == "Vector3" then args[2] = aim
+                        elseif typeof(args[2]) == "CFrame" then args[2] = CFrame.new(aim)
+                        elseif typeof(args[1]) == "Vector3" then args[1] = aim
+                        end
+                        if oldNamecall then return oldNamecall(self, unpack(args)) end
+                    end
+                    if aim and method == "Raycast" and self == workspace then
+                        local part = G.MM_ShootAimPart
+                        local origin = args[1]
                         return {
-                            Position = pos,
+                            Position = aim,
                             Instance = part,
                             Normal = Vector3.new(0, 1, 0),
                             Material = Enum.Material.Plastic,
-                            Distance = (pos - args[1]).Magnitude,
+                            Distance = typeof(origin) == "Vector3" and (aim - origin).Magnitude or 0,
                         }
                     end
                 end
@@ -1414,59 +1591,23 @@ do
         return false
     end
 
-    local function shootPredictLead(root, hum)
-        if not root then return Vector3.zero end
-        local v = root.AssemblyLinearVelocity
-        if v.Magnitude < 1e-3 then v = root.Velocity end
-        if hum then
-            local md = hum.MoveDirection
-            if md.Magnitude > 0.05 then
-                local hv = md * hum.WalkSpeed
-                local vh = Vector3.new(v.X, 0, v.Z)
-                local hm = Vector3.new(hv.X, 0, hv.Z)
-                if hm.Magnitude > vh.Magnitude then
-                    v = hv
-                elseif hm.Magnitude > 0.4 then
-                    v = vh + hm * 0.65
-                end
-            end
-        end
-        local vh = Vector3.new(v.X, 0, v.Z)
-        if vh.Magnitude <= 0.08 then return Vector3.zero end
-        return vh.Unit * math.min(vh.Magnitude * SHOOT_PREDICT_SEC + math.min(vh.Magnitude * 0.2, 6), 14)
-    end
-
-    local function getShootCFrame(target)
-        local th = target.Character and target.Character:FindFirstChild("HumanoidRootPart")
-        local hum = target.Character and target.Character:FindFirstChildOfClass("Humanoid")
-        if not th then return end
-        local lead = shootPredictLead(th, hum)
-        local aim = th.Position + Vector3.new(0, 1.2, 0) + Vector3.new(lead.X, 0, lead.Z)
-        local back = Vector3.new(-th.CFrame.LookVector.X, 0, -th.CFrame.LookVector.Z)
-        if back.Magnitude < 0.05 then back = Vector3.new(0, 0, 1) end
-        back = back.Unit
-        return CFrame.new(th.Position + back * SHOOT_RANGE + Vector3.new(0, SHOOT_HEIGHT, 0), aim)
-    end
-
-    local function getAimPoint(target)
-        local th = target.Character and target.Character:FindFirstChild("HumanoidRootPart")
-        local hum = target.Character and target.Character:FindFirstChildOfClass("Humanoid")
-        if not th then return end
-        return th.Position + Vector3.new(0, 1.25, 0) + shootPredictLead(th, hum)
-    end
-
-    local function setShootAimTarget(target)
-        G.MM_ShootAimPart, G.MM_ShootAimCf = nil, nil
-        if not target or not target.Character then return end
-        local part = target.Character:FindFirstChild("Head") or target.Character:FindFirstChild("HumanoidRootPart")
-        if not part then return end
-        G.MM_ShootAimPart = part
-        G.MM_ShootAimCf = CFrame.new(part.Position)
-    end
-
     local function clearShootAimTarget()
         G.MM_ShootActive = false
+        G.MM_ShootTarget = nil
         G.MM_ShootAimPart, G.MM_ShootAimCf = nil, nil
+    end
+
+    local function distToTarget(target)
+        local a = hrp()
+        local b = target and target.Character and target.Character:FindFirstChild("HumanoidRootPart")
+        if not (a and b) then return math.huge end
+        return (a.Position - b.Position).Magnitude
+    end
+
+    local function leaveIfClose(target)
+        if distToTarget(target) < KNIFE_DANGER then
+            tpHome()
+        end
     end
 
     local function pickUpDroppedGun()
@@ -1488,17 +1629,37 @@ do
         return botHasGun()
     end
 
-    local function clickFire(x, y)
-        if not VIM then return end
-        pcall(function()
-            VIM:SendMouseMoveEvent(x, y, game)
-            VIM:SendMouseButtonEvent(x, y, 0, true, game, 0)
-            VIM:SendMouseButtonEvent(x, y, 0, false, game, 0)
-        end)
-    end
-
-    local function fireGunOnce(gun)
-        if not gun then return end
+    local function fireSilentShot(target, gun)
+        if not gun or not isAlive(target) or not isAlive(me) then return false end
+        installShootHooks()
+        if gun.Parent ~= me.Character then
+            equipTool(gun)
+            task.wait(0.04)
+        end
+        local part = target.Character and (target.Character:FindFirstChild("Head") or target.Character:FindFirstChild("HumanoidRootPart"))
+        G.MM_ShootTarget = target
+        G.MM_ShootAimPart = part
+        G.MM_ShootActive = true
+        local aim = G.MM_ComputeShootAim and G.MM_ComputeShootAim()
+        if not aim then return false end
+        local mh = hrp()
+        local shootCam = workspace.CurrentCamera
+        if shootCam and mh then
+            pcall(function() shootCam.CFrame = CFrame.lookAt(mh.Position + Vector3.new(0, 1.5, 0), aim) end)
+        end
+        local rf = gun:FindFirstChild("ShootGun", true)
+        if rf then
+            if rf:IsA("RemoteFunction") then
+                return pcall(function() rf:InvokeServer(tick(), aim) end)
+            end
+            if rf:IsA("RemoteEvent") then
+                return pcall(function() rf:FireServer(tick(), aim) end)
+            end
+        end
+        local shootEv = gun:FindFirstChild("Shoot")
+        if shootEv and shootEv:IsA("RemoteEvent") and mh then
+            return pcall(function() shootEv:FireServer(mh.CFrame, CFrame.new(aim)) end)
+        end
         pcall(function() gun:Activate() end)
         if getconnections then
             pcall(function()
@@ -1506,115 +1667,22 @@ do
                 if type(c) == "table" and c[1] then pcall(function() c[1]:Fire() end) end
             end)
         end
-    end
-
-    local function tryShootGunRemote(gun, aimPoint)
-        if not gun or not aimPoint then return end
-        local handle = gun:FindFirstChild("Handle")
-        pcall(function()
-            local rf = gun:FindFirstChild("ShootGun", true)
-            if not rf then return end
-            if rf:IsA("RemoteFunction") then
-                pcall(function() rf:InvokeServer(aimPoint) end)
-                pcall(function() rf:InvokeServer(tick(), aimPoint) end)
-                if handle then pcall(function() rf:InvokeServer(handle, aimPoint) end) end
-            elseif rf:IsA("RemoteEvent") then
-                pcall(function() rf:FireServer(aimPoint) end)
-                pcall(function() rf:FireServer(tick(), aimPoint) end)
-            end
-        end)
-    end
-
-    local function tryExecutorClick()
-        local click = rawget(G, "mouse1click")
-        local press = rawget(G, "mouse1press")
-        local release = rawget(G, "mouse1release")
-        if type(click) == "function" then
-            pcall(click)
-        elseif type(press) == "function" and type(release) == "function" then
-            pcall(press)
-            task.wait(0.05)
-            pcall(release)
-        end
-        pcall(function()
-            UIS:SendMouseButtonEvent(0, 0, 0, true, game, 0)
-            UIS:SendMouseButtonEvent(0, 0, 0, false, game, 0)
-        end)
-    end
-
-    local function fireGunAtTarget(target, gun, shootCf)
-        if not gun or not isAlive(target) or not isAlive(me) or not shootCf then return false end
-        local fired = false
-        local ok, err = pcall(function()
-            installShootHooks()
-            if gun.Parent ~= me.Character then
-                equipTool(gun)
-                task.wait(0.08)
-            end
-            local mh = hrp()
-            if not mh then return end
-            pcall(function() mh.Anchored = false end)
-            G.MM_ShootActive = true
-            local shootCam = workspace.CurrentCamera
-            for _ = 1, 3 do
-                if not isAlive(target) or not isAlive(me) then break end
-                local aimPoint = getAimPoint(target)
-                local shootNow = getShootCFrame(target) or shootCf
-                if not aimPoint then break end
-                setShootAimTarget(target)
-                G.MM_ShootAimCf = CFrame.new(aimPoint)
-                zeroVel(mh)
-                mh.CFrame = shootNow
-                zeroVel(mh)
-                if shootCam then pcall(function() shootCam.CFrame = shootNow end) end
-                local mouseX, mouseY = 400, 300
-                if shootCam then
-                    pcall(function()
-                        local sp = shootCam:WorldToViewportPoint(aimPoint)
-                        if sp.Z > 0 then mouseX, mouseY = sp.X, sp.Y end
-                    end)
-                end
-                tryShootGunRemote(gun, aimPoint)
-                fireGunOnce(gun)
-                tryExecutorClick()
-                clickFire(mouseX, mouseY)
-                fired = true
-                if not isAlive(target) then break end
-                task.wait(0.08)
-            end
-            if fired and isAlive(target) then task.wait(SHOOT_RELOAD_MIN) end
-        end)
-        clearShootAimTarget()
-        if not ok then log("shoot: " .. tostring(err)) end
-        return ok and fired
-    end
-
-    local function shootPass(target)
-        if not isAlive(target) or not isAlive(me) then return false end
-        if botHasKnife() then return false end
-        if not botHasGun() and not pickUpDroppedGun() then return false end
-        local gun = getHeldTool(me, G.MM_GunNames)
-        if not gun or not equipTool(gun) then return false end
-        local cf = getShootCFrame(target)
-        local mh = hrp()
-        if not (cf and mh) then return false end
-        zeroVel(mh)
-        mh.CFrame = cf
-        zeroVel(mh)
-        return fireGunAtTarget(target, gun, cf)
+        return true
     end
 
     local function resolveShootTarget(query)
         query = tostring(query or ""):match("^%s*(.-)%s*$") or ""
         local first = query:lower():match("^(%S+)") or ""
         if first == "" or first == "murder" or first == "murd" or first == "murderer" then
-            local murd = findHolder({"Knife"})
+            local murd = (G.MM_FindRole and G.MM_FindRole("Murderer")) or findHolder({"Knife"})
             if murd and murd ~= me then return murd, nil end
             if first == "" then return nil, "Murderer not found — try !shoot <name>" end
             return nil, "Murderer not found"
         end
         if first == "sheriff" or first == "sher" or first == "sherif" then
-            local sher = findHolder(G.MM_GunNames)
+            local sher = (G.MM_FindRole and G.MM_FindRole("Sheriff"))
+                or (G.MM_FindRole and G.MM_FindRole("Hero"))
+                or findHolder(G.MM_GunNames)
             if sher and sher ~= me then return sher, nil end
             return nil, "Sheriff not found"
         end
@@ -1628,181 +1696,59 @@ do
         if not isAlive(target) then return false, "Player not found" end
         if botHasKnife() then return false, "Bot is murderer — no gun" end
         if not botHasGun() and not pickUpDroppedGun() then return false, "No gun available" end
+        tpHome()
+        leaveIfClose(target)
+        installShootHooks()
+        local gun = getHeldTool(me, G.MM_GunNames)
+        if not gun or not equipTool(gun) then return false, "No gun available" end
+        G.MM_ShootTarget = target
+        G.MM_ShootActive = true
         local started = tick()
-        while session.active and isAlive(me) and isAlive(target) and (tick() - started) < SHOOT_TIMEOUT_SEC do
+        local shots = 0
+        while session.active and isAlive(me) and isAlive(target) and shots < SHOOT_MAX and (tick() - started) < SHOOT_TIMEOUT_SEC do
             if botHasKnife() then
+                clearShootAimTarget()
                 tpHome()
                 return false, "Bot is murderer — no gun"
             end
-            if not botHasGun() and not pickUpDroppedGun() then
-                return false, "No gun available"
+            if not botHasGun() then
+                if not pickUpDroppedGun() then
+                    clearShootAimTarget()
+                    return false, "No gun available"
+                end
+                tpHome()
             end
-            pcall(function() shootPass(target) end)
+            leaveIfClose(target)
+            gun = getHeldTool(me, G.MM_GunNames)
+            if not gun then break end
+            pcall(function() fireSilentShot(target, gun) end)
+            shots = shots + 1
+            task.wait(0.12)
             if not isAlive(target) then
+                clearShootAimTarget()
                 tpHome()
                 return true, "Shot " .. shortName(target)
             end
             tpHome()
             if not isAlive(me) then
+                clearShootAimTarget()
                 return false, "Bot died"
             end
-            task.wait(0.2)
+            if shots < SHOOT_MAX and isAlive(target) then
+                task.wait(SHOOT_RELOAD_MIN)
+            end
         end
+        clearShootAimTarget()
+        tpHome()
         if not isAlive(me) then return false, "Bot died" end
         if not isAlive(target) then return true, "Shot " .. shortName(target) end
         if (tick() - started) >= SHOOT_TIMEOUT_SEC then return true, "Shoot timed out" end
         return true, "Stopped shooting " .. shortName(target)
     end
 
-    local function stopFly()
-        flyGen = flyGen + 1
-        local was = flyActive
-        flyActive = false
-        _G.MM_FlyBusy = false
-        pcall(function() RunSvc:UnbindFromRenderStep("MM_Fly") end)
-        if flyConn then
-            pcall(function() flyConn:Disconnect() end)
-            flyConn = nil
-        end
-        local char = me.Character
-        local h = hrp()
-        if h then
-            pcall(function()
-                local bv = h:FindFirstChild("MM_FlyBV")
-                if bv then bv:Destroy() end
-                local bg = h:FindFirstChild("MM_FlyBG")
-                if bg then bg:Destroy() end
-                h.Anchored = false
-                if G.MM_FlyHrpSize then
-                    h.Size = G.MM_FlyHrpSize
-                    G.MM_FlyHrpSize = nil
-                end
-                h.CanCollide = true
-            end)
-            zeroVel(h)
-        end
-        if char then
-            local hum = char:FindFirstChildOfClass("Humanoid")
-            if hum then pcall(function() hum.PlatformStand = false end) end
-            for _, part in ipairs(char:GetDescendants()) do
-                if part:IsA("BasePart") then
-                    pcall(function() part.CanCollide = true end)
-                end
-            end
-        end
-        G.MM_FlyLast = nil
-        if was then G.MM_ActionEnd() end
-        log("fly: off")
-    end
-
-    local function startFly()
-        local owner = findOwner()
-        if not owner or not isAlive(owner) then return false, "Owner not found" end
-        if not isAlive(me) then return false, "Bot not alive" end
-        stopFollow()
-        if flyActive then stopFly() end
-        flyActive = true
-        _G.MM_FlyBusy = true
-        G.MM_ActionBegin()
-        flyGen = flyGen + 1
-        local gen = flyGen
-        local flyHeight = nil
-        local function flyStep()
-            if gen ~= flyGen or not session.active or not flyActive then return end
-            local pilot = findOwner()
-            if not isAlive(pilot) or not isAlive(me) then
-                task.defer(stopFly)
-                return
-            end
-            local oh = pilot.Character and pilot.Character:FindFirstChild("HumanoidRootPart")
-            local ohum = pilot.Character and pilot.Character:FindFirstChildOfClass("Humanoid")
-            local mh = hrp()
-            local char = me.Character
-            if not (oh and ohum and mh) then return end
-            local md = ohum.MoveDirection
-            local move = Vector3.new(md.X, 0, md.Z)
-            local now = tick()
-            local dt = math.clamp(now - (G.MM_FlyLast or now), 0, 0.05)
-            if dt < 0.001 then dt = 0.016 end
-            G.MM_FlyLast = now
-            if flyHeight == nil then
-                flyHeight = oh.Position.Y - FLY_UNDER
-            end
-            local st = ohum:GetState()
-            -- Jump only. Freefall is falling, not climb.
-            if ohum.Jump or st == Enum.HumanoidStateType.Jumping then
-                flyHeight = math.min(flyHeight + FLY_CLIMB * dt, 180)
-            elseif st == Enum.HumanoidStateType.Crouching or ohum.Sit then
-                flyHeight = math.max(flyHeight - FLY_CLIMB * dt, 3)
-            end
-            local desired = Vector3.new(oh.Position.X, flyHeight, oh.Position.Z)
-            if move.Magnitude > 0.08 then
-                local dir = move.Unit
-                desired = desired + Vector3.new(dir.X * 1.5, 0, dir.Z * 1.5)
-            end
-            pcall(function()
-                mh.Anchored = false
-                mh.CanCollide = true
-                local hum = char and char:FindFirstChildOfClass("Humanoid")
-                if hum then
-                    hum.PlatformStand = true
-                    hum.AutoRotate = false
-                end
-                if char then
-                    for _, part in ipairs(char:GetDescendants()) do
-                        if part:IsA("BasePart") then
-                            part.CanCollide = true
-                        end
-                    end
-                end
-            end)
-            local delta = desired - mh.Position
-            local vel
-            if delta.Magnitude > 22 then
-                mh.CFrame = CFrame.new(desired)
-                vel = Vector3.zero
-            else
-                vel = delta / dt
-                local cap = 150
-                if vel.Magnitude > cap then
-                    vel = vel.Unit * cap
-                end
-            end
-            pcall(function()
-                local bv = mh:FindFirstChild("MM_FlyBV")
-                if not bv then
-                    bv = Instance.new("BodyVelocity")
-                    bv.Name = "MM_FlyBV"
-                    bv.MaxForce = Vector3.new(4e5, 4e5, 4e5)
-                    bv.Parent = mh
-                end
-                bv.Velocity = vel
-                local bg = mh:FindFirstChild("MM_FlyBG")
-                if not bg then
-                    bg = Instance.new("BodyGyro")
-                    bg.Name = "MM_FlyBG"
-                    bg.MaxTorque = Vector3.new(4e5, 4e5, 4e5)
-                    bg.Parent = mh
-                end
-                bg.CFrame = CFrame.new(mh.Position)
-            end)
-            mh.AssemblyLinearVelocity = vel
-            mh.AssemblyAngularVelocity = Vector3.zero
-        end
-        pcall(function() RunSvc:UnbindFromRenderStep("MM_Fly") end)
-        flyConn = RunSvc.Heartbeat:Connect(flyStep)
-        log("fly: vehicle under " .. owner.Name)
-        return true, "Fly on — stand on the bot, walk, jump to climb, crouch to drop, !unfly to stop"
-    end
-
     function G.MM_CombatBusy()
-        return G.MM_StabBusyActive() or _G.MM_GunBusy or _G.MM_ShootBusy or flyActive
+        return G.MM_StabBusyActive() or _G.MM_GunBusy or _G.MM_ShootBusy
     end
-    function G.MM_FlyActive()
-        return flyActive
-    end
-    G.MM_StopFly = stopFly
-    G.MM_StartFly = startFly
     G.MM_ShootTargetLoop = shootTargetLoop
     G.MM_ResolveShootTarget = resolveShootTarget
     G.MM_EnsureShootGun = function()
@@ -2288,6 +2234,7 @@ end
 
 --[[ Round ]]--
 local function isRoundActive()
+    if G.MM_HasRoundRoles and G.MM_HasRoundRoles() then return true end
     return findHolder({"Knife"}) or findHolder(G.MM_GunNames)
         or botHasKnife() or botHasGun()
 end
@@ -2330,11 +2277,9 @@ end
 local COMMAND_HELP = {
     reveal = "Show current murderer and sheriff",
     stab = "all | sheriff | <name> - Murderer only, stab targets",
-    shoot = "murderer | sheriff | <name> - Grab gun if dropped, silent-aim shoot",
-    fly = "Stand on the bot; walk, jump to climb, crouch to drop. !unfly to stop",
-    unfly = "Stop fly",
+    shoot = "murderer | sheriff | <name> - Silent-aim from range, does not TP onto them",
     togglereveal = "Toggle automatic role callout each round",
-    togglealerts = "Toggle kill/drop/pickup alerts",
+    togglealerts = "Toggle kill alerts (ignores resets)",
     togglereset = "Toggle auto-reset when owner dies",
     toggledrop = "Toggle stashing guns when you are murderer",
     drop = "Drop gun at spawn",
@@ -2353,7 +2298,7 @@ local COMMAND_HELP = {
     help = "<cmd> - Show command list or explain one command",
 }
 local HELP_ORDER = {
-    "tp", "reveal", "stab", "shoot", "fly", "unfly", "gun", "drop", "fling", "togglegun", "toggleshoot", "togglereveal", "togglealerts",
+    "tp", "reveal", "stab", "shoot", "gun", "drop", "fling", "togglegun", "toggleshoot", "togglereveal", "togglealerts",
     "reset", "follow", "unfollow", "chat", "help",
 }
 local PREMIUM_ONLY_COMMANDS = {
@@ -2637,7 +2582,6 @@ local function handleCommand(p, msg)
         end
 
         flingActive = false
-        if G.MM_FlyActive and G.MM_FlyActive() then G.MM_StopFly() end
         flingLoopGen = flingLoopGen + 1
         local gen = flingLoopGen
         flingLoopActive = true
@@ -2664,27 +2608,36 @@ local function handleCommand(p, msg)
         sendChat(rest)
         whisper("Chat sent")
     elseif cmd == "reveal" then
+        local murd = (G.MM_FindRole and G.MM_FindRole("Murderer")) or m
+        local sher = (G.MM_FindRole and G.MM_FindRole("Sheriff")) or s
+        local hero = G.MM_FindRole and G.MM_FindRole("Hero")
         local botM, botS = botHasKnife(), botHasGun()
-        local mL = botM and "Me" or (m and shortName(m)) or "?"
-        local sL = botS and "Me" or (s and shortName(s)) or "?"
+        local mL = (murd == me or botM) and "Me" or (murd and shortName(murd)) or "?"
+        local sL
+        if hero then
+            sL = (hero == me) and "Me (hero)" or (shortName(hero) .. " (hero)")
+        else
+            sL = (sher == me or botS) and "Me" or (sher and shortName(sher)) or "?"
+        end
         whisper("Murderer: " .. mL)
         task.wait(0.3)
         whisper("Sheriff: " .. sL)
     elseif cmd == "tp" then
         local t = findPlayer(args[2]) or findOwner()
         if not t then whisper("Player not found") return end
-        if G.MM_FlyActive and G.MM_FlyActive() then G.MM_StopFly() end
         tpTo(t)
         whisper("Teleported to " .. commandTargetLabel(t))
     elseif cmd == "tpmurd" then
-        if not m then whisper("Murderer not found") return end
-        if G.MM_FlyActive and G.MM_FlyActive() then G.MM_StopFly() end
-        tpTo(m)
+        local murd = (G.MM_FindRole and G.MM_FindRole("Murderer")) or m
+        if not murd then whisper("Murderer not found") return end
+        tpTo(murd)
         whisper("Teleported to murderer")
     elseif cmd == "tpsher" then
-        if not s then whisper("Sheriff not found") return end
-        if G.MM_FlyActive and G.MM_FlyActive() then G.MM_StopFly() end
-        tpTo(s)
+        local sher = (G.MM_FindRole and G.MM_FindRole("Sheriff"))
+            or (G.MM_FindRole and G.MM_FindRole("Hero"))
+            or s
+        if not sher then whisper("Sheriff not found") return end
+        tpTo(sher)
         whisper("Teleported to sheriff")
     elseif cmd == "stab" then
         if not botHasKnife() then whisper("Bot needs to be murderer") return end
@@ -2697,7 +2650,9 @@ local function handleCommand(p, msg)
         if stabAll then
             picked = nil
         elseif first == "sheriff" or first == "sher" or first == "sherif" then
-            picked = findHolder(G.MM_GunNames)
+            picked = (G.MM_FindRole and G.MM_FindRole("Sheriff"))
+                or (G.MM_FindRole and G.MM_FindRole("Hero"))
+                or findHolder(G.MM_GunNames)
             if not picked or picked == me then whisper("Sheriff not found") return end
         else
             picked = findOtherPlayer(q)
@@ -2706,7 +2661,6 @@ local function handleCommand(p, msg)
         if G.MM_StabBusyActive() then whisper("Stab busy, try again") return end
         if _G.MM_GunBusy then whisper("Gun busy, try again") return end
         if _G.MM_ShootBusy then whisper("Shoot busy, try again") return end
-        if G.MM_FlyActive and G.MM_FlyActive() then G.MM_StopFly() end
         G.MM_BeginStabBusy()
         local targetUid = picked and picked.UserId or nil
         whisper(stabAll and "Stabbing everyone" or ("Stabbing " .. shortName(picked)))
@@ -2743,7 +2697,6 @@ local function handleCommand(p, msg)
             whisper(G.MM_GunWhere and G.MM_GunWhere() or "No gun available")
             return
         end
-        if G.MM_FlyActive and G.MM_FlyActive() then G.MM_StopFly() end
         _G.MM_ShootBusy = true
         G.MM_ActionBegin()
         local targetUid = picked.UserId
@@ -2765,32 +2718,6 @@ local function handleCommand(p, msg)
             G.MM_ActionEnd()
             runDeferredOwnerResetIfIdle()
         end)
-    elseif cmd == "unfly" or cmd == "nofly" or cmd == "flyoff" then
-        if G.MM_StopFly then G.MM_StopFly() end
-        whisper("Fly off")
-    elseif cmd == "fly" then
-        local sub = ((args[2] or ""):lower():match("^%s*(.-)%s*$")) or ""
-        if sub == "off" or sub == "stop" or sub == "unfly" then
-            if G.MM_StopFly then G.MM_StopFly() end
-            whisper("Fly off")
-            return
-        end
-        if G.MM_FlyActive and G.MM_FlyActive() then
-            G.MM_StopFly()
-            whisper("Fly off")
-            return
-        end
-        if G.MM_StabBusyActive() or _G.MM_GunBusy or _G.MM_ShootBusy then
-            whisper("Busy, try again")
-            return
-        end
-        if flingActive or flingLoopActive then whisper("Fling busy, try again") return end
-        if type(G.MM_StartFly) ~= "function" then
-            whisper("Fly failed to load")
-            return
-        end
-        local ok, msg = G.MM_StartFly()
-        whisper(msg or (ok and "Fly on" or "Fly failed"))
     elseif cmd == "gun" then
         local t = findPlayer(args[2]) or findOwner()
         if not t then whisper("Player not found") return end
@@ -2815,11 +2742,9 @@ local function handleCommand(p, msg)
         _G.MM_GunBusy = false
         whisper(ok and "Gun dropped at spawn" or "No gun available")
     elseif cmd == "spawn" or cmd == "home" then
-        if G.MM_FlyActive and G.MM_FlyActive() then G.MM_StopFly() end
         tpHome()
         whisper("Teleported to spawn")
     elseif cmd == "reset" then
-        if G.MM_FlyActive and G.MM_FlyActive() then G.MM_StopFly() end
         whisper("Resetting")
         reset()
     elseif cmd == "togglegun" then
@@ -2871,7 +2796,6 @@ local function handleCommand(p, msg)
     elseif cmd == "follow" then
         local t = findPlayer(args[2]) or findOwner()
         if not t then whisper("Player not found") return end
-        if G.MM_FlyActive and G.MM_FlyActive() then G.MM_StopFly() end
         local wasActive = followTarget ~= nil
         local switching = followTarget ~= t
         followTarget = t
@@ -3094,7 +3018,7 @@ local function bridgeHelpMessage(topic)
         return "error", "No help for !" .. topic .. " — use /help for the full list"
     end
     local lines = {
-        "Discord: /help /gun /stab /shoot /fly /fling /tp /reveal /reset /chat /alerts",
+        "Discord: /help /gun /stab /shoot /fling /tp /reveal /reset /chat /alerts",
         "",
     }
     table.insert(lines, "In-game: !help and the same commands with !")
@@ -3419,7 +3343,6 @@ local function bridgeShootMessage(targetQuery)
     if not G.MM_EnsureShootGun() then
         return "error", (G.MM_GunWhere and G.MM_GunWhere()) or "No gun available"
     end
-    if G.MM_FlyActive and G.MM_FlyActive() then G.MM_StopFly() end
     _G.MM_ShootBusy = true
     G.MM_ActionBegin()
     local status = "Player not found"
@@ -3438,31 +3361,6 @@ local function bridgeShootMessage(targetQuery)
         return "error", status or "Shoot failed"
     end
     return "ok", status
-end
-
-local function bridgeFlyMessage(mode)
-    if not session.ownerId then
-        return "error", "No owner — join your reserved server first"
-    end
-    mode = bridgeTrim(mode):lower()
-    if mode == "off" or mode == "stop" or mode == "unfly" or (G.MM_FlyActive and G.MM_FlyActive()) then
-        if G.MM_StopFly then G.MM_StopFly() end
-        return "ok", "Fly off"
-    end
-    if G.MM_StabBusyActive() or _G.MM_GunBusy or _G.MM_ShootBusy then
-        return "error", "Busy, try again"
-    end
-    if flingActive or flingLoopActive then
-        return "error", "Fling busy, try again"
-    end
-    if type(G.MM_StartFly) ~= "function" then
-        return "error", "Fly failed to load"
-    end
-    local ok, msg = G.MM_StartFly()
-    if ok then
-        return "ok", msg or "Fly on"
-    end
-    return "error", msg or "Fly failed"
 end
 
 local function bridgeFlingMessage(query)
@@ -3522,9 +3420,11 @@ local function bridgeRevealMessage()
     if not session.ownerId then
         return "error", "No owner — join your reserved server first"
     end
-    local m = findHolder({"Knife"})
-    local s = findHolder(G.MM_GunNames)
-    local botM, botS = botHasKnife(), botHasGun()
+    local m = (G.MM_FindRole and G.MM_FindRole("Murderer")) or findHolder({"Knife"})
+    local s = (G.MM_FindRole and G.MM_FindRole("Sheriff"))
+        or (G.MM_FindRole and G.MM_FindRole("Hero"))
+        or findHolder(G.MM_GunNames)
+    local botM, botS = (m == me) or botHasKnife(), (s == me) or botHasGun()
     local murdererP = botM and me or m
     if not murdererP then
         return "error", "Round hasn't started yet"
@@ -3628,7 +3528,6 @@ local function processBridgeCommands(jobId, commands)
         drop = bridgeDropMessage,
         stab = bridgeStabMessage,
         shoot = bridgeShootMessage,
-        fly = bridgeFlyMessage,
         fling = bridgeFlingMessage,
         tp = bridgeTpMessage,
         reveal = bridgeRevealMessage,
@@ -3910,6 +3809,140 @@ local function aliveState(p)
     if not h then return nil end
     return h.Health > 0
 end
+
+;(function()
+    local alertAt = {}
+    local function recentlyAlerted(key)
+        local t = alertAt[key]
+        return t and (tick() - t) < 5
+    end
+    local function markAlert(key)
+        alertAt[key] = tick()
+    end
+    local function playerByName(name)
+        local p = Players:FindFirstChild(name)
+        if p and p:IsA("Player") then return p end
+        for _, pl in ipairs(Players:GetPlayers()) do
+            if pl.Name == name then return pl end
+        end
+    end
+    local function roleOfName(name)
+        local rec = G.MM_PlayerData[name]
+        return rec and rec.Role
+    end
+    local function announceKill(name, rec)
+        if not toggleAlerts then return end
+        if recentlyAlerted(name) then return end
+        local p = playerByName(name)
+        if p == me then return end
+        if not resolveWhisperTarget() then return end
+        markAlert(name)
+        local label = p and shortName(p) or tostring(name):sub(1, 4) .. "..."
+        rec = rec or {}
+        local role = rec.Role
+        local killerRole = rec.Killer and roleOfName(rec.Killer)
+        if killerRole == "Sheriff" or killerRole == "Hero" then
+            if role == "Murderer" then
+                G.MM_SuppressGunDrop = tick()
+                whisper((killerRole == "Hero" and "Hero" or "Sheriff") .. " killed the murderer")
+                return
+            end
+            sheriffRoundKills = sheriffRoundKills + 1
+            whisper((killerRole == "Hero" and "Hero" or "Sheriff") .. " shot " .. label)
+            return
+        end
+        if killerRole == "Murderer" then
+            if role == "Sheriff" then
+                whisper("Murderer killed the sheriff")
+                return
+            end
+            if role == "Hero" then
+                whisper("Murderer killed the hero")
+                return
+            end
+            murdererRoundKills = murdererRoundKills + 1
+            whisper("Murderer killed " .. label)
+            return
+        end
+        if role == "Murderer" then
+            G.MM_SuppressGunDrop = tick()
+            local hero = G.MM_FindRole and G.MM_FindRole("Hero")
+            whisper((hero and "Hero" or "Sheriff") .. " killed the murderer")
+            return
+        end
+        if role == "Sheriff" then
+            whisper("Murderer killed the sheriff")
+            return
+        end
+        if role == "Hero" then
+            whisper("Murderer killed the hero")
+            return
+        end
+        murdererRoundKills = murdererRoundKills + 1
+        whisper("Murderer killed " .. label)
+    end
+    G.MM_OnPlayerKilled = function(name, rec)
+        if not session.active then return end
+        announceKill(name, rec)
+    end
+    local function bindDied(p, char)
+        local hum = char and char:FindFirstChildOfClass("Humanoid")
+        if not hum then return end
+        trackConnection(hum.Died:Connect(function()
+            task.spawn(function()
+                local deadline = tick() + 1.15
+                while session.active and tick() < deadline do
+                    local rec = G.MM_PlayerData[p.Name]
+                    if rec then
+                        if rec.Killed then
+                            announceKill(p.Name, rec)
+                            return
+                        end
+                        if G.MM_HasKilledField and rec.Dead and rec.Killed == false then
+                            return
+                        end
+                    end
+                    task.wait(0.1)
+                end
+                if G.MM_HasKilledField then return end
+                local rec = G.MM_PlayerData[p.Name] or {}
+                if not rec.Role and G.MM_RoleOf then rec.Role = G.MM_RoleOf(p) end
+                local creator = hum:FindFirstChild("creator")
+                local killer
+                if creator and creator.Value then
+                    killer = Players:GetPlayerFromCharacter(creator.Value) or creator.Value
+                    if typeof(killer) ~= "Instance" or not killer:IsA("Player") then killer = nil end
+                end
+                if killer and killer ~= p then
+                    rec.Killer = killer.Name
+                    rec.Killed = true
+                    announceKill(p.Name, rec)
+                end
+            end)
+        end))
+    end
+    local function hookPlayer(p)
+        if p.Character then bindDied(p, p.Character) end
+        trackConnection(p.CharacterAdded:Connect(function(char)
+            task.wait(0.1)
+            bindDied(p, char)
+        end))
+    end
+    for _, p in ipairs(Players:GetPlayers()) do
+        if p ~= me then hookPlayer(p) end
+    end
+    trackConnection(Players.PlayerAdded:Connect(hookPlayer))
+    task.spawn(function()
+        local wasLive = false
+        while session.active do
+            local live = G.MM_RoundLive
+            if wasLive and not live then alertAt = {} end
+            wasLive = live
+            task.wait(0.5)
+        end
+    end)
+end)()
+
 task.spawn(function()
     local alivePrev = {}
     local knifeIdPrev, gunIdPrev = nil, nil
@@ -3931,7 +3964,7 @@ task.spawn(function()
                 if prev == true and (cur == false or cur == nil) then
                     if not toggleResetOnOwnerDeath then
                         log("owner died (reset on death off)")
-                    elseif _G.MM_GunBusy or _G.MM_StabBusy or _G.MM_ShootBusy or _G.MM_FlyBusy then
+                    elseif _G.MM_GunBusy or _G.MM_StabBusy or _G.MM_ShootBusy then
                         _G.MM_OwnerDiedPendingReset = true
                         log("owner died during combat (reset deferred)")
                     else
@@ -3942,29 +3975,16 @@ task.spawn(function()
             end
         end
         if toggleAlerts and resolveWhisperTarget() then
-            for _, p in ipairs(Players:GetPlayers()) do
-                if p ~= me then
-                    local cur = aliveState(p)
-                    local prev = alivePrev[p.UserId]
-                    if prev == true and cur == false then
-                        if p.UserId == knifeIdPrev then
-                            whisper("Sheriff killed the murderer")
-                            suppressDrop = true
-                        elseif p.UserId == gunIdPrev then
-                            whisper("Murderer killed Sheriff")
-                        elseif knifeIdPrev then
-                            murdererRoundKills = murdererRoundKills + 1
-                            whisper("Murderer killed " .. shortName(p))
-                        elseif gunIdPrev then
-                            sheriffRoundKills = sheriffRoundKills + 1
-                            whisper("Sheriff shot " .. shortName(p))
-                        end
-                    end
-                end
-            end
             if gunIdPrev and not gid and not suppressDrop then
-                local prev = Players:GetPlayerByUserId(gunIdPrev)
-                if prev and aliveState(prev) == true then
+                if G.MM_SuppressGunDrop and (tick() - G.MM_SuppressGunDrop) < 2.5 then
+                    suppressDrop = true
+                end
+                local prevGun = Players:GetPlayerByUserId(gunIdPrev)
+                local rec = prevGun and G.MM_PlayerData[prevGun.Name]
+                if rec and (rec.Dead or rec.Killed) then
+                    suppressDrop = true
+                end
+                if not suppressDrop and prevGun and aliveState(prevGun) == true then
                     whisper("Sheriff dropped the gun")
                 end
             end
@@ -4018,10 +4038,14 @@ local function resolveRoleSnapshot(timeout)
     local deadline = tick() + (timeout or 0)
     local curM, curS, curBotM, curBotS
     repeat
-        curM = findHolder({"Knife"})
-        curS = findHolder(G.MM_GunNames)
-        curBotM = botHasKnife()
-        curBotS = botHasGun()
+        curM = (G.MM_FindRole and G.MM_FindRole("Murderer")) or findHolder({"Knife"})
+        curS = (G.MM_FindRole and G.MM_FindRole("Sheriff"))
+            or (G.MM_FindRole and G.MM_FindRole("Hero"))
+            or findHolder(G.MM_GunNames)
+        curBotM = (curM == me) or botHasKnife()
+        curBotS = (curS == me) or botHasGun()
+        if curBotM then curM = me end
+        if curBotS then curS = me end
         if (curBotM or curM) and (curBotS or curS) then
             break
         end
@@ -4058,8 +4082,11 @@ local function runMainLoop()
     local nextAutoGunAt = 0
     local nextAutoShootAt = 0
 while session.active and gui.Parent do
-    local m, s = findHolder({"Knife"}), findHolder(G.MM_GunNames)
-        local botM = botHasKnife()
+    local m = (G.MM_FindRole and G.MM_FindRole("Murderer")) or findHolder({"Knife"})
+    local s = (G.MM_FindRole and G.MM_FindRole("Sheriff"))
+        or (G.MM_FindRole and G.MM_FindRole("Hero"))
+        or findHolder(G.MM_GunNames)
+        local botM = (m == me) or botHasKnife()
         local roundActive = isRoundActive()
 
     if m then
@@ -4115,7 +4142,7 @@ while session.active and gui.Parent do
            and not ownerMurdStashBusy and not revealAnnouncePending
            and tick() >= roleAnnounceUnlockAt
            and isAlive(me) and gunAvailableForOwnerMurdStash()
-           and not _G.MM_GunBusy and not _G.MM_StabBusy and not _G.MM_ShootBusy and not _G.MM_FlyBusy
+           and not _G.MM_GunBusy and not _G.MM_StabBusy and not _G.MM_ShootBusy
            and not flingActive and not flingLoopActive and not flingLoopContinuous and not flingSettling
         then
             ownerMurdStashBusy = true
@@ -4148,7 +4175,6 @@ while session.active and gui.Parent do
             task.spawn(function()
                 local status = ""
                 pcall(function()
-                    if G.MM_FlyActive and G.MM_FlyActive() then G.MM_StopFly() end
                     local tgt = Players:GetPlayerByUserId(uid)
                     if not tgt or not isAlive(tgt) then return end
                     if not G.MM_EnsureShootGun() then
@@ -4169,7 +4195,7 @@ while session.active and gui.Parent do
     end
 
     local gunTarget = (gunTargetId and Players:GetPlayerByUserId(gunTargetId)) or findOwner()
-        if toggleGun and not flingLoopContinuous and not botM and not ownerIsMurd and not gunDelivered and not _G.MM_GunBusy and not _G.MM_StabBusy and not _G.MM_ShootBusy and not _G.MM_FlyBusy and me.Character
+        if toggleGun and not flingLoopContinuous and not botM and not ownerIsMurd and not gunDelivered and not _G.MM_GunBusy and not _G.MM_StabBusy and not _G.MM_ShootBusy and me.Character
            and not revealAnnouncePending and tick() >= roleAnnounceUnlockAt
            and tick() >= nextAutoGunAt
            and not flingActive and not flingLoopActive and not flingSettling

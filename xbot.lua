@@ -1,4 +1,4 @@
---[[ Xeno V1.03 ]]--
+--[[ Xeno V1.05 XBOT_BUILD 20261006b ]]--
 local Players = game:GetService("Players")
 local cref = cloneref or function(x) return x end
 local TCS = cref(game:GetService("TextChatService"))
@@ -307,39 +307,33 @@ G.MM_OnPlayerKilled = nil
             end
         end
     end
+    local function isRemoteEvent(inst)
+        if typeof(inst) ~= "Instance" then return false end
+        local cn = inst.ClassName
+        return cn == "RemoteEvent" or cn == "UnreliableRemoteEvent"
+    end
     local function findRemote(name, className)
         local direct = RS:FindFirstChild(name)
-        if direct and direct:IsA(className) then return direct end
-        for _, d in ipairs(RS:GetDescendants()) do
-            if d.Name == name and d:IsA(className) then
-                local skip = false
-                local p = d.Parent
-                while p and p ~= RS do
-                    if p.Name == "MainGUI" or p:IsA("GuiObject") or p:IsA("LayerCollector") then
-                        skip = true
-                        break
-                    end
-                    p = p.Parent
-                end
-                if not skip then return d end
-            end
+        if direct and direct.ClassName == className then return direct end
+        local rem = RS:FindFirstChild("Remotes")
+        if rem then
+            local nested = rem:FindFirstChild(name, true)
+            if nested and nested.ClassName == className then return nested end
         end
     end
     local function connectClient(ev, fn)
-        if not ev then return end
-        if not (ev:IsA("RemoteEvent") or ev:IsA("UnreliableRemoteEvent")) then return end
+        if not isRemoteEvent(ev) then return end
         local ok, conn = pcall(function()
             return ev.OnClientEvent:Connect(fn)
         end)
         if ok then trackConnection(conn) end
     end
-    -- Never bind the name "Fade": MM2 has Frames at MainGUI.Lobby.Fade and MainGUI.Game.Fade.
-    -- Player data comes from UpdatePlayerData + GetPlayerData.
+    -- Do not search for "Fade". MM2 GUI Frames use that name.
     pcall(function()
-        connectClient(findRemote("UpdatePlayerData", "RemoteEvent") or findRemote("UpdatePlayerData", "UnreliableRemoteEvent"), ingest)
+        connectClient(findRemote("UpdatePlayerData", "RemoteEvent"), ingest)
     end)
     pcall(function()
-        connectClient(findRemote("RoleSelect", "RemoteEvent") or findRemote("RoleSelect", "UnreliableRemoteEvent"), function(role)
+        connectClient(findRemote("RoleSelect", "RemoteEvent"), function(role)
             local rec = G.MM_PlayerData[me.Name] or {Dead = false, Killed = false}
             rec.Role = role or rec.Role
             G.MM_PlayerData[me.Name] = rec
@@ -352,8 +346,8 @@ G.MM_OnPlayerKilled = nil
         local rem = RS:FindFirstChild("Remotes")
         local gp = rem and rem:FindFirstChild("Gameplay")
         local re = gp and gp:FindFirstChild("RoundEndFade")
-        if not (re and (re:IsA("RemoteEvent") or re:IsA("UnreliableRemoteEvent"))) then
-            re = findRemote("RoundEndFade", "RemoteEvent") or findRemote("RoundEndFade", "UnreliableRemoteEvent")
+        if not isRemoteEvent(re) then
+            re = findRemote("RoundEndFade", "RemoteEvent")
         end
         connectClient(re, function()
             G.MM_PlayerData = {}

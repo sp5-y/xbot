@@ -1,4 +1,4 @@
---[[ Xeno V1.0.4 ]]--
+--[[ Xeno V1.03 ]]--
 local Players = game:GetService("Players")
 local cref = cloneref or function(x) return x end
 local TCS = cref(game:GetService("TextChatService"))
@@ -307,18 +307,24 @@ G.MM_OnPlayerKilled = nil
             end
         end
     end
-    local function bindNamed(name, fn)
-        local ev = RS:FindFirstChild(name)
-        if not ev then ev = RS:FindFirstChild(name, true) end
-        if ev and ev.OnClientEvent then
+    local function findRemote(name, className)
+        local direct = RS:FindFirstChild(name)
+        if direct and direct:IsA(className) then return direct end
+        for _, d in ipairs(RS:GetDescendants()) do
+            if d.Name == name and d:IsA(className) then return d end
+        end
+    end
+    local function bindRemote(name, fn)
+        local ev = findRemote(name, "RemoteEvent") or findRemote(name, "UnreliableRemoteEvent")
+        if ev then
             trackConnection(ev.OnClientEvent:Connect(fn))
         end
     end
-    bindNamed("UpdatePlayerData", ingest)
-    bindNamed("Fade", ingest)
+    pcall(function() bindRemote("UpdatePlayerData", ingest) end)
+    pcall(function() bindRemote("Fade", ingest) end)
     pcall(function()
-        local ev = RS:FindFirstChild("RoleSelect") or RS:FindFirstChild("RoleSelect", true)
-        if ev and ev.OnClientEvent then
+        local ev = findRemote("RoleSelect", "RemoteEvent") or findRemote("RoleSelect", "UnreliableRemoteEvent")
+        if ev then
             trackConnection(ev.OnClientEvent:Connect(function(role)
                 local rec = G.MM_PlayerData[me.Name] or {Dead = false, Killed = false}
                 rec.Role = role or rec.Role
@@ -333,8 +339,10 @@ G.MM_OnPlayerKilled = nil
         local rem = RS:FindFirstChild("Remotes")
         local gp = rem and rem:FindFirstChild("Gameplay")
         local re = gp and gp:FindFirstChild("RoundEndFade")
-        if not re then re = RS:FindFirstChild("RoundEndFade", true) end
-        if re and re.OnClientEvent then
+        if not (re and (re:IsA("RemoteEvent") or re:IsA("UnreliableRemoteEvent"))) then
+            re = findRemote("RoundEndFade", "RemoteEvent") or findRemote("RoundEndFade", "UnreliableRemoteEvent")
+        end
+        if re then
             trackConnection(re.OnClientEvent:Connect(function()
                 G.MM_PlayerData = {}
                 G.MM_RoundLive = false
@@ -384,9 +392,8 @@ G.MM_OnPlayerKilled = nil
     task.spawn(function()
         while session.active do
             pcall(function()
-                local rf = RS:FindFirstChild("GetPlayerData")
-                if not rf then rf = RS:FindFirstChild("GetPlayerData", true) end
-                if rf and rf:IsA("RemoteFunction") then
+                local rf = findRemote("GetPlayerData", "RemoteFunction")
+                if rf then
                     ingest(rf:InvokeServer())
                 end
             end)

@@ -123,8 +123,21 @@ task.spawn(function()
 end)
 
 --[[ GUI ]]--
-gui = Instance.new("ScreenGui", game.CoreGui)
-gui.Name, gui.ResetOnSpawn = "MM", false
+do
+    local parent = nil
+    pcall(function()
+        if gethui then parent = gethui() end
+    end)
+    if not parent then
+        pcall(function() parent = game:GetService("CoreGui") end)
+    end
+    if not parent then
+        pcall(function() parent = me:WaitForChild("PlayerGui", 3) end)
+    end
+    gui = Instance.new("ScreenGui")
+    gui.Name, gui.ResetOnSpawn = "MM", false
+    gui.Parent = parent
+end
 local f = Instance.new("Frame", gui)
 f.Size, f.Position = UDim2.new(0, 140, 0, 180), UDim2.new(1, -150, 0, 10)
 f.BackgroundColor3, f.Visible = Color3.fromRGB(20, 20, 20), false
@@ -335,6 +348,14 @@ local function restOfChatArgs(args)
     if not args or #args < 2 then return "" end
     return (table.concat(args, " ", 2)):match("^%s*(.-)%s*$") or ""
 end
+local function splitChatArgs(msg)
+    if type(msg) ~= "string" then return {""} end
+    if string.split then return string.split(msg, " ") end
+    local out = {}
+    for w in msg:gmatch("%S+") do table.insert(out, w) end
+    if #out == 0 then out[1] = msg end
+    return out
+end
 -- Like findPlayer but never the bot; prefers exact username/display match (matches bot.lua intent for combat targets).
 local function findOtherPlayer(q)
     if not q or q == "" then return end
@@ -496,7 +517,13 @@ local function deliverWhisper(o, m)
 end
 
 local function resolveWhisperTarget(target)
-    if typeof(target) == "Instance" and target:IsA("Player") then
+    local isInst = false
+    if typeof then
+        isInst = typeof(target) == "Instance"
+    elseif type(target) == "userdata" then
+        isInst = pcall(function() return target:IsA("Player") end)
+    end
+    if isInst and target:IsA("Player") then
         return target
     end
     local o = findOwner() or findConfiguredOwner()
@@ -1231,43 +1258,54 @@ do
     local flyActive, flyGen, flyConn = false, 0, nil
 
     local function installShootHooks()
-        if G.MM_ShootHooksInstalled or not hookmetamethod then return end
-        G.MM_ShootHooksInstalled = true
+        if G.MM_ShootHooksInstalled then return true end
+        if type(hookmetamethod) ~= "function" then return false end
         local wrap = newcclosure or function(f) return f end
         local mouse = me:GetMouse()
-        local oldIndex = hookmetamethod(game, "__index", wrap(function(self, key)
-            if G.MM_ShootActive and G.MM_ShootAimCf and self == mouse then
-                if key == "Hit" then return G.MM_ShootAimCf end
-                if key == "Target" and G.MM_ShootAimPart then return G.MM_ShootAimPart end
-            end
-            return oldIndex(self, key)
-        end))
-        local oldNamecall = hookmetamethod(game, "__namecall", wrap(function(self, ...)
-            if G.MM_ShootActive and G.MM_ShootAimPart and G.MM_ShootAimCf then
-                local method = getnamecallmethod()
-                local args = { ... }
-                local pos = G.MM_ShootAimCf.Position
-                local part = G.MM_ShootAimPart
-                local tag = tostring(self)
-                if method == "InvokeServer" and tag:find("ShootGun") then
-                    if args[2] ~= nil then args[2] = pos
-                    elseif args[1] ~= nil then args[1] = pos end
-                    return oldNamecall(self, unpack(args))
+        local oldIndex, oldNamecall
+        local okIndex, hookedIndex = pcall(function()
+            oldIndex = hookmetamethod(game, "__index", wrap(function(self, key)
+                if G.MM_ShootActive and G.MM_ShootAimCf and self == mouse then
+                    if key == "Hit" then return G.MM_ShootAimCf end
+                    if key == "Target" and G.MM_ShootAimPart then return G.MM_ShootAimPart end
                 end
-                if method == "Raycast" and self == workspace then
-                    return {
-                        Position = pos,
-                        Instance = part,
-                        Normal = Vector3.new(0, 1, 0),
-                        Material = Enum.Material.Plastic,
-                        Distance = (pos - args[1]).Magnitude,
-                    }
+                if oldIndex then return oldIndex(self, key) end
+            end))
+            return oldIndex
+        end)
+        local okName, hookedName = pcall(function()
+            oldNamecall = hookmetamethod(game, "__namecall", wrap(function(self, ...)
+                if G.MM_ShootActive and G.MM_ShootAimPart and G.MM_ShootAimCf then
+                    local method = getnamecallmethod and getnamecallmethod()
+                    local args = { ... }
+                    local pos = G.MM_ShootAimCf.Position
+                    local part = G.MM_ShootAimPart
+                    local tag = tostring(self)
+                    if method == "InvokeServer" and tag:find("ShootGun") then
+                        if args[2] ~= nil then args[2] = pos
+                        elseif args[1] ~= nil then args[1] = pos end
+                        if oldNamecall then return oldNamecall(self, unpack(args)) end
+                    end
+                    if method == "Raycast" and self == workspace then
+                        return {
+                            Position = pos,
+                            Instance = part,
+                            Normal = Vector3.new(0, 1, 0),
+                            Material = Enum.Material.Plastic,
+                            Distance = (pos - args[1]).Magnitude,
+                        }
+                    end
                 end
-            end
-            return oldNamecall(self, ...)
-        end))
+                if oldNamecall then return oldNamecall(self, ...) end
+            end))
+            return oldNamecall
+        end)
+        if (okIndex and hookedIndex) or (okName and hookedName) then
+            G.MM_ShootHooksInstalled = true
+            return true
+        end
+        return false
     end
-    installShootHooks()
 
     local function shootPredictLead(root, hum)
         if not root then return Vector3.zero end
@@ -2354,7 +2392,7 @@ end)
 
 local function handleCommand(p, msg)
     if msg:sub(1, 1) ~= "!" then return end
-    local args = msg:split(" ")
+    local args = splitChatArgs(msg)
     local cmd, rest = args[1]:sub(2):lower(), msg:sub(#args[1] + 2)
     if not authorizeCommand(p) then return end
     local privateWhisper = whisper
@@ -2665,30 +2703,43 @@ local function watchHiddenChat(p, msg)
     end)
 end
 local function hookSpeaker(p)
-    trackConnection(p.Chatted:Connect(function(msg)
-        if not session.active then return end
-        routeCommand(p, msg)
-        watchHiddenChat(p, msg)
-    end))
+    if not p then return end
+    pcall(function()
+        local chatted = p.Chatted
+        if not chatted then return end
+        trackConnection(chatted:Connect(function(msg)
+            if not session.active then return end
+            routeCommand(p, msg)
+            watchHiddenChat(p, msg)
+        end))
+    end)
 end
-for _, p in ipairs(Players:GetPlayers()) do hookSpeaker(p) end
-trackConnection(Players.PlayerAdded:Connect(function(p)
-    if not session.active then return end
-    hookSpeaker(p)
-end))
-trackConnection(Players.PlayerRemoving:Connect(function(p)
-    if not session.active then return end
-    if session.ownerId and p.UserId == session.ownerId then
-        if hopBusy then return end
-        session.ownerId = nil
-        G.MM_PendingOwnerId = nil
-        gunTargetId, gunDelivered = nil, false
+pcall(function()
+    for _, p in ipairs(Players:GetPlayers()) do
+        hookSpeaker(p)
     end
-end))
+end)
+pcall(function()
+    trackConnection(Players.PlayerAdded:Connect(function(p)
+        if not session.active then return end
+        hookSpeaker(p)
+    end))
+end)
+pcall(function()
+    trackConnection(Players.PlayerRemoving:Connect(function(p)
+        if not session.active then return end
+        if session.ownerId and p.UserId == session.ownerId then
+            if hopBusy then return end
+            session.ownerId = nil
+            G.MM_PendingOwnerId = nil
+            gunTargetId, gunDelivered = nil, false
+        end
+    end))
+end)
 
 --[[ Discord bridge (discord-xeno.py Flask) ]]--
 local XENO_BRIDGE_ENABLED = not (getgenv and getgenv().XENO_BRIDGE_ENABLED == false)
-local ensureRegionSpreadOnStart
+local ensureRegionSpreadOnStart = function() end
 local murdererRoundKills = 0
 local sheriffRoundKills = 0
 local whoKnifeIdPrev, whoGunIdPrev = nil, nil

@@ -1,4 +1,4 @@
---[[ Xeno V1.00 ]]--
+--[[ Xeno V1.02 ]]--
 local Players = game:GetService("Players")
 local cref = cloneref or function(x) return x end
 local TCS = cref(game:GetService("TextChatService"))
@@ -15,12 +15,15 @@ local UIS = cref(game:GetService("UserInputService"))
 local DEFAULT_FOV, WIDE_FOV = 70, 100
 local SPAWN_CFRAME = CFrame.new(14.3513288, 505.044952, -58.2513657, 1, 0, 0, 0, 1, 0, 0, 0, 1)
 local toggleGun = false
+local toggleShoot = false
 local toggleAlerts = false
 local toggleReveal = true
 local toggleResetOnOwnerDeath = false
 local toggleDrop = false
 local gunTargetId = nil
 local gunDelivered = false
+local shootTargetId = nil
+local shootDone = false
 local hopBusy = false
 local PING_MIN_MS, PING_MAX_MS = 50, 90
 local G = getgenv and getgenv() or _G
@@ -207,6 +210,22 @@ end
 local function botHasGun() return playerHas(me, G.MM_GunNames) end
 local function botHasKnife() return playerHas(me, G.MM_KnifeNames) end
 local function findDroppedGun()
+    local function asPart(obj)
+        if not obj then return end
+        if obj:IsA("BasePart") then return obj end
+        if obj:IsA("Model") then
+            return obj.PrimaryPart or obj:FindFirstChild("Handle") or obj:FindFirstChildWhichIsA("BasePart")
+        end
+        if obj:IsA("Tool") then
+            return obj:FindFirstChild("Handle") or obj:FindFirstChildWhichIsA("BasePart")
+        end
+    end
+    local direct = workspace:FindFirstChild("GunDrop") or workspace:FindFirstChild("DroppedGun")
+    local part = asPart(direct)
+    if part then return part end
+    local nested = workspace:FindFirstChild("GunDrop", true) or workspace:FindFirstChild("DroppedGun", true)
+    part = asPart(nested)
+    if part then return part end
     for _, o in ipairs(workspace:GetDescendants()) do
         if o:IsA("Tool") and (table.find(G.MM_GunNames, o.Name) or o.Name == "GunDrop")
            and not Players:GetPlayerFromCharacter(o.Parent) then
@@ -215,7 +234,7 @@ local function findDroppedGun()
         end
     end
     for _, o in ipairs(workspace:GetDescendants()) do
-        if o:IsA("BasePart") and o.Name == "GunDrop" then return o end
+        if o:IsA("BasePart") and (o.Name == "GunDrop" or o.Name == "DroppedGun") then return o end
     end
 end
 
@@ -289,6 +308,7 @@ end
 function G.MM_CurrentToggleConfig()
     return {
         automatic_gun = toggleGun,
+        automatic_shoot = toggleShoot,
         reveal = toggleReveal,
         alerts = toggleAlerts,
         automatic_reset = toggleResetOnOwnerDeath,
@@ -301,6 +321,10 @@ function G.MM_ApplyToggleConfig(cfg)
     if cfg.automatic_gun ~= nil then
         toggleGun = cfg.automatic_gun == true
         if not toggleGun then gunTargetId, gunDelivered = nil, false end
+    end
+    if cfg.automatic_shoot ~= nil then
+        toggleShoot = cfg.automatic_shoot == true
+        if not toggleShoot then shootTargetId, shootDone = nil, false end
     end
     if cfg.reveal ~= nil then toggleReveal = cfg.reveal == true end
     if cfg.alerts ~= nil then toggleAlerts = cfg.alerts == true end
@@ -940,6 +964,97 @@ local function zeroVel(h)
     h.RotVelocity = Vector3.zero
 end
 
+-- MM2 gun is server-owned. Client CFrame of GunDrop does not pick it up.
+;(function()
+    local function fireTouch(a, b)
+        if not (a and b) then return end
+        local fti = rawget(G, "firetouchinterest") or rawget(_G, "firetouchinterest")
+        if type(fti) ~= "function" then return end
+        pcall(fti, a, b, 0)
+        pcall(fti, a, b, 1)
+        pcall(fti, b, a, 0)
+        pcall(fti, b, a, 1)
+    end
+    local function firePrompt(inst)
+        local fpp = rawget(G, "fireproximityprompt") or rawget(_G, "fireproximityprompt")
+        if type(fpp) ~= "function" or not inst then return end
+        if inst:IsA("ProximityPrompt") then
+            pcall(fpp, inst)
+            return
+        end
+        for _, d in ipairs(inst:GetDescendants()) do
+            if d:IsA("ProximityPrompt") then pcall(fpp, d) end
+        end
+    end
+    local function sheriffFromData()
+        local rf = RS:FindFirstChild("GetPlayerData")
+        if not (rf and rf:IsA("RemoteFunction")) then return end
+        local data
+        if not pcall(function() data = rf:InvokeServer() end) then return end
+        if type(data) ~= "table" then return end
+        for _, p in ipairs(Players:GetPlayers()) do
+            local info = data[p.Name]
+            local role = type(info) == "table" and info.Role or info
+            if role == "Sheriff" or role == "Hero" then return p, role end
+        end
+    end
+    G.MM_GunWhere = function()
+        if botHasGun() then return "Bot already has the gun" end
+        local drop = findDroppedGun()
+        if drop then
+            local p = drop.Position
+            return string.format("GunDrop at %.0f, %.0f, %.0f — grabbing", p.X, p.Y, p.Z)
+        end
+        local sher = findHolder(G.MM_GunNames)
+        if sher then
+            return "Gun is still on " .. shortName(sher) .. " — it only drops when they die"
+        end
+        local fromData, role = sheriffFromData()
+        if fromData then
+            return "Gun is on " .. shortName(fromData) .. " (" .. tostring(role):lower() .. ") — wait for drop"
+        end
+        return "No GunDrop in workspace — sheriff hasn't dropped it"
+    end
+    G.MM_GrabDroppedGun = function(timeout)
+        if botHasGun() then return true end
+        timeout = timeout or 3.2
+        local h = hrp()
+        if not (h and isAlive(me)) then return false end
+        local t0 = tick()
+        local logged = false
+        while session.active and tick() - t0 < timeout do
+            if botHasGun() then return true end
+            local drop = findDroppedGun()
+            if not drop then
+                task.wait(0.08)
+            else
+                if not logged then
+                    logged = true
+                    log(string.format("gun: grabbing GunDrop at %.0f, %.0f, %.0f", drop.Position.X, drop.Position.Y, drop.Position.Z))
+                end
+                h = hrp()
+                if not h then return botHasGun() end
+                pcall(function()
+                    h.Anchored = false
+                    h.CFrame = drop.CFrame + Vector3.new(0, 2.2, 0)
+                    zeroVel(h)
+                end)
+                fireTouch(h, drop)
+                firePrompt(drop)
+                pcall(function()
+                    local root = drop
+                    while root.Parent and root.Parent ~= workspace do
+                        root = root.Parent
+                        firePrompt(root)
+                    end
+                end)
+                task.wait(0.06)
+            end
+        end
+        return botHasGun()
+    end
+end)()
+
 --[[ Anti Fling ]]--
 do
 local antiFlingState = {enabled = false, conns = {}, lastSafe = nil, busyDepth = 0}
@@ -1099,12 +1214,13 @@ local function tpHome()
         zeroVel(h)
     end
 end
-local function reset()
+local function reset(stay)
     stopFollow()
     local char = me.Character
     if not char then return end
     local h = char:FindFirstChild("HumanoidRootPart")
-    if h then
+    -- Void-TP first makes GunDrop spawn in the void. Die in place when delivering.
+    if h and not stay then
         pcall(function() h.CFrame = CFrame.new(0, -10000, 0) end)
     end
     local hum = char:FindFirstChildOfClass("Humanoid")
@@ -1162,7 +1278,8 @@ local function dropGunAt(target, boost)
         h.CFrame = CFrame.new(dropPos, face)
         zeroVel(h)
     end
-    task.wait(0.12); reset()
+    task.wait(0.32)
+    reset(true)
     return true
 end
 function G.MM_TargetHasGun(target)
@@ -1188,13 +1305,8 @@ local function bringGun(target)
     if G.MM_TargetHasGun(target) then return finish(true) end
     for attempt = 1, 3 do
         if not botHasGun() then
-            local g, h = findDroppedGun(), hrp()
-            if not (g and h) then return finish(false) end
-            g.CFrame = h.CFrame
-            local t0 = tick()
-            while session.active and tick() - t0 < 1.6 do
-                if botHasGun() then break end
-                task.wait(0.05)
+            if not (G.MM_GrabDroppedGun and G.MM_GrabDroppedGun(2.4)) then
+                return finish(false)
             end
         end
         if not botHasGun() then return finish(false) end
@@ -1216,19 +1328,14 @@ local function stashGunAtSpawn()
     if _G.MM_StabBusy then return finish(false) end
     if not SPAWN_CFRAME or not isAlive(me) then return finish(false) end
     if not botHasGun() then
-        local g, h = findDroppedGun(), hrp()
-        if not (g and h) then return false end
-        g.CFrame = h.CFrame
-        local t0 = tick()
-        while session.active and tick() - t0 < 2.5 do
-            if botHasGun() then break end
-            task.wait(0.05)
+        if not (G.MM_GrabDroppedGun and G.MM_GrabDroppedGun(2.8)) then
+            return finish(false)
         end
         if not botHasGun() then return finish(false) end
     end
     for i = 1, 2 do tpHome(); task.wait(0.15) end
-    task.wait(0.1)
-    reset()
+    task.wait(0.28)
+    reset(true)
     return finish(true)
 end
 local function ownerMurdererActive(murderer, ownerPlayer)
@@ -1363,20 +1470,14 @@ do
     end
 
     local function pickUpDroppedGun()
+        if G.MM_GrabDroppedGun then return G.MM_GrabDroppedGun(3.2) end
         if botHasGun() then return true end
         local h = hrp()
         if not (h and isAlive(me)) then return false end
         local drop = workspace:FindFirstChild("GunDrop") or findDroppedGun()
-        if drop then
+        if drop and drop:IsA("BasePart") then
             pcall(function()
-                if drop:IsA("BasePart") then
-                    drop.CFrame = h.CFrame
-                elseif drop:IsA("Model") and drop.PrimaryPart then
-                    drop:SetPrimaryPartCFrame(h.CFrame)
-                elseif drop:IsA("Tool") then
-                    local handle = drop:FindFirstChild("Handle") or drop:FindFirstChildWhichIsA("BasePart")
-                    if handle then handle.CFrame = h.CFrame end
-                end
+                h.CFrame = drop.CFrame + Vector3.new(0, 2.2, 0)
             end)
         end
         local t0 = tick()
@@ -1557,16 +1658,36 @@ do
         local was = flyActive
         flyActive = false
         _G.MM_FlyBusy = false
+        pcall(function() RunSvc:UnbindFromRenderStep("MM_Fly") end)
         if flyConn then
             pcall(function() flyConn:Disconnect() end)
             flyConn = nil
         end
+        local char = me.Character
         local h = hrp()
         if h then
-            pcall(function() h.Anchored = false end)
+            pcall(function()
+                h.Anchored = false
+                if G.MM_FlyHrpSize then
+                    h.Size = G.MM_FlyHrpSize
+                    G.MM_FlyHrpSize = nil
+                end
+                h.CanCollide = true
+            end)
             zeroVel(h)
         end
+        if char then
+            local hum = char:FindFirstChildOfClass("Humanoid")
+            if hum then pcall(function() hum.PlatformStand = false end) end
+            for _, part in ipairs(char:GetDescendants()) do
+                if part:IsA("BasePart") then
+                    pcall(function() part.CanCollide = true end)
+                end
+            end
+        end
+        G.MM_FlyLast = nil
         if was then G.MM_ActionEnd() end
+        log("fly: off")
     end
 
     local function startFly()
@@ -1580,8 +1701,8 @@ do
         G.MM_ActionBegin()
         flyGen = flyGen + 1
         local gen = flyGen
-        local lastT = tick()
-        flyConn = RunSvc.Heartbeat:Connect(function()
+        local extraLift = 0
+        local function flyStep()
             if gen ~= flyGen or not session.active or not flyActive then return end
             local pilot = findOwner()
             if not isAlive(pilot) or not isAlive(me) then
@@ -1591,11 +1712,8 @@ do
             local oh = pilot.Character and pilot.Character:FindFirstChild("HumanoidRootPart")
             local ohum = pilot.Character and pilot.Character:FindFirstChildOfClass("Humanoid")
             local mh = hrp()
+            local char = me.Character
             if not (oh and ohum and mh) then return end
-            local now = tick()
-            local dt = now - lastT
-            if dt < 0 then dt = 0 elseif dt > 0.05 then dt = 0.05 end
-            lastT = now
             local md = ohum.MoveDirection
             local look = oh.CFrame.LookVector
             local flatLook = Vector3.new(look.X, 0, look.Z)
@@ -1605,33 +1723,43 @@ do
                 flatLook = flatLook.Unit
             end
             local move = Vector3.new(md.X, 0, md.Z)
-            local dir = move.Magnitude > 0.08 and move.Unit or flatLook
+            local now = tick()
+            local dt = math.clamp(now - (G.MM_FlyLast or now), 0, 0.05)
+            G.MM_FlyLast = now
             local st = ohum:GetState()
-            local climb = 0
-            if ohum.Jump or st == Enum.HumanoidStateType.Jumping then
-                climb = FLY_CLIMB
+            if ohum.Jump or st == Enum.HumanoidStateType.Jumping or st == Enum.HumanoidStateType.Freefall then
+                extraLift = math.min(extraLift + FLY_CLIMB * dt, 90)
             elseif st == Enum.HumanoidStateType.Crouching or ohum.Sit then
-                climb = -FLY_CLIMB
+                extraLift = math.max(extraLift - FLY_CLIMB * dt, 0)
             end
-            local vel = ((move.Magnitude > 0.08) and (dir * FLY_SPEED) or Vector3.zero) + Vector3.new(0, climb, 0)
-            local dest = oh.Position + vel * dt
-            local ownerCf = CFrame.new(dest, dest + flatLook)
-            local botCf = ownerCf * CFrame.new(0, -FLY_UNDER, 0)
+            local lead = Vector3.zero
+            if move.Magnitude > 0.08 then
+                lead = move.Unit * 1.25
+            end
+            local pos = oh.Position + Vector3.new(0, -FLY_UNDER + extraLift, 0) + lead
             pcall(function()
-                mh.Anchored = false
-                mh.CanCollide = false
+                if not G.MM_FlyHrpSize then G.MM_FlyHrpSize = mh.Size end
+                mh.Size = Vector3.new(5, 1.2, 5)
+                mh.CanCollide = true
+                mh.Anchored = true
+                local hum = char and char:FindFirstChildOfClass("Humanoid")
+                if hum then hum.PlatformStand = true end
+                if char then
+                    for _, part in ipairs(char:GetDescendants()) do
+                        if part:IsA("BasePart") and part ~= mh then
+                            part.CanCollide = false
+                        end
+                    end
+                end
             end)
-            zeroVel(mh)
-            mh.CFrame = botCf
-            zeroVel(oh)
-            oh.CFrame = ownerCf
-            pcall(function()
-                mh.AssemblyLinearVelocity = vel
-                oh.AssemblyLinearVelocity = vel
-            end)
+            mh.CFrame = CFrame.new(pos, pos + flatLook)
+        end
+        pcall(function()
+            RunSvc:BindToRenderStep("MM_Fly", 200, flyStep)
         end)
-        log("fly: under " .. owner.Name)
-        return true, "Flying under you — walk to steer, jump to climb"
+        flyConn = RunSvc.Heartbeat:Connect(flyStep)
+        log("fly: pad under " .. owner.Name)
+        return true, "Fly on — stand on the bot, walk to steer, jump to climb, !unfly to stop"
     end
 
     function G.MM_CombatBusy()
@@ -2146,7 +2274,8 @@ local COMMAND_HELP = {
     reveal = "Show current murderer and sheriff",
     stab = "all | sheriff | <name> - Murderer only, stab targets",
     shoot = "murderer | sheriff | <name> - Grab gun if dropped, silent-aim shoot",
-    fly = "Ride the bot under your feet; walk to steer, jump to climb, !fly again to stop",
+    fly = "Stand on the bot and fly the way you walk; jump climbs. !unfly to stop",
+    unfly = "Stop fly",
     togglereveal = "Toggle automatic role callout each round",
     togglealerts = "Toggle kill/drop/pickup alerts",
     togglereset = "Toggle auto-reset when owner dies",
@@ -2161,18 +2290,20 @@ local COMMAND_HELP = {
     unfollow = "Stop following current player",
     gun = "<player> - Deliver gun to a player",
     togglegun = "<player> - Auto-deliver gun to a player",
+    toggleshoot = "[murderer | name] - Auto-grab dropped gun and silent-aim shoot",
     chat = "<msg> - Make bot send a public chat message",
     fling = "<player> - Flings player off the map",
     help = "<cmd> - Show command list or explain one command",
 }
 local HELP_ORDER = {
-    "tp", "reveal", "stab", "shoot", "fly", "gun", "drop", "fling", "togglegun", "togglereveal", "togglealerts",
+    "tp", "reveal", "stab", "shoot", "fly", "unfly", "gun", "drop", "fling", "togglegun", "toggleshoot", "togglereveal", "togglealerts",
     "reset", "follow", "unfollow", "chat", "help",
 }
 local PREMIUM_ONLY_COMMANDS = {
     togglereset = true,
     toggledrop = true,
     togglegun = true,
+    toggleshoot = true,
     togglereveal = true,
     togglealerts = true,
     fling = true,
@@ -2551,7 +2682,10 @@ local function handleCommand(p, msg)
         if _G.MM_GunBusy then whisper("Gun busy, try again") return end
         if _G.MM_ShootBusy then whisper("Shoot busy, try again") return end
         if botHasKnife() then whisper("Bot is murderer — no gun") return end
-        if not G.MM_EnsureShootGun() then whisper("No gun available") return end
+        if not G.MM_EnsureShootGun() then
+            whisper(G.MM_GunWhere and G.MM_GunWhere() or "No gun available")
+            return
+        end
         if G.MM_FlyActive and G.MM_FlyActive() then G.MM_StopFly() end
         _G.MM_ShootBusy = true
         G.MM_ActionBegin()
@@ -2574,7 +2708,16 @@ local function handleCommand(p, msg)
             G.MM_ActionEnd()
             runDeferredOwnerResetIfIdle()
         end)
+    elseif cmd == "unfly" or cmd == "nofly" or cmd == "flyoff" then
+        if G.MM_StopFly then G.MM_StopFly() end
+        whisper("Fly off")
     elseif cmd == "fly" then
+        local sub = ((args[2] or ""):lower():match("^%s*(.-)%s*$")) or ""
+        if sub == "off" or sub == "stop" or sub == "unfly" then
+            if G.MM_StopFly then G.MM_StopFly() end
+            whisper("Fly off")
+            return
+        end
         if G.MM_FlyActive and G.MM_FlyActive() then
             G.MM_StopFly()
             whisper("Fly off")
@@ -2585,6 +2728,10 @@ local function handleCommand(p, msg)
             return
         end
         if flingActive or flingLoopActive then whisper("Fling busy, try again") return end
+        if type(G.MM_StartFly) ~= "function" then
+            whisper("Fly failed to load")
+            return
+        end
         local ok, msg = G.MM_StartFly()
         whisper(msg or (ok and "Fly on" or "Fly failed"))
     elseif cmd == "gun" then
@@ -2592,14 +2739,20 @@ local function handleCommand(p, msg)
         if not t then whisper("Player not found") return end
         if ownerIsMurd then whisper(OWNER_MURD_GUN_MSG) return end
         if botHasKnife() then whisper("No gun available") return end
-        if not gunAvailableForOwnerMurdStash() then whisper("No gun available") return end
+        if not gunAvailableForOwnerMurdStash() then
+            whisper(G.MM_GunWhere and G.MM_GunWhere() or "No gun available")
+            return
+        end
         local ok = bringGun(t)
         whisper(ok and ("Gun delivered to " .. commandTargetLabel(t)) or "Gun missed, try again")
     elseif cmd == "drop" then
         if _G.MM_GunBusy then whisper("Gun busy, try again") return end
         if G.MM_StabBusyActive() then whisper("Stab busy, try again") return end
         if botHasKnife() then whisper("No gun available") return end
-        if not gunAvailableForOwnerMurdStash() then whisper("No gun available") return end
+        if not gunAvailableForOwnerMurdStash() then
+            whisper(G.MM_GunWhere and G.MM_GunWhere() or "No gun available")
+            return
+        end
         _G.MM_GunBusy = true
         local ok = stashGunAtSpawn()
         _G.MM_GunBusy = false
@@ -2623,6 +2776,27 @@ local function handleCommand(p, msg)
             toggleGun = not toggleGun
             gunTargetId, gunDelivered = nil, false
             whisper("Auto-gun: " .. (toggleGun and "on" or "off"))
+        end
+    elseif cmd == "toggleshoot" then
+        local q = restOfChatArgs(args):lower()
+        if q == "off" or q == "stop" or q == "disable" then
+            toggleShoot, shootTargetId, shootDone = false, nil, false
+            whisper("Auto-shoot: off")
+        elseif q ~= "" then
+            local first = q:match("^(%S+)") or ""
+            if first == "murder" or first == "murd" or first == "murderer" then
+                toggleShoot, shootTargetId, shootDone = true, nil, false
+                whisper("Auto-shoot on: murderer")
+            else
+                local t = findOtherPlayer(q) or findPlayer(q)
+                if not t or t == me then whisper("Player not found") return end
+                toggleShoot, shootTargetId, shootDone = true, t.UserId, false
+                whisper("Auto-shoot on: " .. shortName(t))
+            end
+        else
+            toggleShoot = not toggleShoot
+            shootTargetId, shootDone = nil, false
+            whisper("Auto-shoot: " .. (toggleShoot and "on (murderer)" or "off"))
         end
     elseif cmd == "togglealerts" then
         toggleAlerts = not toggleAlerts
@@ -2903,6 +3077,27 @@ local function bridgeToggleGunMessage(mode)
     return "error", "Use Enable or Disable"
 end
 
+local function bridgeToggleShootMessage(mode)
+    if not session.ownerId then
+        return "error", "No owner — join your reserved server first"
+    end
+    mode = bridgeTrim(mode):lower()
+    if mode == "enable" then
+        if toggleShoot then
+            return "ok", "Automatic shoot is already enabled"
+        end
+        toggleShoot, shootTargetId, shootDone = true, nil, false
+        return "ok", "Automatic shoot enabled (murderer)"
+    elseif mode == "disable" then
+        if not toggleShoot then
+            return "error", "Automatic shoot is not enabled"
+        end
+        toggleShoot, shootTargetId, shootDone = false, nil, false
+        return "ok", "Automatic shoot disabled"
+    end
+    return "error", "Use Enable or Disable"
+end
+
 local function bridgeToggleRevealMessage(mode)
     if not session.ownerId then
         return "error", "No owner — join your reserved server first"
@@ -2995,7 +3190,9 @@ local function bridgeDropMessage()
     if _G.MM_GunBusy then return "error", "Gun busy, try again" end
     if G.MM_StabBusyActive() then return "error", "Stab busy, try again" end
     if botHasKnife() then return "error", "No gun available" end
-    if not gunAvailableForOwnerMurdStash() then return "error", "No gun available" end
+    if not gunAvailableForOwnerMurdStash() then
+        return "error", (G.MM_GunWhere and G.MM_GunWhere()) or "No gun available"
+    end
     _G.MM_GunBusy = true
     local ok = stashGunAtSpawn()
     _G.MM_GunBusy = false
@@ -3030,7 +3227,9 @@ local function bridgeGunMessage(targetQuery)
     if not t then return "error", "Player not found" end
     if ownerIsMurd then return "error", OWNER_MURD_GUN_MSG end
     if botHasKnife() then return "error", "No gun available" end
-    if not gunAvailableForOwnerMurdStash() then return "error", "No gun available" end
+    if not gunAvailableForOwnerMurdStash() then
+        return "error", (G.MM_GunWhere and G.MM_GunWhere()) or "No gun available"
+    end
     local ok = bringGun(t)
     return ok and "ok" or "error", ok and ("Gun delivered to " .. bridgeTargetLabel(t)) or "Gun missed, try again"
 end
@@ -3161,7 +3360,7 @@ local function bridgeShootMessage(targetQuery)
         return "error", err or "Player not found"
     end
     if not G.MM_EnsureShootGun() then
-        return "error", "No gun available"
+        return "error", (G.MM_GunWhere and G.MM_GunWhere()) or "No gun available"
     end
     if G.MM_FlyActive and G.MM_FlyActive() then G.MM_StopFly() end
     _G.MM_ShootBusy = true
@@ -3184,12 +3383,13 @@ local function bridgeShootMessage(targetQuery)
     return "ok", status
 end
 
-local function bridgeFlyMessage()
+local function bridgeFlyMessage(mode)
     if not session.ownerId then
         return "error", "No owner — join your reserved server first"
     end
-    if G.MM_FlyActive and G.MM_FlyActive() then
-        G.MM_StopFly()
+    mode = bridgeTrim(mode):lower()
+    if mode == "off" or mode == "stop" or mode == "unfly" or (G.MM_FlyActive and G.MM_FlyActive()) then
+        if G.MM_StopFly then G.MM_StopFly() end
         return "ok", "Fly off"
     end
     if G.MM_StabBusyActive() or _G.MM_GunBusy or _G.MM_ShootBusy then
@@ -3197,6 +3397,9 @@ local function bridgeFlyMessage()
     end
     if flingActive or flingLoopActive then
         return "error", "Fling busy, try again"
+    end
+    if type(G.MM_StartFly) ~= "function" then
+        return "error", "Fly failed to load"
     end
     local ok, msg = G.MM_StartFly()
     if ok then
@@ -3358,6 +3561,7 @@ local function processBridgeCommands(jobId, commands)
     if not session.active or type(commands) ~= "table" then return end
     local fns = {
         toggle_gun = bridgeToggleGunMessage,
+        toggle_shoot = bridgeToggleShootMessage,
         toggle_reveal = bridgeToggleRevealMessage,
         toggle_alerts = bridgeToggleAlertsMessage,
         toggle_reset = bridgeToggleResetMessage,
@@ -3795,6 +3999,7 @@ local function runMainLoop()
     local lastMurderId, announced
     local ownerMurdStashBusy = false
     local nextAutoGunAt = 0
+    local nextAutoShootAt = 0
 while session.active and gui.Parent do
     local m, s = findHolder({"Knife"}), findHolder(G.MM_GunNames)
         local botM = botHasKnife()
@@ -3812,6 +4017,7 @@ while session.active and gui.Parent do
     if (m or botM) and not announced then
         announced = true
             gunDelivered = false
+            shootDone = false
             revealAnnouncePending = true
             tpHome()
         local owner = findOwner()
@@ -3838,7 +4044,7 @@ while session.active and gui.Parent do
                 revealAnnouncePending = false
         end)
     elseif not roundActive then
-            announced, gunDelivered, revealAnnouncePending = false, false, false
+            announced, gunDelivered, shootDone, revealAnnouncePending = false, false, false, false
             ownerMurdStashBusy = false
         roleAnnounceUnlockAt = 0
     end
@@ -3863,6 +4069,46 @@ while session.active and gui.Parent do
             _G.MM_GunBusy = false
                 ownerMurdStashBusy = false
         end)
+    end
+
+    if toggleShoot and not shootDone and not flingLoopContinuous and not botM and not ownerIsMurd
+       and not _G.MM_GunBusy and not _G.MM_StabBusy and not _G.MM_ShootBusy
+       and me.Character and not revealAnnouncePending and tick() >= roleAnnounceUnlockAt
+       and tick() >= nextAutoShootAt
+       and not flingActive and not flingLoopActive and not flingSettling
+       and gunAvailableForOwnerMurdStash() then
+        local shootTgt
+        if shootTargetId then
+            shootTgt = Players:GetPlayerByUserId(shootTargetId)
+        else
+            shootTgt = m
+        end
+        if shootTgt and shootTgt ~= me and isAlive(shootTgt) then
+            nextAutoShootAt = tick() + 2.5
+            _G.MM_ShootBusy = true
+            G.MM_ActionBegin()
+            local uid = shootTgt.UserId
+            task.spawn(function()
+                local status = ""
+                pcall(function()
+                    if G.MM_FlyActive and G.MM_FlyActive() then G.MM_StopFly() end
+                    local tgt = Players:GetPlayerByUserId(uid)
+                    if not tgt or not isAlive(tgt) then return end
+                    if not G.MM_EnsureShootGun() then
+                        status = "No gun"
+                        return
+                    end
+                    local _, msg = G.MM_ShootTargetLoop(tgt)
+                    status = tostring(msg or "")
+                end)
+                if status:find("Shot", 1, true) or status:find("timed out", 1, true) or status:find("Stopped", 1, true) then
+                    shootDone = true
+                end
+                _G.MM_ShootBusy = false
+                G.MM_ActionEnd()
+                runDeferredOwnerResetIfIdle()
+            end)
+        end
     end
 
     local gunTarget = (gunTargetId and Players:GetPlayerByUserId(gunTargetId)) or findOwner()

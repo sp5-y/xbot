@@ -1,4 +1,4 @@
---[[ Xeno V1.02 ]]--
+--[[ Xeno V1.03 ]]--
 local Players = game:GetService("Players")
 local cref = cloneref or function(x) return x end
 local TCS = cref(game:GetService("TextChatService"))
@@ -1048,7 +1048,7 @@ end
                         firePrompt(root)
                     end
                 end)
-                task.wait(0.06)
+                task.wait(0.04)
             end
         end
         return botHasGun()
@@ -1278,7 +1278,7 @@ local function dropGunAt(target, boost)
         h.CFrame = CFrame.new(dropPos, face)
         zeroVel(h)
     end
-    task.wait(0.32)
+    task.wait(0.24)
     reset(true)
     return true
 end
@@ -1289,7 +1289,7 @@ function G.MM_WaitForGunPickup(target, timeout)
     local deadline = tick() + (timeout or 1.6)
     while tick() < deadline do
         if G.MM_TargetHasGun(target) then return true end
-        task.wait(0.08)
+        task.wait(0.05)
     end
     return G.MM_TargetHasGun(target)
 end
@@ -1348,7 +1348,7 @@ local function equipTool(tool)
     local hum = me.Character and me.Character:FindFirstChildOfClass("Humanoid")
     if tool and hum and tool.Parent ~= me.Character then
         pcall(function() hum:EquipTool(tool) end)
-        task.wait(0.08)
+        task.wait(0.05)
     end
     return tool and tool.Parent == me.Character
 end
@@ -1359,9 +1359,9 @@ do
         and cref(game:GetService("VirtualInputManager")) or nil
     local SHOOT_PREDICT_SEC = 0.16
     local SHOOT_RANGE, SHOOT_HEIGHT = 12, 7
-    local SHOOT_RELOAD_MIN = 2.35
+    local SHOOT_RELOAD_MIN = 2.05
     local SHOOT_TIMEOUT_SEC = 45
-    local FLY_UNDER, FLY_SPEED, FLY_CLIMB = 3.55, 78, 58
+    local FLY_UNDER, FLY_SPEED, FLY_CLIMB = 4.85, 56, 40
     local flyActive, flyGen, flyConn = false, 0, nil
 
     local function installShootHooks()
@@ -1549,39 +1549,40 @@ do
             installShootHooks()
             if gun.Parent ~= me.Character then
                 equipTool(gun)
-                task.wait(0.2)
+                task.wait(0.08)
             end
-            local aimPoint = getAimPoint(target)
-            if not aimPoint then return end
-            setShootAimTarget(target)
-            G.MM_ShootActive = true
             local mh = hrp()
             if not mh then return end
             pcall(function() mh.Anchored = false end)
-            zeroVel(mh)
-            mh.CFrame = shootCf
-            zeroVel(mh)
+            G.MM_ShootActive = true
             local shootCam = workspace.CurrentCamera
-            if shootCam then pcall(function() shootCam.CFrame = shootCf end) end
-            task.wait(0.1)
-            local mouseX, mouseY = 400, 300
-            if shootCam then
-                pcall(function()
-                    local sp = shootCam:WorldToViewportPoint(aimPoint)
-                    if sp.Z > 0 then mouseX, mouseY = sp.X, sp.Y end
-                end)
-            end
-            for _ = 1, 4 do
+            for _ = 1, 3 do
                 if not isAlive(target) or not isAlive(me) then break end
+                local aimPoint = getAimPoint(target)
+                local shootNow = getShootCFrame(target) or shootCf
+                if not aimPoint then break end
+                setShootAimTarget(target)
+                G.MM_ShootAimCf = CFrame.new(aimPoint)
+                zeroVel(mh)
+                mh.CFrame = shootNow
+                zeroVel(mh)
+                if shootCam then pcall(function() shootCam.CFrame = shootNow end) end
+                local mouseX, mouseY = 400, 300
+                if shootCam then
+                    pcall(function()
+                        local sp = shootCam:WorldToViewportPoint(aimPoint)
+                        if sp.Z > 0 then mouseX, mouseY = sp.X, sp.Y end
+                    end)
+                end
                 tryShootGunRemote(gun, aimPoint)
                 fireGunOnce(gun)
                 tryExecutorClick()
                 clickFire(mouseX, mouseY)
                 fired = true
                 if not isAlive(target) then break end
-                task.wait(0.12)
+                task.wait(0.08)
             end
-            if fired then task.wait(SHOOT_RELOAD_MIN) end
+            if fired and isAlive(target) then task.wait(SHOOT_RELOAD_MIN) end
         end)
         clearShootAimTarget()
         if not ok then log("shoot: " .. tostring(err)) end
@@ -1600,7 +1601,6 @@ do
         zeroVel(mh)
         mh.CFrame = cf
         zeroVel(mh)
-        task.wait(0.05)
         return fireGunAtTarget(target, gun, cf)
     end
 
@@ -1638,14 +1638,15 @@ do
                 return false, "No gun available"
             end
             pcall(function() shootPass(target) end)
-            tpHome()
             if not isAlive(target) then
+                tpHome()
                 return true, "Shot " .. shortName(target)
             end
+            tpHome()
             if not isAlive(me) then
                 return false, "Bot died"
             end
-            task.wait(math.random(12, 20) / 10)
+            task.wait(0.2)
         end
         if not isAlive(me) then return false, "Bot died" end
         if not isAlive(target) then return true, "Shot " .. shortName(target) end
@@ -1667,6 +1668,10 @@ do
         local h = hrp()
         if h then
             pcall(function()
+                local bv = h:FindFirstChild("MM_FlyBV")
+                if bv then bv:Destroy() end
+                local bg = h:FindFirstChild("MM_FlyBG")
+                if bg then bg:Destroy() end
                 h.Anchored = false
                 if G.MM_FlyHrpSize then
                     h.Size = G.MM_FlyHrpSize
@@ -1701,7 +1706,7 @@ do
         G.MM_ActionBegin()
         flyGen = flyGen + 1
         local gen = flyGen
-        local extraLift = 0
+        local flyHeight = nil
         local function flyStep()
             if gen ~= flyGen or not session.active or not flyActive then return end
             local pilot = findOwner()
@@ -1715,51 +1720,79 @@ do
             local char = me.Character
             if not (oh and ohum and mh) then return end
             local md = ohum.MoveDirection
-            local look = oh.CFrame.LookVector
-            local flatLook = Vector3.new(look.X, 0, look.Z)
-            if flatLook.Magnitude < 0.08 then
-                flatLook = Vector3.new(0, 0, -1)
-            else
-                flatLook = flatLook.Unit
-            end
             local move = Vector3.new(md.X, 0, md.Z)
             local now = tick()
             local dt = math.clamp(now - (G.MM_FlyLast or now), 0, 0.05)
+            if dt < 0.001 then dt = 0.016 end
             G.MM_FlyLast = now
+            if flyHeight == nil then
+                flyHeight = oh.Position.Y - FLY_UNDER
+            end
             local st = ohum:GetState()
-            if ohum.Jump or st == Enum.HumanoidStateType.Jumping or st == Enum.HumanoidStateType.Freefall then
-                extraLift = math.min(extraLift + FLY_CLIMB * dt, 90)
+            -- Jump only. Freefall is falling, not climb.
+            if ohum.Jump or st == Enum.HumanoidStateType.Jumping then
+                flyHeight = math.min(flyHeight + FLY_CLIMB * dt, 180)
             elseif st == Enum.HumanoidStateType.Crouching or ohum.Sit then
-                extraLift = math.max(extraLift - FLY_CLIMB * dt, 0)
+                flyHeight = math.max(flyHeight - FLY_CLIMB * dt, 3)
             end
-            local lead = Vector3.zero
+            local desired = Vector3.new(oh.Position.X, flyHeight, oh.Position.Z)
             if move.Magnitude > 0.08 then
-                lead = move.Unit * 1.25
+                local dir = move.Unit
+                desired = desired + Vector3.new(dir.X * 1.5, 0, dir.Z * 1.5)
             end
-            local pos = oh.Position + Vector3.new(0, -FLY_UNDER + extraLift, 0) + lead
             pcall(function()
-                if not G.MM_FlyHrpSize then G.MM_FlyHrpSize = mh.Size end
-                mh.Size = Vector3.new(5, 1.2, 5)
+                mh.Anchored = false
                 mh.CanCollide = true
-                mh.Anchored = true
                 local hum = char and char:FindFirstChildOfClass("Humanoid")
-                if hum then hum.PlatformStand = true end
+                if hum then
+                    hum.PlatformStand = true
+                    hum.AutoRotate = false
+                end
                 if char then
                     for _, part in ipairs(char:GetDescendants()) do
-                        if part:IsA("BasePart") and part ~= mh then
-                            part.CanCollide = false
+                        if part:IsA("BasePart") then
+                            part.CanCollide = true
                         end
                     end
                 end
             end)
-            mh.CFrame = CFrame.new(pos, pos + flatLook)
+            local delta = desired - mh.Position
+            local vel
+            if delta.Magnitude > 22 then
+                mh.CFrame = CFrame.new(desired)
+                vel = Vector3.zero
+            else
+                vel = delta / dt
+                local cap = 150
+                if vel.Magnitude > cap then
+                    vel = vel.Unit * cap
+                end
+            end
+            pcall(function()
+                local bv = mh:FindFirstChild("MM_FlyBV")
+                if not bv then
+                    bv = Instance.new("BodyVelocity")
+                    bv.Name = "MM_FlyBV"
+                    bv.MaxForce = Vector3.new(4e5, 4e5, 4e5)
+                    bv.Parent = mh
+                end
+                bv.Velocity = vel
+                local bg = mh:FindFirstChild("MM_FlyBG")
+                if not bg then
+                    bg = Instance.new("BodyGyro")
+                    bg.Name = "MM_FlyBG"
+                    bg.MaxTorque = Vector3.new(4e5, 4e5, 4e5)
+                    bg.Parent = mh
+                end
+                bg.CFrame = CFrame.new(mh.Position)
+            end)
+            mh.AssemblyLinearVelocity = vel
+            mh.AssemblyAngularVelocity = Vector3.zero
         end
-        pcall(function()
-            RunSvc:BindToRenderStep("MM_Fly", 200, flyStep)
-        end)
+        pcall(function() RunSvc:UnbindFromRenderStep("MM_Fly") end)
         flyConn = RunSvc.Heartbeat:Connect(flyStep)
-        log("fly: pad under " .. owner.Name)
-        return true, "Fly on — stand on the bot, walk to steer, jump to climb, !unfly to stop"
+        log("fly: vehicle under " .. owner.Name)
+        return true, "Fly on — stand on the bot, walk, jump to climb, crouch to drop, !unfly to stop"
     end
 
     function G.MM_CombatBusy()
@@ -1777,14 +1810,14 @@ do
     end
 end
 
-local STAB_PREDICT_T = 0.14
-local STAB_MAX_LEAD = 3
+local STAB_PREDICT_T = 0.12
+local STAB_MAX_LEAD = 2.6
 local STAB_MELEE_OFFSET = 1.05
 local STAB_MOVE_MIN = 2
 local STAB_IDLE_LOCAL = CFrame.new(-0.6, 0.08, 2.05)
-local STAB_SETTLE_SEC = 0.08
-local STAB_HOLD_SEC = 0.28
-local STAB_POST_STAB_SEC = 0.38
+local STAB_SETTLE_SEC = 0.04
+local STAB_HOLD_SEC = 0.07
+local STAB_POST_STAB_SEC = 0.11
 
 local function getStabHorizontalVelocity(th, hum, lastPos, lastT)
     local v = th.AssemblyLinearVelocity
@@ -1819,7 +1852,7 @@ local function getStabHorizontalVelocity(th, hum, lastPos, lastT)
 end
 
 local function getStabCFrame(target, lastPos, lastT)
-        local th = target.Character and target.Character:FindFirstChild("HumanoidRootPart")
+    local th = target.Character and target.Character:FindFirstChild("HumanoidRootPart")
     local hum = target.Character and target.Character:FindFirstChildOfClass("Humanoid")
     if not th then return end
     local anchor = th.Position + Vector3.new(0, 0.25, 0)
@@ -1844,13 +1877,46 @@ local function whisperCombatResult(msg)
     whisper(msg)
 end
 
-local function holdStabAt(mh, cf, seconds)
+local function holdStabAt(target, mh, seconds)
     local deadline = tick() + seconds
+    local lastPos
     while tick() < deadline do
-        zeroVel(mh)
-        mh.CFrame = cf
-        zeroVel(mh)
-        task.wait(0.06)
+        if not isAlive(target) or not isAlive(me) then return true end
+        local cf, cur = getStabCFrame(target, lastPos, tick())
+        if cf then
+            lastPos = cur
+            zeroVel(mh)
+            mh.CFrame = cf
+            zeroVel(mh)
+        end
+        task.wait(0.03)
+    end
+    return not isAlive(target)
+end
+
+local function slashKnife(knife, target)
+    if not knife then return end
+    local handle = knife:FindFirstChild("Handle") or knife:FindFirstChildWhichIsA("BasePart")
+    local th = target and target.Character and target.Character:FindFirstChild("HumanoidRootPart")
+    pcall(function()
+        local ks = knife:FindFirstChild("KnifeServer")
+        if ks and handle then
+            local c = (handle.CFrame * CFrame.new(0, 1, 0)).Position
+            local slash = ks:FindFirstChild("SlashStart")
+            if slash then slash:FireServer(1, c) end
+            local stab = ks:FindFirstChild("Stab")
+            if stab then stab:FireServer() end
+        end
+        local stab2 = knife:FindFirstChild("Stab")
+        if stab2 and stab2:IsA("RemoteEvent") then stab2:FireServer() end
+        knife:Activate()
+    end)
+    local fti = rawget(G, "firetouchinterest") or rawget(_G, "firetouchinterest")
+    if type(fti) == "function" and handle and th then
+        pcall(fti, handle, th, 0)
+        pcall(fti, handle, th, 1)
+        pcall(fti, th, handle, 0)
+        pcall(fti, th, handle, 1)
     end
 end
 
@@ -1867,24 +1933,16 @@ local function stabPass(target, lastPos, lastT)
     mh.CFrame = cf
     zeroVel(mh)
     task.wait(STAB_SETTLE_SEC)
-    cf = getStabCFrame(target, nil, nil) or cf
-    if cf then
-        zeroVel(mh)
-        mh.CFrame = cf
-        zeroVel(mh)
-    end
-    holdStabAt(mh, cf, STAB_HOLD_SEC)
-    pcall(function()
-        local handle = knife:FindFirstChild("Handle")
-        if knife:FindFirstChild("KnifeServer") and handle then
-            local c = (handle.CFrame * CFrame.new(0, 1, 0)).Position
-            knife.KnifeServer.SlashStart:FireServer(1, c)
-        end
-        knife:Activate()
-    end)
+    if not isAlive(target) then return true, curPos end
+    holdStabAt(target, mh, STAB_HOLD_SEC)
+    slashKnife(knife, target)
     pcall(function() knife:Activate() end)
-    holdStabAt(mh, cf, STAB_POST_STAB_SEC)
-    return true, curPos or (target.Character and target.Character:FindFirstChild("HumanoidRootPart") and target.Character.HumanoidRootPart.Position)
+    if isAlive(target) then
+        holdStabAt(target, mh, STAB_POST_STAB_SEC)
+        if isAlive(target) then slashKnife(knife, target) end
+    end
+    local fresh = target.Character and target.Character:FindFirstChild("HumanoidRootPart")
+    return true, (fresh and fresh.Position) or curPos
 end
 
 local STAB_TIMEOUT_SEC = 45
@@ -1900,24 +1958,23 @@ local function stabTargetLoop(target)
             return false, "Bot needs to be murderer"
         end
         local ok, curPos = stabPass(target, lastPos, lastT)
+        if not isAlive(target) then
+            tpHome()
+            stowKnife()
+            return true, "Killed " .. shortName(target)
+        end
         if not ok then
             return false, "Stab failed"
         end
         if curPos then lastPos, lastT = curPos, tick() end
-        task.wait(0.12)
         tpHome()
-        task.wait(0.08)
-        if not isAlive(target) then
-            stowKnife()
-            return true, "Killed " .. shortName(target)
-        end
         if not isAlive(me) then
             log("bot died during stab")
             return false, "Bot died"
         end
-        task.wait(math.random(10, 20) / 10)
+        task.wait(0.42)
     end
-    for _ = 1, 3 do tpHome(); task.wait(0.15) end
+    tpHome()
     if not isAlive(me) then
         log("bot died during stab")
         return false, "Bot died"
@@ -1947,7 +2004,7 @@ local function stabAllTargets()
             if not ok and msg == "Bot died" then
                 return false, msg
             end
-            task.wait(0.2)
+            task.wait(0.08)
         end
     end
     if attempted == 0 then return false, "No targets found" end
@@ -2274,7 +2331,7 @@ local COMMAND_HELP = {
     reveal = "Show current murderer and sheriff",
     stab = "all | sheriff | <name> - Murderer only, stab targets",
     shoot = "murderer | sheriff | <name> - Grab gun if dropped, silent-aim shoot",
-    fly = "Stand on the bot and fly the way you walk; jump climbs. !unfly to stop",
+    fly = "Stand on the bot; walk, jump to climb, crouch to drop. !unfly to stop",
     unfly = "Stop fly",
     togglereveal = "Toggle automatic role callout each round",
     togglealerts = "Toggle kill/drop/pickup alerts",

@@ -311,29 +311,42 @@ G.MM_OnPlayerKilled = nil
         local direct = RS:FindFirstChild(name)
         if direct and direct:IsA(className) then return direct end
         for _, d in ipairs(RS:GetDescendants()) do
-            if d.Name == name and d:IsA(className) then return d end
-        end
-    end
-    local function bindRemote(name, fn)
-        local ev = findRemote(name, "RemoteEvent") or findRemote(name, "UnreliableRemoteEvent")
-        if ev then
-            trackConnection(ev.OnClientEvent:Connect(fn))
-        end
-    end
-    pcall(function() bindRemote("UpdatePlayerData", ingest) end)
-    pcall(function() bindRemote("Fade", ingest) end)
-    pcall(function()
-        local ev = findRemote("RoleSelect", "RemoteEvent") or findRemote("RoleSelect", "UnreliableRemoteEvent")
-        if ev then
-            trackConnection(ev.OnClientEvent:Connect(function(role)
-                local rec = G.MM_PlayerData[me.Name] or {Dead = false, Killed = false}
-                rec.Role = role or rec.Role
-                G.MM_PlayerData[me.Name] = rec
-                if rec.Role == "Murderer" or rec.Role == "Sheriff" or rec.Role == "Hero" then
-                    G.MM_RoundLive = true
+            if d.Name == name and d:IsA(className) then
+                local skip = false
+                local p = d.Parent
+                while p and p ~= RS do
+                    if p.Name == "MainGUI" or p:IsA("GuiObject") or p:IsA("LayerCollector") then
+                        skip = true
+                        break
+                    end
+                    p = p.Parent
                 end
-            end))
+                if not skip then return d end
+            end
         end
+    end
+    local function connectClient(ev, fn)
+        if not ev then return end
+        if not (ev:IsA("RemoteEvent") or ev:IsA("UnreliableRemoteEvent")) then return end
+        local ok, conn = pcall(function()
+            return ev.OnClientEvent:Connect(fn)
+        end)
+        if ok then trackConnection(conn) end
+    end
+    -- Never bind the name "Fade": MM2 has Frames at MainGUI.Lobby.Fade and MainGUI.Game.Fade.
+    -- Player data comes from UpdatePlayerData + GetPlayerData.
+    pcall(function()
+        connectClient(findRemote("UpdatePlayerData", "RemoteEvent") or findRemote("UpdatePlayerData", "UnreliableRemoteEvent"), ingest)
+    end)
+    pcall(function()
+        connectClient(findRemote("RoleSelect", "RemoteEvent") or findRemote("RoleSelect", "UnreliableRemoteEvent"), function(role)
+            local rec = G.MM_PlayerData[me.Name] or {Dead = false, Killed = false}
+            rec.Role = role or rec.Role
+            G.MM_PlayerData[me.Name] = rec
+            if rec.Role == "Murderer" or rec.Role == "Sheriff" or rec.Role == "Hero" then
+                G.MM_RoundLive = true
+            end
+        end)
     end)
     pcall(function()
         local rem = RS:FindFirstChild("Remotes")
@@ -342,13 +355,11 @@ G.MM_OnPlayerKilled = nil
         if not (re and (re:IsA("RemoteEvent") or re:IsA("UnreliableRemoteEvent"))) then
             re = findRemote("RoundEndFade", "RemoteEvent") or findRemote("RoundEndFade", "UnreliableRemoteEvent")
         end
-        if re then
-            trackConnection(re.OnClientEvent:Connect(function()
-                G.MM_PlayerData = {}
-                G.MM_RoundLive = false
-                G.MM_SuppressGunDrop = nil
-            end))
-        end
+        connectClient(re, function()
+            G.MM_PlayerData = {}
+            G.MM_RoundLive = false
+            G.MM_SuppressGunDrop = nil
+        end)
     end)
     G.MM_FindRole = function(want)
         for _, p in ipairs(Players:GetPlayers()) do

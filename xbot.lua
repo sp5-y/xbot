@@ -1,4 +1,4 @@
---[[ Xeno V1.04 XBOT_BUILD 20261006o ]]--
+--[[ Xeno V1.04 XBOT_BUILD 20261006q ]]--
 local GRAPHICS = true
 local TARGET_FPS = 50
 local Players = game:GetService("Players")
@@ -1533,6 +1533,23 @@ local function tpHome()
         zeroVel(h)
     end
 end
+local function goSpawnWhenReady()
+    task.spawn(function()
+        for _ = 1, 30 do
+            if not session.active then return end
+            if _G.MM_ShootBusy or _G.MM_GunBusy or _G.MM_StabBusy then return end
+            if hrp() then
+                tpHome()
+                return
+            end
+            task.wait(0.12)
+        end
+    end)
+end
+if me.Character then goSpawnWhenReady() end
+trackConnection(me.CharacterAdded:Connect(function()
+    goSpawnWhenReady()
+end))
 local function reset(stay)
     stopFollow()
     if stay and G.MM_DieInPlace then
@@ -1686,11 +1703,12 @@ local function equipTool(tool)
     return tool and tool.Parent == me.Character
 end
 
---[[ Sheriff shoot — move gun Handle to 30 studs, fire, character stays. ]]--
+--[[ Sheriff shoot — perch just above target, silent-aim hit pos, go home. ]]--
 do
     G.MM_ShootActive = false
-    local RANGE = 30
-    local HOLD = 0.45
+    local KNIFE_CLEAR = 11
+    local ABOVE = 12
+    local HOLD = 0.42
     local function headOf(target)
         local char = target and target.Character
         return char and (char:FindFirstChild("Head") or char:FindFirstChild("HumanoidRootPart"))
@@ -1703,78 +1721,73 @@ do
         pcall(function() vel = root.AssemblyLinearVelocity end)
         return head.Position + Vector3.new(vel.X, 0, vel.Z) / 40
     end
-    local function gunOrigin(look)
-        local back = Vector3.new(1, 0, 0)
-        local h = hrp()
-        if h then
-            local d = Vector3.new(h.Position.X - look.X, 0, h.Position.Z - look.Z)
-            if d.Magnitude > 1 then back = d.Unit end
-        end
-        return look + back * RANGE + Vector3.new(0, 3, 0)
+    local function rayParams(target)
+        local p = RaycastParams.new()
+        p.FilterType = Enum.RaycastFilterType.Exclude
+        p.IgnoreWater = true
+        local filter = {}
+        if me.Character then filter[#filter + 1] = me.Character end
+        if target.Character then filter[#filter + 1] = target.Character end
+        p.FilterDescendantsInstances = filter
+        return p
     end
-    local function disableGrips(handle)
-        local char = me.Character
-        if not (handle and char) then return end
-        for _, d in ipairs(char:GetDescendants()) do
-            if (d:IsA("Weld") or d:IsA("Motor6D") or d:IsA("WeldConstraint"))
-                and (d.Name == "RightGrip" or d.Part0 == handle or d.Part1 == handle) then
-                pcall(function() d.Enabled = false end)
-            end
-        end
-        for _, d in ipairs(handle:GetChildren()) do
-            if d:IsA("Weld") or d:IsA("Motor6D") or d:IsA("WeldConstraint") then
-                pcall(function() d.Enabled = false end)
-            end
-        end
+    local function hasLos(from, look, params)
+        local delta = look - from
+        if delta.Magnitude < 0.2 then return true end
+        local hit = workspace:Raycast(from, delta, params)
+        return not hit or (hit.Position - look).Magnitude < 5
     end
-    local function enableGrips(handle)
-        local char = me.Character
-        if not (handle and char) then return end
-        for _, d in ipairs(char:GetDescendants()) do
-            if d.Name == "RightGrip" or ((d:IsA("Weld") or d:IsA("Motor6D") or d:IsA("WeldConstraint"))
-                and (d.Part0 == handle or d.Part1 == handle)) then
-                pcall(function() d.Enabled = true end)
-            end
+    local function tryPerch(look, offset, params)
+        local pos = look + offset
+        if (pos - look).Magnitude < KNIFE_CLEAR then return end
+        if hasLos(pos, look, params) then
+            return CFrame.lookAt(pos, look)
         end
     end
-    local function plantGunAndFire(target, gun)
-        local look = aimPoint(target)
-        local handle = gun and gun:FindFirstChild("Handle")
-        if not look then return false end
-        local cf = CFrame.lookAt(gunOrigin(look), look)
-        local conn
-        if handle then
-            disableGrips(handle)
-            pcall(function()
-                handle.Anchored = true
-                handle.CFrame = cf
-            end)
-            conn = RunSvc.Heartbeat:Connect(function()
-                disableGrips(handle)
-                pcall(function()
-                    handle.CFrame = cf
-                    cam.CameraType = Enum.CameraType.Scriptable
-                    cam.CFrame = cf
-                end)
-            end)
+    local function perchCf(target, look)
+        local params = rayParams(target)
+        local upHit = workspace:Raycast(look + Vector3.new(0, 1, 0), Vector3.new(0, 22, 0), params)
+        if upHit then
+            local room = upHit.Position.Y - look.Y - 1.4
+            if room >= KNIFE_CLEAR then
+                local pos = Vector3.new(look.X, look.Y + room, look.Z)
+                if hasLos(pos, look, params) then
+                    return CFrame.lookAt(pos, look)
+                end
+            end
         else
-            conn = RunSvc.Heartbeat:Connect(function()
-                pcall(function()
-                    cam.CameraType = Enum.CameraType.Scriptable
-                    cam.CFrame = cf
-                end)
-            end)
+            local above = tryPerch(look, Vector3.new(0, ABOVE, 0), params)
+            if above then return above end
         end
-        task.wait(0.08)
+        local sides = {
+            Vector3.new(0, ABOVE, 0),
+            Vector3.new(9, 10, 0),
+            Vector3.new(-9, 10, 0),
+            Vector3.new(0, 10, 9),
+            Vector3.new(0, 10, -9),
+            Vector3.new(8, 10, 8),
+            Vector3.new(-8, 10, -8),
+            Vector3.new(8, 10, -8),
+            Vector3.new(-8, 10, 8),
+        }
+        for i = 1, #sides do
+            local cf = tryPerch(look, sides[i], params)
+            if cf then return cf end
+        end
+        return CFrame.lookAt(look + Vector3.new(0, ABOVE, 0), look)
+    end
+    local function silentFire(gun, look)
+        local rf = gun:FindFirstChild("ShootGun", true)
+        if not rf then
+            pcall(function() gun:WaitForChild("ShootGun", 0.4) end)
+            rf = gun:FindFirstChild("ShootGun", true)
+        end
+        if rf and rf:IsA("RemoteFunction") then
+            pcall(function() rf:InvokeServer(tick(), look) end)
+        elseif rf and rf:IsA("RemoteEvent") then
+            pcall(function() rf:FireServer(tick(), look) end)
+        end
         pcall(function() gun:Activate() end)
-        task.wait(HOLD)
-        if conn then pcall(function() conn:Disconnect() end) end
-        if handle then
-            pcall(function() handle.Anchored = false end)
-            enableGrips(handle)
-        end
-        pcall(function() cam.CameraType = Enum.CameraType.Custom end)
-        return true
     end
     local function resolveShootTarget(query)
         query = tostring(query or ""):match("^%s*(.-)%s*$") or ""
@@ -1796,7 +1809,28 @@ do
         return picked, nil
     end
     local function shootOnce(target, gun)
-        return plantGunAndFire(target, gun)
+        local look = aimPoint(target)
+        local h = hrp()
+        if not (look and h and gun) then return false end
+        local cf = perchCf(target, look)
+        local conn = RunSvc.Heartbeat:Connect(function()
+            look = aimPoint(target) or look
+            cf = CFrame.lookAt(cf.Position, look)
+            local nh = hrp()
+            if not nh then return end
+            pcall(function()
+                nh.AssemblyLinearVelocity = Vector3.zero
+                nh.CFrame = cf
+                cam.CFrame = CFrame.lookAt(cf.Position + Vector3.new(0, 1.4, 0), look)
+            end)
+        end)
+        task.wait(0.1)
+        look = aimPoint(target) or look
+        silentFire(gun, look)
+        task.wait(HOLD)
+        if conn then pcall(function() conn:Disconnect() end) end
+        tpHome()
+        return true
     end
     local function shootTargetLoop(target)
         G.MM_ShootActive = true
@@ -2384,7 +2418,7 @@ end
 local COMMAND_HELP = {
     reveal = "Show current murderer and sheriff",
     stab = "all | sheriff | <name> - Murderer only, stab targets",
-    shoot = "murderer | sheriff | <name> - Plants gun 30 studs out and fires",
+    shoot = "murderer | sheriff | <name> - Perch above, silent-aim, return to spawn",
     togglereveal = "Toggle automatic role callout each round",
     togglealerts = "Toggle kill alerts (ignores resets)",
     togglereset = "Toggle auto-reset when owner dies",
@@ -4265,48 +4299,59 @@ while session.active and gui.Parent do
         local botM = (m == me) or botHasKnife()
         local roundActive = isRoundActive()
 
+    local liveNow = (G.MM_RoundLive == true) or (m ~= nil) or botM
     if m then
         if lastMurderId ~= m.UserId then
             lastMurderId = m.UserId
+            announced = false
             pcall(function() img.Image = Players:GetUserThumbnailAsync(m.UserId, Enum.ThumbnailType.HeadShot, Enum.ThumbnailSize.Size150x150) end)
             lbl.Text = m.DisplayName
         end
         f.Visible = true
-    else f.Visible, lastMurderId = false, nil end
+    else
+        f.Visible = false
+        if lastMurderId then
+            lastMurderId = nil
+            announced = false
+        end
+    end
+    if not liveNow then
+        announced, gunDelivered, shootDone, revealAnnouncePending = false, false, false, false
+        ownerMurdStashBusy = false
+        roleAnnounceUnlockAt = 0
+    end
 
     if (m or botM) and not announced then
         announced = true
-            gunDelivered = false
-            shootDone = false
-            revealAnnouncePending = true
-            tpHome()
-        local owner = findOwner()
+        gunDelivered = false
+        shootDone = false
+        revealAnnouncePending = true
+        tpHome()
+        local owner = findOwner() or findConfiguredOwner()
         task.spawn(function()
-                local curM, curS, curBotM, curBotS = resolveRoleSnapshot(2.5)
-
-                if toggleReveal and resolveWhisperTarget() then
-                    local ok
-                    ok, curM, curS, curBotM, curBotS = waitForRoleCallouts(curM, curS, curBotM, curBotS)
-                    if not ok then
-                        curM, curS, curBotM, curBotS = resolveRoleSnapshot(0.5)
+            local curM, curS, curBotM, curBotS = resolveRoleSnapshot(2.5)
+            if toggleReveal then
+                local ok
+                ok, curM, curS, curBotM, curBotS = waitForRoleCallouts(curM, curS, curBotM, curBotS)
+                if not ok then
+                    curM, curS, curBotM, curBotS = resolveRoleSnapshot(0.5)
+                    pcall(function()
+                        sendRoundRoleCallouts(curM, curS, curBotM, curBotS)
+                    end)
                 end
             else
-                    curM, curS, curBotM, curBotS = resolveRoleSnapshot(0.5)
-                end
+                curM, curS, curBotM, curBotS = resolveRoleSnapshot(0.5)
+            end
 
-                if curBotM and owner and curS and owner.UserId == curS.UserId then
-                    tpTo(owner)
-                elseif session.ownerId and not curBotM then
-                    tpHome()
-                end
+            if curBotM and owner and curS and owner.UserId == curS.UserId then
+                tpTo(owner)
+            elseif not curBotM then
+                tpHome()
+            end
 
-                roleAnnounceUnlockAt = tick() + 0.35
-                revealAnnouncePending = false
+            roleAnnounceUnlockAt = tick() + 0.35
+            revealAnnouncePending = false
         end)
-    elseif not roundActive then
-            announced, gunDelivered, shootDone, revealAnnouncePending = false, false, false, false
-            ownerMurdStashBusy = false
-        roleAnnounceUnlockAt = 0
     end
 
     local ownerForDrop = findOwner()

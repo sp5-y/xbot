@@ -1,4 +1,4 @@
---[[ Xeno V1.03 XBOT_BUILD 20261006c ]]--
+--[[ Xeno V1.03 XBOT_BUILD 20261006d ]]--
 local Players = game:GetService("Players")
 local cref = cloneref or function(x) return x end
 local TCS = cref(game:GetService("TextChatService"))
@@ -27,6 +27,9 @@ local shootDone = false
 local hopBusy = false
 local PING_MIN_MS, PING_MAX_MS = 50, 90
 local G = getgenv and getgenv() or _G
+-- true = keep 3D on (no white screen). false = background mode for farm bots.
+local GRAPHICS = G.xeno_graphics ~= on
+local TARGET_FPS = tonumber(G.xeno_fps) or 50
 local XENO_OWNER_USERNAME = tostring(G.xeno_roblox or _G.xeno_roblox or xeno_roblox or ""):match("^%s*(.-)%s*$") or ""
 local XENO_OWNER_DISCORD = tostring(G.xeno_discord or _G.xeno_discord or xeno_discord or ""):match("^%s*(.-)%s*$") or ""
 local PUBLIC_MODE = G.public_mode == true or _G.public_mode == true
@@ -89,16 +92,11 @@ cam.FieldOfView = DEFAULT_FOV
 do local h = me.Character and me.Character:FindFirstChildOfClass("Humanoid") 
    if h then cam.CameraSubject = h end end
 
---[[ Background mode (low CPU, muted, no 3D) ]]--
--- Hold RightAlt to disable. Auto-disables when script is re-executed.
+--[[ Render / FPS ]]--
+-- GRAPHICS on = normal view. GRAPHICS off = white/blank 3D off (old farm mode).
 task.spawn(function()
-    local UIS = game:GetService("UserInputService")
     local VU = game:GetService("VirtualUser")
-    local RunSvc = game:GetService("RunService")
     local UGS = UserSettings():GetService("UserGameSettings")
-    local origQuality = settings().Rendering.QualityLevel
-    local origVolume = UGS.MasterVolume
-    UGS.MasterVolume = 0
     pcall(function()
         trackConnection(Players.LocalPlayer.Idled:Connect(function()
             if not session.active then return end
@@ -106,19 +104,15 @@ task.spawn(function()
             VU:ClickButton2(Vector2.new(math.random(10, 50), math.random(10, 50)))
         end))
     end)
-    while session.active and not UIS:IsKeyDown(Enum.KeyCode.RightAlt) do
-        pcall(function()
-            if setfpscap then setfpscap(15) end
-            settings().Rendering.QualityLevel = 1
-            RunSvc:Set3dRenderingEnabled(false)
-        end)
-        task.wait(1)
-    end
     pcall(function()
-        RunSvc:Set3dRenderingEnabled(true)
-        settings().Rendering.QualityLevel = origQuality
-        UGS.MasterVolume = origVolume
-        if setfpscap then setfpscap(60) end
+        RunSvc:Set3dRenderingEnabled(GRAPHICS)
+        if setfpscap then setfpscap(TARGET_FPS) end
+        if GRAPHICS then
+            settings().Rendering.QualityLevel = Enum.QualityLevel.Automatic
+        else
+            settings().Rendering.QualityLevel = 1
+            UGS.MasterVolume = 0
+        end
     end)
 end)
 
@@ -1743,29 +1737,11 @@ do
                     pcall(function() name = self.Name end)
                     local args = { ... }
                     local aim = G.MM_ComputeShootAim and G.MM_ComputeShootAim()
+                    -- Rewrite the gun LocalScript's own shot only. Do not invent args.
                     if aim and method == "InvokeServer" and name == "ShootGun" then
                         if typeof(args[2]) == "Vector3" then args[2] = aim
-                        elseif typeof(args[1]) == "Vector3" then args[1] = aim
-                        else args[2] = aim end
+                        elseif typeof(args[1]) == "Vector3" then args[1] = aim end
                         if oldNamecall then return oldNamecall(self, unpack(args)) end
-                    end
-                    if aim and method == "FireServer" and (name == "ShootGun" or name == "Shoot") then
-                        if typeof(args[2]) == "Vector3" then args[2] = aim
-                        elseif typeof(args[2]) == "CFrame" then args[2] = CFrame.new(aim)
-                        elseif typeof(args[1]) == "Vector3" then args[1] = aim
-                        end
-                        if oldNamecall then return oldNamecall(self, unpack(args)) end
-                    end
-                    if aim and method == "Raycast" and self == workspace then
-                        local part = G.MM_ShootAimPart
-                        local origin = args[1]
-                        return {
-                            Position = aim,
-                            Instance = part,
-                            Normal = Vector3.new(0, 1, 0),
-                            Material = Enum.Material.Plastic,
-                            Distance = typeof(origin) == "Vector3" and (aim - origin).Magnitude or 0,
-                        }
                     end
                 end
                 if oldNamecall then return oldNamecall(self, ...) end
@@ -1822,7 +1798,7 @@ do
         installShootHooks()
         if gun.Parent ~= me.Character then
             equipTool(gun)
-            task.wait(0.04)
+            task.wait(0.06)
         end
         local part = target.Character and (target.Character:FindFirstChild("Head") or target.Character:FindFirstChild("HumanoidRootPart"))
         G.MM_ShootTarget = target
@@ -1835,26 +1811,8 @@ do
         if shootCam and mh then
             pcall(function() shootCam.CFrame = CFrame.lookAt(mh.Position + Vector3.new(0, 1.5, 0), aim) end)
         end
-        local rf = gun:FindFirstChild("ShootGun", true)
-        if rf then
-            if rf:IsA("RemoteFunction") then
-                return pcall(function() rf:InvokeServer(tick(), aim) end)
-            end
-            if rf:IsA("RemoteEvent") then
-                return pcall(function() rf:FireServer(tick(), aim) end)
-            end
-        end
-        local shootEv = gun:FindFirstChild("Shoot")
-        if shootEv and shootEv:IsA("RemoteEvent") and mh then
-            return pcall(function() shootEv:FireServer(mh.CFrame, CFrame.new(aim)) end)
-        end
+        -- Never InvokeServer ShootGun ourselves — MM2 kicks that. Let the gun LocalScript fire.
         pcall(function() gun:Activate() end)
-        if getconnections then
-            pcall(function()
-                local c = getconnections(gun.Activated)
-                if type(c) == "table" and c[1] then pcall(function() c[1]:Fire() end) end
-            end)
-        end
         return true
     end
 

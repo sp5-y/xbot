@@ -1,4 +1,4 @@
---[[ Xeno V1.04 XBOT_BUILD 20261006e ]]--
+--[[ Xeno V1.04 XBOT_BUILD 20261006f ]]--
 local GRAPHICS = true
 local TARGET_FPS = 50
 local Players = game:GetService("Players")
@@ -1685,95 +1685,25 @@ local function equipTool(tool)
     return tool and tool.Parent == me.Character
 end
 
---[[ Sheriff shoot (scoped to stay under Luau's 200-local limit) ]]--
--- MM2 gun: ShootGun:InvokeServer(tick(), hitPos). Silent aim rewrites arg 2.
--- Range is map-wide — do NOT TP onto the murderer (knife range ~16).
+--[[ Sheriff shoot — look at target, Activate once. No remotes, no hooks. ]]--
 do
-    local SHOOT_RELOAD_MIN = 2.15
-    local SHOOT_TIMEOUT_SEC = 8
-    local SHOOT_MAX = 3
-    local KNIFE_DANGER = 22
-
-    G.MM_ComputeShootAim = function()
-        local target = G.MM_ShootTarget
-        if not (target and target.Character) then return end
-        local root = target.Character:FindFirstChild("HumanoidRootPart") or target.Character.PrimaryPart
-        local head = target.Character:FindFirstChild("Head")
-        if not root then return end
-        local vel = root.AssemblyLinearVelocity
-        if vel.Magnitude < 1e-3 then vel = root.Velocity end
-        local pingMs = getPingMs() or 80
-        local t = math.clamp((pingMs / 1000) * 0.45 + 0.08, 0.06, 0.22)
-        local lead = Vector3.new(vel.X, 0, vel.Z) * t
-        if lead.Magnitude > 12 then lead = lead.Unit * 12 end
-        local base = head and head.Position or (root.Position + Vector3.new(0, 1.2, 0))
-        return base + lead
-    end
-
-    local function clearShootAimTarget()
-        G.MM_ShootActive = false
-        G.MM_ShootTarget = nil
-        G.MM_ShootAimPart, G.MM_ShootAimCf = nil, nil
-    end
-
-    local function distToTarget(target)
-        local a = hrp()
-        local b = target and target.Character and target.Character:FindFirstChild("HumanoidRootPart")
-        if not (a and b) then return math.huge end
-        return (a.Position - b.Position).Magnitude
-    end
-
-    local function leaveIfClose(target)
-        if distToTarget(target) < KNIFE_DANGER then
-            tpHome()
-        end
-    end
-
-    local function pickUpDroppedGun()
-        if G.MM_GrabDroppedGun then return G.MM_GrabDroppedGun(3.2) end
-        if botHasGun() then return true end
+    G.MM_ShootActive = false
+    local function aimAt(target)
+        local char = target and target.Character
+        local head = char and (char:FindFirstChild("Head") or char:FindFirstChild("HumanoidRootPart"))
         local h = hrp()
-        if not (h and isAlive(me)) then return false end
-        local drop = workspace:FindFirstChild("GunDrop") or findDroppedGun()
-        if drop and drop:IsA("BasePart") then
-            pcall(function()
-                h.CFrame = drop.CFrame + Vector3.new(0, 2.2, 0)
-            end)
-        end
-        local t0 = tick()
-        while session.active and tick() - t0 < 3 do
-            if botHasGun() then return true end
-            task.wait(0.05)
-        end
-        return botHasGun()
-    end
-
-    local function fireSilentShot(target, gun)
-        if not gun or not isAlive(target) or not isAlive(me) then return false end
-        if gun.Parent ~= me.Character then
-            equipTool(gun)
-            task.wait(0.06)
-        end
-        G.MM_ShootTarget = target
-        -- Do not set MM_ShootActive — leftover hookmetamethod from an old inject will crash Roblox.
-        local aim = G.MM_ComputeShootAim and G.MM_ComputeShootAim()
-        if not aim then return false end
-        local mh = hrp()
-        local shootCam = workspace.CurrentCamera
-        if shootCam and mh then
-            pcall(function() shootCam.CFrame = CFrame.lookAt(mh.Position + Vector3.new(0, 1.5, 0), aim) end)
-        end
-        pcall(function() gun:Activate() end)
+        if not (head and h) then return false end
+        pcall(function()
+            workspace.CurrentCamera.CFrame = CFrame.lookAt(h.Position + Vector3.new(0, 1.5, 0), head.Position)
+        end)
         return true
     end
-
     local function resolveShootTarget(query)
         query = tostring(query or ""):match("^%s*(.-)%s*$") or ""
         local first = query:lower():match("^(%S+)") or ""
         if first == "" or first == "murder" or first == "murd" or first == "murderer" then
             local murd = (G.MM_FindRole and G.MM_FindRole("Murderer")) or findHolder({"Knife"})
             if murd and murd ~= me then return murd, nil end
-            if first == "" then return nil, "Murderer not found — try !shoot <name>" end
             return nil, "Murderer not found"
         end
         if first == "sheriff" or first == "sher" or first == "sherif" then
@@ -1787,68 +1717,31 @@ do
         if not picked then return nil, "Player not found" end
         return picked, nil
     end
-
     local function shootTargetLoop(target)
-        if target == me then return false, "Invalid target" end
-        if not isAlive(target) then return false, "Player not found" end
-        if botHasKnife() then return false, "Bot is murderer — no gun" end
-        if not botHasGun() and not pickUpDroppedGun() then return false, "No gun available" end
-        tpHome()
-        leaveIfClose(target)
-        local gun = getHeldTool(me, G.MM_GunNames)
-        if not gun or not equipTool(gun) then return false, "No gun available" end
-        G.MM_ShootTarget = target
         G.MM_ShootActive = false
-        local started = tick()
-        local shots = 0
-        while session.active and isAlive(me) and isAlive(target) and shots < SHOOT_MAX and (tick() - started) < SHOOT_TIMEOUT_SEC do
-            if botHasKnife() then
-                clearShootAimTarget()
-                tpHome()
-                return false, "Bot is murderer — no gun"
-            end
-            if not botHasGun() then
-                if not pickUpDroppedGun() then
-                    clearShootAimTarget()
-                    return false, "No gun available"
-                end
-                tpHome()
-            end
-            leaveIfClose(target)
-            gun = getHeldTool(me, G.MM_GunNames)
-            if not gun then break end
-            pcall(function() fireSilentShot(target, gun) end)
-            shots = shots + 1
-            task.wait(0.12)
-            if not isAlive(target) then
-                clearShootAimTarget()
-                tpHome()
-                return true, "Shot " .. shortName(target)
-            end
-            tpHome()
-            if not isAlive(me) then
-                clearShootAimTarget()
-                return false, "Bot died"
-            end
-            if shots < SHOOT_MAX and isAlive(target) then
-                task.wait(SHOOT_RELOAD_MIN)
+        if target == me or not isAlive(target) then return false, "Player not found" end
+        if botHasKnife() then return false, "Bot is murderer — no gun" end
+        if not botHasGun() then
+            if not (G.MM_GrabDroppedGun and G.MM_GrabDroppedGun(2.5)) then
+                return false, "No gun available"
             end
         end
-        clearShootAimTarget()
+        local gun = getHeldTool(me, G.MM_GunNames)
+        if not gun or not equipTool(gun) then return false, "No gun available" end
         tpHome()
-        if not isAlive(me) then return false, "Bot died" end
+        if not aimAt(target) then return false, "Player not found" end
+        pcall(function() gun:Activate() end)
+        task.wait(0.2)
         if not isAlive(target) then return true, "Shot " .. shortName(target) end
-        if (tick() - started) >= SHOOT_TIMEOUT_SEC then return true, "Shoot timed out" end
-        return true, "Stopped shooting " .. shortName(target)
+        return true, "Fired at " .. shortName(target)
     end
-
     function G.MM_CombatBusy()
         return G.MM_StabBusyActive() or _G.MM_GunBusy or _G.MM_ShootBusy
     end
     G.MM_ShootTargetLoop = shootTargetLoop
     G.MM_ResolveShootTarget = resolveShootTarget
     G.MM_EnsureShootGun = function()
-        return botHasGun() or pickUpDroppedGun()
+        return botHasGun() or (G.MM_GrabDroppedGun and G.MM_GrabDroppedGun(2.5))
     end
 end
 

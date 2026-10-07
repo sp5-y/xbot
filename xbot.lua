@@ -1,4 +1,4 @@
---[[ Xeno V1.04 XBOT_BUILD 20261006r ]]--
+--[[ Xeno V1.04 XBOT_BUILD 20261006s ]]--
 local GRAPHICS = true
 local TARGET_FPS = 50
 local Players = game:GetService("Players")
@@ -1717,42 +1717,73 @@ do
         end
         return root.Position + vel / 40
     end
+    local function isRemote(x)
+        return x and (x:IsA("RemoteFunction") or x:IsA("RemoteEvent"))
+    end
     local function shootRemote(gun)
-        pcall(function() gun:WaitForChild("ShootGun", 1) end)
-        local r = gun:FindFirstChild("ShootGun", true)
-        if r and (r:IsA("RemoteFunction") or r:IsA("RemoteEvent")) then return r end
+        local kl = gun:FindFirstChild("KnifeLocal", true)
+        if kl then
+            local beam = kl:FindFirstChild("CreateBeam", true)
+            if beam then
+                local rf = beam:FindFirstChildWhichIsA("RemoteFunction") or beam:FindFirstChildWhichIsA("RemoteEvent")
+                if isRemote(rf) then return rf, "beam" end
+                if isRemote(beam) then return beam, "beam" end
+            end
+        end
+        local beam = gun:FindFirstChild("CreateBeam", true)
+        if beam then
+            local rf = beam:FindFirstChildWhichIsA("RemoteFunction") or beam:FindFirstChildWhichIsA("RemoteEvent")
+            if isRemote(rf) then return rf, "beam" end
+            if isRemote(beam) then return beam, "beam" end
+        end
+        local sg = gun:FindFirstChild("ShootGun", true)
+        if isRemote(sg) then return sg, "classic" end
+        for _, d in ipairs(gun:GetDescendants()) do
+            if d:IsA("RemoteFunction") then return d, "beam" end
+        end
         if getsenv then
             local ls = gun:FindFirstChildWhichIsA("LocalScript", true)
             if ls then
                 local ok, env = pcall(getsenv, ls)
                 if ok and type(env) == "table" then
                     for _, v in pairs(env) do
-                        if typeof(v) == "Instance" and (v:IsA("RemoteFunction") or v:IsA("RemoteEvent")) then
-                            if v.Name == "ShootGun" or tostring(v) == "ShootGun" then
-                                return v
-                            end
-                        end
-                    end
-                    for _, v in pairs(env) do
-                        if typeof(v) == "Instance" and (v:IsA("RemoteFunction") or v:IsA("RemoteEvent")) then
-                            return v
-                        end
+                        if isRemote(v) then return v, "beam" end
                     end
                 end
             end
         end
     end
     local function silentFire(gun, pos)
-        local rf = shootRemote(gun)
+        local rf, kind = shootRemote(gun)
         if not rf then
-            log("shoot: ShootGun missing")
+            log("shoot: no gun remote (KnifeLocal.CreateBeam / ShootGun)")
             return false
         end
-        local t = tick()
-        if rf:IsA("RemoteFunction") then
-            return pcall(function() rf:InvokeServer(t, pos) end)
+        log("shoot remote: " .. rf:GetFullName())
+        local function invoke(a, b, c)
+            if rf:IsA("RemoteFunction") then
+                return pcall(function()
+                    if c ~= nil then
+                        rf:InvokeServer(a, b, c)
+                    else
+                        rf:InvokeServer(a, b)
+                    end
+                end)
+            end
+            return pcall(function()
+                if c ~= nil then
+                    rf:FireServer(a, b, c)
+                else
+                    rf:FireServer(a, b)
+                end
+            end)
         end
-        return pcall(function() rf:FireServer(t, pos) end)
+        if kind == "classic" then
+            if invoke(tick(), pos) then return true end
+            return invoke(1, pos, "AH2")
+        end
+        if invoke(1, pos, "AH2") then return true end
+        return invoke(tick(), pos)
     end
     local function resolveShootTarget(query)
         query = tostring(query or ""):match("^%s*(.-)%s*$") or ""

@@ -1,4 +1,4 @@
---[[ Xeno V1.04 XBOT_BUILD 20261006l ]]--
+--[[ Xeno V1.04 XBOT_BUILD 20261006m ]]--
 local GRAPHICS = true
 local TARGET_FPS = 50
 local Players = game:GetService("Players")
@@ -1698,12 +1698,52 @@ do
         pcall(function() vel = head.AssemblyLinearVelocity end)
         return head.Position + Vector3.new(vel.X, 0, vel.Z) * 0.12
     end
+    local function isShootRemote(x)
+        return x and (x:IsA("RemoteFunction") or x:IsA("RemoteEvent"))
+    end
     local function shootRemote(gun)
         local r = gun:FindFirstChild("ShootGun")
-        if r then return r end
+        if isShootRemote(r) then return r end
         for _, d in ipairs(gun:GetDescendants()) do
-            if d.Name == "ShootGun" then return d end
+            if isShootRemote(d) and d.Name:lower():find("shoot", 1, true) then
+                return d
+            end
         end
+        if getsenv then
+            local ls = gun:FindFirstChildWhichIsA("LocalScript", true)
+            if ls then
+                local ok, env = pcall(getsenv, ls)
+                if ok and type(env) == "table" then
+                    for _, v in pairs(env) do
+                        if isShootRemote(v) then return v end
+                    end
+                end
+            end
+        end
+        for _, d in ipairs(gun:GetDescendants()) do
+            if isShootRemote(d) then return d end
+        end
+    end
+    local function fireRemote(rf, look)
+        local t = tick()
+        local calls
+        if rf:IsA("RemoteFunction") then
+            calls = {
+                function() rf:InvokeServer(t, look) end,
+                function() rf:InvokeServer(t, CFrame.new(look)) end,
+                function() rf:InvokeServer(look) end,
+            }
+        else
+            calls = {
+                function() rf:FireServer(t, look) end,
+                function() rf:FireServer(t, CFrame.new(look)) end,
+                function() rf:FireServer(look) end,
+            }
+        end
+        for i = 1, #calls do
+            if pcall(calls[i]) then return true end
+        end
+        return false
     end
     local function resolveShootTarget(query)
         query = tostring(query or ""):match("^%s*(.-)%s*$") or ""
@@ -1729,21 +1769,15 @@ do
         if not head then return false end
         local look = aimPoint(head)
         local rf = shootRemote(gun)
-        if not rf then return false end
-        local t = tick()
-        local ok = false
-        if rf:IsA("RemoteFunction") then
-            ok = pcall(function() rf:InvokeServer(t, look) end)
-        elseif rf:IsA("RemoteEvent") then
-            ok = pcall(function() rf:FireServer(t, look) end)
-        end
-        return ok
+        if rf and fireRemote(rf, look) then return true end
+        pcall(function() gun:Activate() end)
+        return true
     end
     local function shootTargetLoop(target)
         G.MM_ShootActive = true
         if target == me then
             G.MM_ShootActive = false
-            return false, "Player not found"
+            return false, "Can't shoot the bot"
         end
         if botHasKnife() then
             G.MM_ShootActive = false
@@ -1752,6 +1786,10 @@ do
         local name = shortName(target)
         local deadline = tick() + 28
         while G.MM_ShootActive and tick() < deadline do
+            if not Players:GetPlayerByUserId(target.UserId) then
+                G.MM_ShootActive = false
+                return false, name .. " left"
+            end
             if not isAlive(target) then
                 G.MM_ShootActive = false
                 return true, "Shot " .. name
@@ -1772,11 +1810,7 @@ do
                 G.MM_ShootActive = false
                 return false, "No gun available"
             end
-            if not shootOnce(target, gun) then
-                G.MM_ShootActive = false
-                if not isAlive(target) then return true, "Shot " .. name end
-                return false, "Player not found"
-            end
+            shootOnce(target, gun)
             if not isAlive(target) then
                 G.MM_ShootActive = false
                 return true, "Shot " .. name
@@ -2758,12 +2792,15 @@ local function handleCommand(p, msg, viaPublic)
         local targetUid = picked.UserId
         whisper("Shooting " .. shortName(picked))
         task.spawn(function()
-            local status = "Player not found"
+            local status = "Shoot failed"
             local ok, runErr = pcall(function()
                 local tgt = Players:GetPlayerByUserId(targetUid)
-                if not tgt or not isAlive(tgt) then return end
+                if not tgt then
+                    status = "Player left"
+                    return
+                end
                 local _, msg = G.MM_ShootTargetLoop(tgt)
-                status = msg
+                status = msg or status
             end)
             if not ok then
                 status = "Shoot failed"
@@ -3459,10 +3496,10 @@ local function bridgeShootMessage(targetQuery)
     end
     _G.MM_ShootBusy = true
     G.MM_ActionBegin()
-    local status = "Player not found"
+    local status = "Shoot failed"
     local okRun, errRun = pcall(function()
         local _, msg = G.MM_ShootTargetLoop(picked)
-        status = msg
+        status = msg or status
     end)
     _G.MM_ShootBusy = false
     G.MM_ActionEnd()

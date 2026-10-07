@@ -28,7 +28,7 @@ local hopBusy = false
 local PING_MIN_MS, PING_MAX_MS = 50, 90
 local G = getgenv and getgenv() or _G
 -- true = keep 3D on (no white screen). false = background mode for farm bots.
-local GRAPHICS = G.xeno_graphics ~= on
+local GRAPHICS = G.xeno_graphics ~= true
 local TARGET_FPS = tonumber(G.xeno_fps) or 50
 local XENO_OWNER_USERNAME = tostring(G.xeno_roblox or _G.xeno_roblox or xeno_roblox or ""):match("^%s*(.-)%s*$") or ""
 local XENO_OWNER_DISCORD = tostring(G.xeno_discord or _G.xeno_discord or xeno_discord or ""):match("^%s*(.-)%s*$") or ""

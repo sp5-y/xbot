@@ -1,4 +1,4 @@
---[[ Xeno V1.04 XBOT_BUILD 20261006q ]]--
+--[[ Xeno V1.04 XBOT_BUILD 20261006r ]]--
 local GRAPHICS = true
 local TARGET_FPS = 50
 local Players = game:GetService("Players")
@@ -1703,91 +1703,56 @@ local function equipTool(tool)
     return tool and tool.Parent == me.Character
 end
 
---[[ Sheriff shoot — perch just above target, silent-aim hit pos, go home. ]]--
+--[[ Sheriff shoot — bullet manip only. ShootGun arg2 = predicted pos. No aim, no TP. ]]--
 do
     G.MM_ShootActive = false
-    local KNIFE_CLEAR = 11
-    local ABOVE = 12
-    local HOLD = 0.42
-    local function headOf(target)
+    local function hitPos(target)
         local char = target and target.Character
-        return char and (char:FindFirstChild("Head") or char:FindFirstChild("HumanoidRootPart"))
-    end
-    local function aimPoint(target)
-        local head = headOf(target)
-        if not head then return end
-        local root = target.Character and target.Character:FindFirstChild("HumanoidRootPart") or head
+        local root = char and (char.PrimaryPart or char:FindFirstChild("HumanoidRootPart") or char:FindFirstChild("Head"))
+        if not root then return end
         local vel = Vector3.zero
         pcall(function() vel = root.AssemblyLinearVelocity end)
-        return head.Position + Vector3.new(vel.X, 0, vel.Z) / 40
-    end
-    local function rayParams(target)
-        local p = RaycastParams.new()
-        p.FilterType = Enum.RaycastFilterType.Exclude
-        p.IgnoreWater = true
-        local filter = {}
-        if me.Character then filter[#filter + 1] = me.Character end
-        if target.Character then filter[#filter + 1] = target.Character end
-        p.FilterDescendantsInstances = filter
-        return p
-    end
-    local function hasLos(from, look, params)
-        local delta = look - from
-        if delta.Magnitude < 0.2 then return true end
-        local hit = workspace:Raycast(from, delta, params)
-        return not hit or (hit.Position - look).Magnitude < 5
-    end
-    local function tryPerch(look, offset, params)
-        local pos = look + offset
-        if (pos - look).Magnitude < KNIFE_CLEAR then return end
-        if hasLos(pos, look, params) then
-            return CFrame.lookAt(pos, look)
+        if math.abs(vel.Y) >= 10 then
+            vel = Vector3.new(vel.X, 0, vel.Z)
         end
+        return root.Position + vel / 40
     end
-    local function perchCf(target, look)
-        local params = rayParams(target)
-        local upHit = workspace:Raycast(look + Vector3.new(0, 1, 0), Vector3.new(0, 22, 0), params)
-        if upHit then
-            local room = upHit.Position.Y - look.Y - 1.4
-            if room >= KNIFE_CLEAR then
-                local pos = Vector3.new(look.X, look.Y + room, look.Z)
-                if hasLos(pos, look, params) then
-                    return CFrame.lookAt(pos, look)
+    local function shootRemote(gun)
+        pcall(function() gun:WaitForChild("ShootGun", 1) end)
+        local r = gun:FindFirstChild("ShootGun", true)
+        if r and (r:IsA("RemoteFunction") or r:IsA("RemoteEvent")) then return r end
+        if getsenv then
+            local ls = gun:FindFirstChildWhichIsA("LocalScript", true)
+            if ls then
+                local ok, env = pcall(getsenv, ls)
+                if ok and type(env) == "table" then
+                    for _, v in pairs(env) do
+                        if typeof(v) == "Instance" and (v:IsA("RemoteFunction") or v:IsA("RemoteEvent")) then
+                            if v.Name == "ShootGun" or tostring(v) == "ShootGun" then
+                                return v
+                            end
+                        end
+                    end
+                    for _, v in pairs(env) do
+                        if typeof(v) == "Instance" and (v:IsA("RemoteFunction") or v:IsA("RemoteEvent")) then
+                            return v
+                        end
+                    end
                 end
             end
-        else
-            local above = tryPerch(look, Vector3.new(0, ABOVE, 0), params)
-            if above then return above end
         end
-        local sides = {
-            Vector3.new(0, ABOVE, 0),
-            Vector3.new(9, 10, 0),
-            Vector3.new(-9, 10, 0),
-            Vector3.new(0, 10, 9),
-            Vector3.new(0, 10, -9),
-            Vector3.new(8, 10, 8),
-            Vector3.new(-8, 10, -8),
-            Vector3.new(8, 10, -8),
-            Vector3.new(-8, 10, 8),
-        }
-        for i = 1, #sides do
-            local cf = tryPerch(look, sides[i], params)
-            if cf then return cf end
-        end
-        return CFrame.lookAt(look + Vector3.new(0, ABOVE, 0), look)
     end
-    local function silentFire(gun, look)
-        local rf = gun:FindFirstChild("ShootGun", true)
+    local function silentFire(gun, pos)
+        local rf = shootRemote(gun)
         if not rf then
-            pcall(function() gun:WaitForChild("ShootGun", 0.4) end)
-            rf = gun:FindFirstChild("ShootGun", true)
+            log("shoot: ShootGun missing")
+            return false
         end
-        if rf and rf:IsA("RemoteFunction") then
-            pcall(function() rf:InvokeServer(tick(), look) end)
-        elseif rf and rf:IsA("RemoteEvent") then
-            pcall(function() rf:FireServer(tick(), look) end)
+        local t = tick()
+        if rf:IsA("RemoteFunction") then
+            return pcall(function() rf:InvokeServer(t, pos) end)
         end
-        pcall(function() gun:Activate() end)
+        return pcall(function() rf:FireServer(t, pos) end)
     end
     local function resolveShootTarget(query)
         query = tostring(query or ""):match("^%s*(.-)%s*$") or ""
@@ -1809,28 +1774,9 @@ do
         return picked, nil
     end
     local function shootOnce(target, gun)
-        local look = aimPoint(target)
-        local h = hrp()
-        if not (look and h and gun) then return false end
-        local cf = perchCf(target, look)
-        local conn = RunSvc.Heartbeat:Connect(function()
-            look = aimPoint(target) or look
-            cf = CFrame.lookAt(cf.Position, look)
-            local nh = hrp()
-            if not nh then return end
-            pcall(function()
-                nh.AssemblyLinearVelocity = Vector3.zero
-                nh.CFrame = cf
-                cam.CFrame = CFrame.lookAt(cf.Position + Vector3.new(0, 1.4, 0), look)
-            end)
-        end)
-        task.wait(0.1)
-        look = aimPoint(target) or look
-        silentFire(gun, look)
-        task.wait(HOLD)
-        if conn then pcall(function() conn:Disconnect() end) end
-        tpHome()
-        return true
+        local pos = hitPos(target)
+        if not pos then return false end
+        return silentFire(gun, pos)
     end
     local function shootTargetLoop(target)
         G.MM_ShootActive = true
@@ -2418,7 +2364,7 @@ end
 local COMMAND_HELP = {
     reveal = "Show current murderer and sheriff",
     stab = "all | sheriff | <name> - Murderer only, stab targets",
-    shoot = "murderer | sheriff | <name> - Perch above, silent-aim, return to spawn",
+    shoot = "murderer | sheriff | <name> - Silent aim (hit-pos), stays put",
     togglereveal = "Toggle automatic role callout each round",
     togglealerts = "Toggle kill alerts (ignores resets)",
     togglereset = "Toggle auto-reset when owner dies",

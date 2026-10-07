@@ -1,4 +1,4 @@
---[[ Xeno V1.04 XBOT_BUILD 20261006h ]]--
+--[[ Xeno V1.04 XBOT_BUILD 20261006i ]]--
 local GRAPHICS = true
 local TARGET_FPS = 50
 local Players = game:GetService("Players")
@@ -37,7 +37,6 @@ pcall(function()
 end)
 local XENO_OWNER_USERNAME = tostring(G.xeno_roblox or _G.xeno_roblox or xeno_roblox or ""):match("^%s*(.-)%s*$") or ""
 local XENO_OWNER_DISCORD = tostring(G.xeno_discord or _G.xeno_discord or xeno_discord or ""):match("^%s*(.-)%s*$") or ""
-local PUBLIC_MODE = G.public_mode == true or _G.public_mode == true
 local ANNOUNCEMENT_MESSAGE = tostring(G.announcement_message or _G.announcement_message or ""):match("^%s*(.-)%s*$") or ""
 local ACTIVE_OWNER_USERNAME = XENO_OWNER_USERNAME
 local bridgeOwnerConnected = false
@@ -741,12 +740,12 @@ local function whisperOk(m, target)
     end)
     return ok and result == true
 end
-local function commandReply(msg)
-    if PUBLIC_MODE then
-        return sendChat(msg)
-    end
-    whisper(msg)
-    return true
+local function channelLooksPrivate(name)
+    name = tostring(name or "")
+    if name == "" then return true end
+    if name:find("RBXWhisper", 1, true) then return true end
+    if name:sub(1, 3) == "To " then return true end
+    return false
 end
 
 local hiddenChatEvent = nil
@@ -2398,8 +2397,9 @@ local function isPremiumOnlyCommand(cmd)
     return PREMIUM_ONLY_COMMANDS[cmd] == true
 end
 
-local function sendFullHelp(target, gapBetween)
+local function sendFullHelp(target, gapBetween, replyFn)
     gapBetween = gapBetween or 0.5
+    replyFn = replyFn or whisper
     local uid
     if type(target) == "number" then
         uid = target
@@ -2417,7 +2417,7 @@ local function sendFullHelp(target, gapBetween)
         task.wait(0.2)
     end
     if not o then return end
-    whisper("Use !help <command> for what a command does", o)
+    replyFn("Use !help <command> for what a command does", o)
     if gapBetween > 0 then task.wait(gapBetween) end
     o = resolve()
     if not o then
@@ -2435,7 +2435,7 @@ local function sendFullHelp(target, gapBetween)
     end
     local line = table.concat(parts, " ")
     if #line <= 200 then
-        whisper(line, o)
+        replyFn(line, o)
         return
     end
     local mid = math.ceil(#keys / 2)
@@ -2443,7 +2443,7 @@ local function sendFullHelp(target, gapBetween)
     for i, key in ipairs(keys) do
         if i <= mid then table.insert(a, "!" .. key) else table.insert(b, "!" .. key) end
     end
-    whisper(table.concat(a, " "), o)
+    replyFn(table.concat(a, " "), o)
     if gapBetween > 0 then task.wait(gapBetween) end
     o = resolve()
     if not o then
@@ -2453,7 +2453,7 @@ local function sendFullHelp(target, gapBetween)
             if o then break end
         end
     end
-    if o then whisper(table.concat(b, " "), o) end
+    if o then replyFn(table.concat(b, " "), o) end
 end
 
 local ownerOnboardingGen = 0
@@ -2585,13 +2585,20 @@ task.spawn(function()
     end
 end)
 
-local function handleCommand(p, msg)
+local function handleCommand(p, msg, viaPublic)
     if msg:sub(1, 1) ~= "!" then return end
     local args = splitChatArgs(msg)
     local cmd, rest = args[1]:sub(2):lower(), msg:sub(#args[1] + 2)
     if not authorizeCommand(p) then return end
     local privateWhisper = whisper
-    local whisper = commandReply
+    local function whisper(m, target)
+        if viaPublic then
+            sendChat(m)
+            return true
+        end
+        privateWhisper(m, target or p)
+        return true
+    end
     if flingLoopContinuous and cmd ~= "fling" then
         whisper('You need to toggle off fling loop using "!fling"')
         return
@@ -2881,18 +2888,18 @@ local function handleCommand(p, msg)
         elseif helpCmd ~= "" then
             whisper("No help for !" .. helpCmd .. " — use !help for the list")
         else
-            sendFullHelp()
+            sendFullHelp(p, viaPublic and 0.35 or 0.5, viaPublic and function(m) sendChat(m) end or whisper)
         end
     end
 end
-local function routeCommand(p, msg)
+local function routeCommand(p, msg, viaPublic)
     if not session.active then return end
     msg = cleanChatText(msg)
     if msg == "" or seenCommandRecently(p, msg) then return end
     if ACTIVE_OWNER_USERNAME ~= "" and configuredOwnerMatches(p) then
         syncConfiguredOwner()
     end
-    handleCommand(p, msg)
+    handleCommand(p, msg, viaPublic == true)
 end
 local function watchHiddenChat(p, msg)
     local event = getHiddenChatEvent()
@@ -2926,11 +2933,68 @@ local function hookSpeaker(p)
         if not chatted then return end
         trackConnection(chatted:Connect(function(msg)
             if not session.active then return end
-            routeCommand(p, msg)
             watchHiddenChat(p, msg)
+            task.delay(isLegacy and 0.45 or 0.7, function()
+                if session.active then routeCommand(p, msg, false) end
+            end)
         end))
     end)
 end
+local function hookIncomingChatChannels()
+    if isLegacy then
+        task.spawn(function()
+            for _ = 1, 20 do
+                if getHiddenChatEvent() then break end
+                task.wait(0.25)
+            end
+            local event = getHiddenChatEvent()
+            if not event then return end
+            trackConnection(event.OnClientEvent:Connect(function(packet, channel)
+                if not session.active or type(packet) ~= "table" then return end
+                local uid = packet.SpeakerUserId or packet.SpeakerUserID
+                local text = packet.Message
+                if type(text) ~= "string" or text == "" or not uid then return end
+                local speaker = Players:GetPlayerByUserId(uid)
+                if not speaker or speaker == me then return end
+                if channelLooksPrivate(channel) then
+                    routeCommand(speaker, text, false)
+                    return
+                end
+                routeCommand(speaker, text, true)
+            end))
+        end)
+        return
+    end
+    local function onTextMessage(message, channelName)
+        if not session.active or not message then return end
+        local src = message.TextSource
+        if not src then return end
+        local speaker = Players:GetPlayerByUserId(src.UserId)
+        if not speaker or speaker == me then return end
+        local name = channelName or (message.TextChannel and message.TextChannel.Name)
+        routeCommand(speaker, message.Text, not channelLooksPrivate(name))
+    end
+    local function bindTextChannel(ch)
+        if not ch or not ch:IsA("TextChannel") then return end
+        trackConnection(ch.MessageReceived:Connect(function(message)
+            onTextMessage(message, ch.Name)
+        end))
+    end
+    pcall(function()
+        trackConnection(TCS.MessageReceived:Connect(function(message)
+            onTextMessage(message, message.TextChannel and message.TextChannel.Name)
+        end))
+    end)
+    task.spawn(function()
+        local channels = TCS:FindFirstChild("TextChannels") or TCS:WaitForChild("TextChannels", 10)
+        if not channels then return end
+        for _, ch in ipairs(channels:GetChildren()) do
+            bindTextChannel(ch)
+        end
+        trackConnection(channels.ChildAdded:Connect(bindTextChannel))
+    end)
+end
+hookIncomingChatChannels()
 pcall(function()
     for _, p in ipairs(Players:GetPlayers()) do
         hookSpeaker(p)

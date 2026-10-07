@@ -1,171 +1,188 @@
---[[ MM2 gun / silent-shoot test. Execute this alone in Xeno.
-    Finds raIentless and tries every known gun fire path. ]]--
+--[[ MM2 gameplay dump: remotes, tools, role/round/gun/knife scripts. execute-dump.lua ]]--
 
-local TARGET_NAME = "raIentless"
 local Players = game:GetService("Players")
 local RS = game:GetService("ReplicatedStorage")
 local me = Players.LocalPlayer
+local lines = {}
+local decompileFn = decompile or (syn and syn.decompile)
+local getenv = getsenv
+local KEYS = "shoot gun knife role round fade data gameplay murder sheriff hero lobby spawn kill dead drop beam"
 
-local function say(msg)
-    print("[shoot-test] " .. tostring(msg))
+local function add(s)
+    s = tostring(s)
+    lines[#lines + 1] = s
+    print("[mm2-dump] " .. s)
+end
+
+local function safe(fn)
+    local ok, a = pcall(fn)
+    if ok then return a end
+    return nil, tostring(a)
+end
+
+local function interesting(name)
+    name = tostring(name or ""):lower()
+    for w in KEYS:gmatch("%S+") do
+        if name:find(w, 1, true) then return true end
+    end
+end
+
+local function isRemote(d)
+    return d:IsA("RemoteEvent") or d:IsA("RemoteFunction") or d:IsA("UnreliableRemoteEvent")
+end
+
+local function isScript(d)
+    return d:IsA("LocalScript") or d:IsA("ModuleScript")
+end
+
+local function dumpTree(inst, prefix, depth)
+    depth = depth or 0
+    if depth > 8 then return end
+    prefix = prefix or ""
+    add(prefix .. inst.ClassName .. " " .. inst.Name)
+    for _, c in ipairs(inst:GetChildren()) do
+        dumpTree(c, prefix .. "  ", depth + 1)
+    end
+end
+
+local function dumpRemotes(root, label)
+    add("=== REMOTES " .. label .. " ===")
+    if not root then add("(missing)") return end
     pcall(function()
-        game:GetService("StarterGui"):SetCore("SendNotification", {
-            Title = "shoot-test",
-            Text = tostring(msg),
-            Duration = 4,
-        })
+        for _, d in ipairs(root:GetDescendants()) do
+            if isRemote(d) then
+                add(d.ClassName .. " " .. d:GetFullName())
+            end
+        end
     end)
 end
 
-local function findPlayer(name)
-    name = name:lower()
-    for _, p in ipairs(Players:GetPlayers()) do
-        if p ~= me then
-            if p.Name:lower() == name or tostring(p.DisplayName):lower() == name then
-                return p
-            end
-            if p.Name:lower():find(name, 1, true) or tostring(p.DisplayName):lower():find(name, 1, true) then
-                return p
-            end
-        end
-    end
-end
-
-local GUN_NAMES = { "Gun", "Revolver", "SheriffGun", "Laser", "Luger", "Blaster" }
-
-local function findGun()
-    for _, bag in ipairs({ me.Character, me:FindFirstChildOfClass("Backpack") }) do
-        if bag then
-            for _, n in ipairs(GUN_NAMES) do
-                local t = bag:FindFirstChild(n)
-                if t and t:IsA("Tool") then return t end
-            end
-            for _, c in ipairs(bag:GetChildren()) do
-                if c:IsA("Tool") then return c end
-            end
-        end
-    end
-end
-
-local function dump(inst, prefix)
-    prefix = prefix or ""
-    say(prefix .. inst.ClassName .. " " .. inst.Name)
-    for _, c in ipairs(inst:GetChildren()) do
-        dump(c, prefix .. "  ")
-    end
-end
-
-local function hitPos(p)
-    local char = p.Character
-    local root = char and (char:FindFirstChild("HumanoidRootPart") or char:FindFirstChild("Head") or char.PrimaryPart)
-    if not root then return end
-    local vel = Vector3.zero
-    pcall(function() vel = root.AssemblyLinearVelocity end)
-    return root.Position + Vector3.new(vel.X, 0, vel.Z) / 40
-end
-
-local function alive(p)
-    local h = p and p.Character and p.Character:FindFirstChildOfClass("Humanoid")
-    return h and h.Health > 0
-end
-
-local function tryInvoke(label, rf, ...)
-    if not rf then
-        say("SKIP " .. label .. " (nil remote)")
-        return false
-    end
-    local args = { ... }
-    say("TRY " .. label .. " on " .. rf:GetFullName() .. " class=" .. rf.ClassName)
-    local ok, err
-    if rf:IsA("RemoteFunction") then
-        ok, err = pcall(function()
-            return rf:InvokeServer(unpack(args))
-        end)
-    elseif rf:IsA("RemoteEvent") then
-        ok, err = pcall(function()
-            rf:FireServer(unpack(args))
-        end)
+local function dumpScript(d)
+    add("-- SCRIPT " .. d.ClassName .. " " .. d:GetFullName())
+    if decompileFn then
+        local src, err = safe(function() return decompileFn(d) end)
+        if src then add(src) else add("decompile fail: " .. tostring(err)) end
     else
-        say("SKIP " .. label .. " not a remote")
-        return false
+        add("no decompile() on this executor")
     end
-    say((ok and "OK " or "FAIL ") .. label .. " => " .. tostring(err))
-    return ok
-end
-
-say("looking for " .. TARGET_NAME)
-local target = findPlayer(TARGET_NAME)
-if not target then
-    say("player not in server: " .. TARGET_NAME)
-    return
-end
-
-say("target " .. target.Name .. " / " .. tostring(target.DisplayName) .. " alive=" .. tostring(alive(target)))
-
-local gun = findGun()
-if not gun then
-    say("no gun in character/backpack")
-    return
-end
-say("gun " .. gun:GetFullName() .. " parent=" .. tostring(gun.Parent and gun.Parent.Name))
-
-local hum = me.Character and me.Character:FindFirstChildOfClass("Humanoid")
-if hum and gun.Parent ~= me.Character then
-    pcall(function() hum:EquipTool(gun) end)
-    task.wait(0.2)
-    say("equipped gun parent=" .. tostring(gun.Parent and gun.Parent.Name))
-end
-
-say("--- gun tree ---")
-dump(gun)
-
-say("--- remotes under gun ---")
-for _, d in ipairs(gun:GetDescendants()) do
-    if d:IsA("RemoteFunction") or d:IsA("RemoteEvent") then
-        say(d.ClassName .. " " .. d:GetFullName())
+    if getenv and d:IsA("LocalScript") then
+        local env, err = safe(function() return getenv(d) end)
+        if type(env) == "table" then
+            add("-- GETSENV " .. d.Name)
+            for k, v in pairs(env) do
+                local extra = ""
+                if typeof and typeof(v) == "Instance" then
+                    extra = " " .. v.ClassName .. " " .. v:GetFullName()
+                elseif type(v) == "function" then
+                    extra = " fn"
+                end
+                add("  env." .. tostring(k) .. " = " .. (typeof and typeof(v) or type(v)) .. extra)
+            end
+        else
+            add("getsenv fail: " .. tostring(err))
+        end
     end
 end
 
-local pos = hitPos(target)
-if not pos then
-    say("target has no root/head")
-    return
+local function dumpScriptsIn(root, label, force)
+    add("=== SCRIPTS " .. label .. " ===")
+    if not root then add("(missing)") return end
+    pcall(function()
+        for _, d in ipairs(root:GetDescendants()) do
+            if isScript(d) and (force or interesting(d.Name) or interesting(d:GetFullName())) then
+                dumpScript(d)
+            end
+        end
+    end)
 end
-say("hit pos " .. tostring(pos))
 
-local kl = gun:FindFirstChild("KnifeLocal") or gun:FindFirstChild("KnifeLocal", true)
-local beam = kl and (kl:FindFirstChild("CreateBeam") or kl:FindFirstChild("CreateBeam", true))
-beam = beam or gun:FindFirstChild("CreateBeam", true)
-local beamRf = beam and (beam:FindFirstChild("RemoteFunction") or beam:FindFirstChildWhichIsA("RemoteFunction"))
-if not beamRf and beam and beam:IsA("RemoteFunction") then beamRf = beam end
-local shootGun = gun:FindFirstChild("ShootGun", true)
+add("place=" .. tostring(game.PlaceId) .. " job=" .. tostring(game.JobId))
+add("bot=" .. me.Name)
+add("char=" .. tostring(me.Character and me.Character:GetFullName()))
+add("decompile=" .. tostring(decompileFn ~= nil) .. " getsenv=" .. tostring(getenv ~= nil))
 
-say("KnifeLocal=" .. tostring(kl and kl:GetFullName()))
-say("CreateBeam=" .. tostring(beam and beam:GetFullName()))
-say("beam remote=" .. tostring(beamRf and beamRf:GetFullName()))
-say("ShootGun=" .. tostring(shootGun and shootGun:GetFullName()))
+add("=== RS TOP ===")
+pcall(function()
+    for _, c in ipairs(RS:GetChildren()) do
+        add(c.ClassName .. " " .. c.Name)
+    end
+end)
 
--- Current MM2 silent shot
-tryInvoke("beam 1,pos,AH2", beamRf, 1, pos, "AH2")
-task.wait(0.4)
-say("alive after beam AH2: " .. tostring(alive(target)))
+local remotesFolder = RS:FindFirstChild("Remotes")
+if remotesFolder then
+    add("=== RS.Remotes TREE ===")
+    dumpTree(remotesFolder)
+end
 
-tryInvoke("beam 1,pos", beamRf, 1, pos)
-task.wait(0.3)
-tryInvoke("classic tick,pos", shootGun, tick(), pos)
-task.wait(0.3)
-tryInvoke("classic 1,pos,AH2", shootGun, 1, pos, "AH2")
-task.wait(0.3)
+dumpRemotes(RS, "ReplicatedStorage")
+dumpRemotes(me.Character, "Character")
+dumpRemotes(me:FindFirstChildOfClass("Backpack"), "Backpack")
+pcall(function()
+    add("=== WORKSPACE REMOTES (interesting) ===")
+    for _, d in ipairs(workspace:GetDescendants()) do
+        if isRemote(d) and interesting(d.Name) then
+            add(d.ClassName .. " " .. d:GetFullName())
+        end
+    end
+end)
 
--- Any other remotes on the gun
-for _, d in ipairs(gun:GetDescendants()) do
-    if d:IsA("RemoteFunction") and d ~= beamRf and d ~= shootGun then
-        tryInvoke("other " .. d.Name .. " 1,pos,AH2", d, 1, pos, "AH2")
-        task.wait(0.2)
+pcall(function()
+    local rf = RS:FindFirstChild("GetPlayerData", true)
+    add("GetPlayerData=" .. tostring(rf and rf:GetFullName()))
+    if rf and rf:IsA("RemoteFunction") then
+        local data = rf:InvokeServer()
+        add("GetPlayerData type=" .. type(data))
+        if type(data) == "table" then
+            for name, info in pairs(data) do
+                if type(info) == "table" then
+                    local bits = {}
+                    for k, v in pairs(info) do
+                        bits[#bits + 1] = tostring(k) .. "=" .. tostring(v)
+                    end
+                    add("  " .. tostring(name) .. " { " .. table.concat(bits, ", ") .. " }")
+                else
+                    add("  " .. tostring(name) .. " = " .. tostring(info))
+                end
+            end
+        end
+    end
+end)
+
+for _, bag in ipairs({ me.Character, me:FindFirstChildOfClass("Backpack") }) do
+    if bag then
+        for _, t in ipairs(bag:GetChildren()) do
+            if t:IsA("Tool") then
+                add("=== TOOL TREE " .. t:GetFullName() .. " ===")
+                dumpTree(t)
+                dumpRemotes(t, "tool " .. t.Name)
+                dumpScriptsIn(t, "tool " .. t.Name, true)
+            end
+        end
     end
 end
 
-say("Activate()")
-pcall(function() gun:Activate() end)
-task.wait(0.5)
-say("done alive=" .. tostring(alive(target)))
+dumpScriptsIn(RS, "ReplicatedStorage interesting", false)
+if remotesFolder then
+    dumpScriptsIn(remotesFolder, "RS.Remotes all", true)
+end
+local gp = remotesFolder and remotesFolder:FindFirstChild("Gameplay")
+if gp then
+    dumpScriptsIn(gp, "RS.Remotes.Gameplay all", true)
+end
+pcall(function()
+    local ps = me:FindFirstChild("PlayerScripts")
+    dumpScriptsIn(ps, "PlayerScripts interesting", false)
+end)
+
+local out = table.concat(lines, "\n")
+if writefile then
+    pcall(function()
+        writefile("mm2-dump.txt", out)
+        add("wrote mm2-dump.txt")
+    end)
+end
+if setclipboard then
+    pcall(function() setclipboard(out) end)
+    add("copied dump to clipboard")
+end
+add("DONE — paste the [mm2-dump] output (or mm2-dump.txt)")

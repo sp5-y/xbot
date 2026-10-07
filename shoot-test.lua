@@ -6,7 +6,8 @@ local me = Players.LocalPlayer
 local lines = {}
 local decompileFn = decompile or (syn and syn.decompile)
 local getenv = getsenv
-local KEYS = "shoot gun knife role round fade data gameplay murder sheriff hero lobby spawn kill dead drop beam"
+local KEYS = "shoot gun knife role round fade gameplay murder sheriff hero lobby spawn kill dead drop beam weapon"
+local SKIP = "database shop inventory recipe code radio mystery crate currency nametag xbox featured badge perk"
 
 local function add(s)
     s = tostring(s)
@@ -20,11 +21,45 @@ local function safe(fn)
     return nil, tostring(a)
 end
 
+local function skipped(name)
+    name = tostring(name or ""):lower()
+    for w in SKIP:gmatch("%S+") do
+        if name:find(w, 1, true) then return true end
+    end
+end
+
 local function interesting(name)
     name = tostring(name or ""):lower()
+    if skipped(name) then return false end
     for w in KEYS:gmatch("%S+") do
         if name:find(w, 1, true) then return true end
     end
+end
+
+local function dumpValue(v, indent)
+    indent = indent or "  "
+    if type(v) ~= "table" then
+        add(indent .. tostring(v))
+        return
+    end
+    local n = 0
+    for k, x in pairs(v) do
+        n = n + 1
+        if type(x) == "table" then
+            local bits = {}
+            for a, b in pairs(x) do
+                bits[#bits + 1] = tostring(a) .. "=" .. tostring(b)
+            end
+            add(indent .. tostring(k) .. " { " .. table.concat(bits, ", ") .. " }")
+        else
+            add(indent .. tostring(k) .. " = " .. tostring(x))
+        end
+        if n >= 80 then
+            add(indent .. "...truncated")
+            break
+        end
+    end
+    if n == 0 then add(indent .. "(empty)") end
 end
 
 local function isRemote(d)
@@ -57,8 +92,34 @@ local function dumpRemotes(root, label)
     end)
 end
 
+local getconstants = debug and debug.getconstants or getconstants
+
 local function dumpScript(d)
     add("-- SCRIPT " .. d.ClassName .. " " .. d:GetFullName())
+    if d:IsA("ModuleScript") then
+        local res, err = safe(function() return require(d) end)
+        if type(res) == "table" then
+            add("-- REQUIRE keys")
+            for k, v in pairs(res) do
+                local extra = type(v) == "function" and " fn" or (" " .. tostring(v))
+                add("  ." .. tostring(k) .. " =" .. extra)
+            end
+        else
+            add("require => " .. tostring(res or err))
+        end
+    end
+    if getconstants then
+        local consts, err = safe(function() return getconstants(d) end)
+        if type(consts) == "table" then
+            add("-- CONSTANTS")
+            for i, v in ipairs(consts) do
+                if i > 60 then add("  ...") break end
+                add("  [" .. i .. "] " .. tostring(v))
+            end
+        elseif err then
+            add("constants fail: " .. tostring(err))
+        end
+    end
     if decompileFn then
         local src, err = safe(function() return decompileFn(d) end)
         if src then add(src) else add("decompile fail: " .. tostring(err)) end
@@ -126,25 +187,44 @@ pcall(function()
     end
 end)
 
+local function dumpRF(path)
+    local inst = RS
+    for part in string.gmatch(path, "[^%.]+") do
+        inst = inst and inst:FindFirstChild(part)
+    end
+    add("RF " .. path .. " => " .. tostring(inst and inst.ClassName))
+    if inst and inst:IsA("RemoteFunction") then
+        local data, err = safe(function() return inst:InvokeServer() end)
+        if data ~= nil then dumpValue(data) else add("  invoke fail: " .. tostring(err)) end
+    end
+end
+
+pcall(function() dumpRF("Remotes.Gameplay.GetCurrentPlayerData") end)
+pcall(function() dumpRF("Remotes.Extras.GetPlayerData") end)
 pcall(function()
-    local rf = RS:FindFirstChild("GetPlayerData", true)
-    add("GetPlayerData=" .. tostring(rf and rf:GetFullName()))
-    if rf and rf:IsA("RemoteFunction") then
-        local data = rf:InvokeServer()
-        add("GetPlayerData type=" .. type(data))
-        if type(data) == "table" then
-            for name, info in pairs(data) do
-                if type(info) == "table" then
-                    local bits = {}
-                    for k, v in pairs(info) do
-                        bits[#bits + 1] = tostring(k) .. "=" .. tostring(v)
-                    end
-                    add("  " .. tostring(name) .. " { " .. table.concat(bits, ", ") .. " }")
-                else
-                    add("  " .. tostring(name) .. " = " .. tostring(info))
-                end
-            end
-        end
+    local bf = RS:FindFirstChild("GetPlayerData_REMOTE")
+    add("GetPlayerData_REMOTE=" .. tostring(bf and bf.ClassName))
+    if bf and bf:IsA("BindableFunction") then
+        local data, err = safe(function() return bf:Invoke() end)
+        if data ~= nil then dumpValue(data) else add("  invoke fail: " .. tostring(err)) end
+    end
+end)
+
+for _, folder in ipairs({ "WeaponEvents", "ClientServices" }) do
+    local inst = RS:FindFirstChild(folder)
+    if inst then
+        add("=== TREE " .. folder .. " ===")
+        dumpTree(inst)
+    end
+end
+
+pcall(function()
+    local mods = RS:FindFirstChild("Modules")
+    if not mods then return end
+    add("=== REQUIRE gameplay modules ===")
+    for _, n in ipairs({ "CurrentRoundClient", "FadeModule", "ProfileData" }) do
+        local m = mods:FindFirstChild(n)
+        if m and m:IsA("ModuleScript") then dumpScript(m) end
     end
 end)
 

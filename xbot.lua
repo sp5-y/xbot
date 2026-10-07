@@ -1,4 +1,4 @@
---[[ Xeno V1.04 XBOT_BUILD 20261006f ]]--
+--[[ Xeno V1.04 XBOT_BUILD 20261006h ]]--
 local GRAPHICS = true
 local TARGET_FPS = 50
 local Players = game:GetService("Players")
@@ -1685,18 +1685,39 @@ local function equipTool(tool)
     return tool and tool.Parent == me.Character
 end
 
---[[ Sheriff shoot — look at target, Activate once. No remotes, no hooks. ]]--
+--[[ Sheriff shoot — perch above target, Activate, leave. No remotes, no hooks. ]]--
 do
     G.MM_ShootActive = false
-    local function aimAt(target)
+    local HEIGHT = 54
+    local function headOf(target)
         local char = target and target.Character
-        local head = char and (char:FindFirstChild("Head") or char:FindFirstChild("HumanoidRootPart"))
+        return char and (char:FindFirstChild("Head") or char:FindFirstChild("HumanoidRootPart"))
+    end
+    local function aimPoint(head)
+        local vel = Vector3.zero
+        pcall(function() vel = head.AssemblyLinearVelocity end)
+        return head.Position + Vector3.new(vel.X, 0, vel.Z) * 0.1
+    end
+    local function perchAndAim(target)
+        local head = headOf(target)
         local h = hrp()
         if not (head and h) then return false end
+        local look = aimPoint(head)
+        local pos = look + Vector3.new(0, HEIGHT, 0)
+        local cf = CFrame.lookAt(pos, look)
         pcall(function()
-            workspace.CurrentCamera.CFrame = CFrame.lookAt(h.Position + Vector3.new(0, 1.5, 0), head.Position)
+            h.AssemblyLinearVelocity = Vector3.zero
+            h.CFrame = cf
+            workspace.CurrentCamera.CFrame = cf
         end)
         return true
+    end
+    local function centerMouse()
+        pcall(function()
+            local vim = game:GetService("VirtualInputManager")
+            local vs = workspace.CurrentCamera.ViewportSize
+            vim:SendMouseMoveEvent(vs.X * 0.5, vs.Y * 0.5, game)
+        end)
     end
     local function resolveShootTarget(query)
         query = tostring(query or ""):match("^%s*(.-)%s*$") or ""
@@ -1717,23 +1738,75 @@ do
         if not picked then return nil, "Player not found" end
         return picked, nil
     end
+    local function shootOnce(target, gun)
+        if not perchAndAim(target) then return false end
+        RunSvc.Heartbeat:Wait()
+        if not perchAndAim(target) then return false end
+        centerMouse()
+        pcall(function() gun:Activate() end)
+        task.wait(0.18)
+        return true
+    end
     local function shootTargetLoop(target)
-        G.MM_ShootActive = false
-        if target == me or not isAlive(target) then return false, "Player not found" end
-        if botHasKnife() then return false, "Bot is murderer — no gun" end
-        if not botHasGun() then
-            if not (G.MM_GrabDroppedGun and G.MM_GrabDroppedGun(2.5)) then
+        G.MM_ShootActive = true
+        if target == me then
+            G.MM_ShootActive = false
+            return false, "Player not found"
+        end
+        if botHasKnife() then
+            G.MM_ShootActive = false
+            return false, "Bot is murderer — no gun"
+        end
+        local name = shortName(target)
+        local deadline = tick() + 28
+        while G.MM_ShootActive and tick() < deadline do
+            if not isAlive(target) then
+                tpHome()
+                G.MM_ShootActive = false
+                return true, "Shot " .. name
+            end
+            if botHasKnife() or not isAlive(me) then
+                tpHome()
+                G.MM_ShootActive = false
+                return false, botHasKnife() and "Bot is murderer — no gun" or "Bot died"
+            end
+            if not botHasGun() then
+                if not (G.MM_GrabDroppedGun and G.MM_GrabDroppedGun(2.5)) then
+                    tpHome()
+                    G.MM_ShootActive = false
+                    return false, "No gun available"
+                end
+            end
+            local gun = getHeldTool(me, G.MM_GunNames)
+            if not gun or not equipTool(gun) then
+                tpHome()
+                G.MM_ShootActive = false
                 return false, "No gun available"
             end
+            if not shootOnce(target, gun) then
+                tpHome()
+                G.MM_ShootActive = false
+                if not isAlive(target) then return true, "Shot " .. name end
+                return false, "Player not found"
+            end
+            tpHome()
+            if not isAlive(target) then
+                G.MM_ShootActive = false
+                return true, "Shot " .. name
+            end
+            local waitUntil = tick() + 2.15
+            while G.MM_ShootActive and tick() < waitUntil do
+                if not isAlive(target) then
+                    G.MM_ShootActive = false
+                    return true, "Shot " .. name
+                end
+                task.wait(0.08)
+            end
         end
-        local gun = getHeldTool(me, G.MM_GunNames)
-        if not gun or not equipTool(gun) then return false, "No gun available" end
         tpHome()
-        if not aimAt(target) then return false, "Player not found" end
-        pcall(function() gun:Activate() end)
-        task.wait(0.2)
-        if not isAlive(target) then return true, "Shot " .. shortName(target) end
-        return true, "Fired at " .. shortName(target)
+        G.MM_ShootActive = false
+        if not isAlive(target) then return true, "Shot " .. name end
+        return false, "Shoot timed out"
     end
     function G.MM_CombatBusy()
         return G.MM_StabBusyActive() or _G.MM_GunBusy or _G.MM_ShootBusy
@@ -1741,7 +1814,7 @@ do
     G.MM_ShootTargetLoop = shootTargetLoop
     G.MM_ResolveShootTarget = resolveShootTarget
     G.MM_EnsureShootGun = function()
-        return botHasGun() or (G.MM_GrabDroppedGun and G.MM_GrabDroppedGun(2.5))
+        return botHasGun() or findDroppedGun() ~= nil
     end
 end
 

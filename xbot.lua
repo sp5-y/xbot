@@ -1,4 +1,6 @@
---[[ Xeno V1.03 XBOT_BUILD 20261006d ]]--
+--[[ Xeno V1.04 XBOT_BUILD 20261006e ]]--
+local GRAPHICS = true
+local TARGET_FPS = 50
 local Players = game:GetService("Players")
 local cref = cloneref or function(x) return x end
 local TCS = cref(game:GetService("TextChatService"))
@@ -27,9 +29,12 @@ local shootDone = false
 local hopBusy = false
 local PING_MIN_MS, PING_MAX_MS = 50, 90
 local G = getgenv and getgenv() or _G
--- true = keep 3D on (no white screen). false = background mode for farm bots.
-local GRAPHICS = G.xeno_graphics ~= true
-local TARGET_FPS = tonumber(G.xeno_fps) or 50
+G.MM_ShootActive = false
+pcall(function()
+    RunSvc:Set3dRenderingEnabled(true)
+    if setfpscap then setfpscap(TARGET_FPS) end
+    settings().Rendering.QualityLevel = Enum.QualityLevel.Automatic
+end)
 local XENO_OWNER_USERNAME = tostring(G.xeno_roblox or _G.xeno_roblox or xeno_roblox or ""):match("^%s*(.-)%s*$") or ""
 local XENO_OWNER_DISCORD = tostring(G.xeno_discord or _G.xeno_discord or xeno_discord or ""):match("^%s*(.-)%s*$") or ""
 local PUBLIC_MODE = G.public_mode == true or _G.public_mode == true
@@ -92,11 +97,9 @@ cam.FieldOfView = DEFAULT_FOV
 do local h = me.Character and me.Character:FindFirstChildOfClass("Humanoid") 
    if h then cam.CameraSubject = h end end
 
---[[ Render / FPS ]]--
--- GRAPHICS on = normal view. GRAPHICS off = white/blank 3D off (old farm mode).
+--[[ Render / FPS — keep 3D on so leftover farm-mode loops cannot blank the screen ]]--
 task.spawn(function()
     local VU = game:GetService("VirtualUser")
-    local UGS = UserSettings():GetService("UserGameSettings")
     pcall(function()
         trackConnection(Players.LocalPlayer.Idled:Connect(function()
             if not session.active then return end
@@ -104,16 +107,13 @@ task.spawn(function()
             VU:ClickButton2(Vector2.new(math.random(10, 50), math.random(10, 50)))
         end))
     end)
-    pcall(function()
-        RunSvc:Set3dRenderingEnabled(GRAPHICS)
-        if setfpscap then setfpscap(TARGET_FPS) end
-        if GRAPHICS then
-            settings().Rendering.QualityLevel = Enum.QualityLevel.Automatic
-        else
-            settings().Rendering.QualityLevel = 1
-            UGS.MasterVolume = 0
-        end
-    end)
+    while session.active do
+        pcall(function()
+            RunSvc:Set3dRenderingEnabled(true)
+            if setfpscap then setfpscap(TARGET_FPS) end
+        end)
+        task.wait(0.5)
+    end
 end)
 
 --[[ GUI ]]--
@@ -1710,51 +1710,6 @@ do
         return base + lead
     end
 
-    local function installShootHooks()
-        if G.MM_ShootHooksInstalled then return true end
-        if type(hookmetamethod) ~= "function" then return false end
-        local wrap = newcclosure or function(f) return f end
-        local mouse = me:GetMouse()
-        local oldIndex, oldNamecall
-        local okIndex, hookedIndex = pcall(function()
-            oldIndex = hookmetamethod(game, "__index", wrap(function(self, key)
-                if G.MM_ShootActive and self == mouse then
-                    local aim = G.MM_ComputeShootAim and G.MM_ComputeShootAim()
-                    if aim then
-                        if key == "Hit" then return CFrame.new(aim) end
-                        if key == "Target" then return G.MM_ShootAimPart end
-                    end
-                end
-                if oldIndex then return oldIndex(self, key) end
-            end))
-            return oldIndex
-        end)
-        local okName, hookedName = pcall(function()
-            oldNamecall = hookmetamethod(game, "__namecall", wrap(function(self, ...)
-                if G.MM_ShootActive then
-                    local method = getnamecallmethod and getnamecallmethod()
-                    local name = ""
-                    pcall(function() name = self.Name end)
-                    local args = { ... }
-                    local aim = G.MM_ComputeShootAim and G.MM_ComputeShootAim()
-                    -- Rewrite the gun LocalScript's own shot only. Do not invent args.
-                    if aim and method == "InvokeServer" and name == "ShootGun" then
-                        if typeof(args[2]) == "Vector3" then args[2] = aim
-                        elseif typeof(args[1]) == "Vector3" then args[1] = aim end
-                        if oldNamecall then return oldNamecall(self, unpack(args)) end
-                    end
-                end
-                if oldNamecall then return oldNamecall(self, ...) end
-            end))
-            return oldNamecall
-        end)
-        if (okIndex and hookedIndex) or (okName and hookedName) then
-            G.MM_ShootHooksInstalled = true
-            return true
-        end
-        return false
-    end
-
     local function clearShootAimTarget()
         G.MM_ShootActive = false
         G.MM_ShootTarget = nil
@@ -1795,15 +1750,12 @@ do
 
     local function fireSilentShot(target, gun)
         if not gun or not isAlive(target) or not isAlive(me) then return false end
-        installShootHooks()
         if gun.Parent ~= me.Character then
             equipTool(gun)
             task.wait(0.06)
         end
-        local part = target.Character and (target.Character:FindFirstChild("Head") or target.Character:FindFirstChild("HumanoidRootPart"))
         G.MM_ShootTarget = target
-        G.MM_ShootAimPart = part
-        G.MM_ShootActive = true
+        -- Do not set MM_ShootActive — leftover hookmetamethod from an old inject will crash Roblox.
         local aim = G.MM_ComputeShootAim and G.MM_ComputeShootAim()
         if not aim then return false end
         local mh = hrp()
@@ -1811,7 +1763,6 @@ do
         if shootCam and mh then
             pcall(function() shootCam.CFrame = CFrame.lookAt(mh.Position + Vector3.new(0, 1.5, 0), aim) end)
         end
-        -- Never InvokeServer ShootGun ourselves — MM2 kicks that. Let the gun LocalScript fire.
         pcall(function() gun:Activate() end)
         return true
     end
@@ -1844,11 +1795,10 @@ do
         if not botHasGun() and not pickUpDroppedGun() then return false, "No gun available" end
         tpHome()
         leaveIfClose(target)
-        installShootHooks()
         local gun = getHeldTool(me, G.MM_GunNames)
         if not gun or not equipTool(gun) then return false, "No gun available" end
         G.MM_ShootTarget = target
-        G.MM_ShootActive = true
+        G.MM_ShootActive = false
         local started = tick()
         local shots = 0
         while session.active and isAlive(me) and isAlive(target) and shots < SHOOT_MAX and (tick() - started) < SHOOT_TIMEOUT_SEC do

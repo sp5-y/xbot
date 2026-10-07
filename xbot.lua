@@ -1,4 +1,4 @@
---[[ Xeno V1.04 XBOT_BUILD 20261006i ]]--
+--[[ Xeno V1.04 XBOT_BUILD 20261006k ]]--
 local GRAPHICS = true
 local TARGET_FPS = 50
 local Players = game:GetService("Players")
@@ -766,14 +766,16 @@ local function cleanChatText(msg)
     return tostring(msg or ""):gsub("[\n\r]", ""):gsub("\t", " "):gsub("[ ]+", " ")
 end
 local function seenCommandRecently(p, msg)
-    msg = tostring(msg or "")
+    msg = cleanChatText(msg):lower()
     if msg == "" then return true end
-    local key = tostring(p.UserId) .. "\0" .. msg
+    if msg:sub(1, 1) ~= "!" then return false end
+    local stem = msg:match("^(!%S+)") or msg
+    local key = tostring(p.UserId) .. "\0" .. stem
     local now = tick()
     local last = recentCommandKeys[key]
     recentCommandKeys[key] = now
-    if last and now - last < 1.5 then return true end
-    task.delay(3, function()
+    if last and now - last < 3 then return true end
+    task.delay(5, function()
         if recentCommandKeys[key] == now then
             recentCommandKeys[key] = nil
         end
@@ -1684,10 +1686,10 @@ local function equipTool(tool)
     return tool and tool.Parent == me.Character
 end
 
---[[ Sheriff shoot — perch above target, Activate, leave. No remotes, no hooks. ]]--
+--[[ Sheriff shoot — character stays put. Camera LoS + gun handle, no player TP. ]]--
 do
     G.MM_ShootActive = false
-    local HEIGHT = 54
+    local RANGE = 24
     local function headOf(target)
         local char = target and target.Character
         return char and (char:FindFirstChild("Head") or char:FindFirstChild("HumanoidRootPart"))
@@ -1695,28 +1697,68 @@ do
     local function aimPoint(head)
         local vel = Vector3.zero
         pcall(function() vel = head.AssemblyLinearVelocity end)
-        return head.Position + Vector3.new(vel.X, 0, vel.Z) * 0.1
+        return head.Position + Vector3.new(vel.X, 0, vel.Z) * 0.12
     end
-    local function perchAndAim(target)
-        local head = headOf(target)
+    local function aimOrigin(look)
+        local back = Vector3.new(1, 0, 0)
         local h = hrp()
-        if not (head and h) then return false end
-        local look = aimPoint(head)
-        local pos = look + Vector3.new(0, HEIGHT, 0)
-        local cf = CFrame.lookAt(pos, look)
-        pcall(function()
-            h.AssemblyLinearVelocity = Vector3.zero
-            h.CFrame = cf
-            workspace.CurrentCamera.CFrame = cf
-        end)
-        return true
+        if h then
+            local d = Vector3.new(h.Position.X - look.X, 0, h.Position.Z - look.Z)
+            if d.Magnitude > 1 then back = d.Unit end
+        end
+        return look + back * RANGE + Vector3.new(0, 4, 0)
     end
     local function centerMouse()
         pcall(function()
             local vim = game:GetService("VirtualInputManager")
-            local vs = workspace.CurrentCamera.ViewportSize
+            local vs = cam.ViewportSize
             vim:SendMouseMoveEvent(vs.X * 0.5, vs.Y * 0.5, game)
         end)
+    end
+    local function holdAim(cf)
+        return RunSvc.RenderStepped:Connect(function()
+            cam.CameraType = Enum.CameraType.Scriptable
+            cam.CFrame = cf
+        end)
+    end
+    local function releaseAim(conn)
+        if conn then pcall(function() conn:Disconnect() end) end
+        pcall(function() cam.CameraType = Enum.CameraType.Custom end)
+    end
+    local function holdGun(gun, cf)
+        local handle = gun and gun:FindFirstChild("Handle")
+        if not handle then return function() end end
+        local grips = {}
+        local function scan(root)
+            if not root then return end
+            for _, d in ipairs(root:GetChildren()) do
+                if (d:IsA("Weld") or d:IsA("Motor6D") or d:IsA("WeldConstraint"))
+                    and (d.Part0 == handle or d.Part1 == handle or d.Name == "RightGrip") then
+                    grips[#grips + 1] = d
+                    pcall(function() d.Enabled = false end)
+                end
+            end
+        end
+        scan(handle)
+        local char = me.Character
+        if char then
+            scan(char:FindFirstChild("Right Arm"))
+            scan(char:FindFirstChild("RightHand"))
+        end
+        pcall(function()
+            handle.Anchored = true
+            handle.CFrame = cf
+        end)
+        local conn = RunSvc.Heartbeat:Connect(function()
+            pcall(function() handle.CFrame = cf end)
+        end)
+        return function()
+            if conn then pcall(function() conn:Disconnect() end) end
+            pcall(function() handle.Anchored = false end)
+            for i = 1, #grips do
+                pcall(function() grips[i].Enabled = true end)
+            end
+        end
     end
     local function resolveShootTarget(query)
         query = tostring(query or ""):match("^%s*(.-)%s*$") or ""
@@ -1738,12 +1780,18 @@ do
         return picked, nil
     end
     local function shootOnce(target, gun)
-        if not perchAndAim(target) then return false end
-        RunSvc.Heartbeat:Wait()
-        if not perchAndAim(target) then return false end
+        local head = headOf(target)
+        if not head then return false end
+        local look = aimPoint(head)
+        local cf = CFrame.lookAt(aimOrigin(look), look)
+        local camConn = holdAim(cf)
+        local restoreGun = holdGun(gun, cf)
         centerMouse()
+        RunSvc.Heartbeat:Wait()
         pcall(function() gun:Activate() end)
-        task.wait(0.18)
+        task.wait(0.14)
+        restoreGun()
+        releaseAim(camConn)
         return true
     end
     local function shootTargetLoop(target)
@@ -1760,35 +1808,30 @@ do
         local deadline = tick() + 28
         while G.MM_ShootActive and tick() < deadline do
             if not isAlive(target) then
-                tpHome()
                 G.MM_ShootActive = false
                 return true, "Shot " .. name
             end
             if botHasKnife() or not isAlive(me) then
-                tpHome()
                 G.MM_ShootActive = false
                 return false, botHasKnife() and "Bot is murderer — no gun" or "Bot died"
             end
             if not botHasGun() then
                 if not (G.MM_GrabDroppedGun and G.MM_GrabDroppedGun(2.5)) then
-                    tpHome()
                     G.MM_ShootActive = false
                     return false, "No gun available"
                 end
+                tpHome()
             end
             local gun = getHeldTool(me, G.MM_GunNames)
             if not gun or not equipTool(gun) then
-                tpHome()
                 G.MM_ShootActive = false
                 return false, "No gun available"
             end
             if not shootOnce(target, gun) then
-                tpHome()
                 G.MM_ShootActive = false
                 if not isAlive(target) then return true, "Shot " .. name end
                 return false, "Player not found"
             end
-            tpHome()
             if not isAlive(target) then
                 G.MM_ShootActive = false
                 return true, "Shot " .. name
@@ -1802,7 +1845,6 @@ do
                 task.wait(0.08)
             end
         end
-        tpHome()
         G.MM_ShootActive = false
         if not isAlive(target) then return true, "Shot " .. name end
         return false, "Shoot timed out"
@@ -2338,7 +2380,7 @@ end
 local COMMAND_HELP = {
     reveal = "Show current murderer and sheriff",
     stab = "all | sheriff | <name> - Murderer only, stab targets",
-    shoot = "murderer | sheriff | <name> - Silent-aim from range, does not TP onto them",
+    shoot = "murderer | sheriff | <name> - Silent aim, character stays put",
     togglereveal = "Toggle automatic role callout each round",
     togglealerts = "Toggle kill alerts (ignores resets)",
     togglereset = "Toggle auto-reset when owner dies",
@@ -2922,7 +2964,6 @@ local function watchHiddenChat(p, msg)
         if conn then conn:Disconnect() end
         if hidden and session.active then
             showHiddenChat(p, clean)
-            routeCommand(p, clean)
         end
     end)
 end
@@ -2934,9 +2975,11 @@ local function hookSpeaker(p)
         trackConnection(chatted:Connect(function(msg)
             if not session.active then return end
             watchHiddenChat(p, msg)
-            task.delay(isLegacy and 0.45 or 0.7, function()
-                if session.active then routeCommand(p, msg, false) end
-            end)
+            if isLegacy then
+                task.delay(0.45, function()
+                    if session.active then routeCommand(p, msg, false) end
+                end)
+            end
         end))
     end)
 end

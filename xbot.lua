@@ -1,4 +1,4 @@
---[[ Xeno V1.04 XBOT_BUILD 20261006k ]]--
+--[[ Xeno V1.04 XBOT_BUILD 20261006l ]]--
 local GRAPHICS = true
 local TARGET_FPS = 50
 local Players = game:GetService("Players")
@@ -1686,10 +1686,9 @@ local function equipTool(tool)
     return tool and tool.Parent == me.Character
 end
 
---[[ Sheriff shoot — character stays put. Camera LoS + gun handle, no player TP. ]]--
+--[[ Sheriff shoot — stay put, send hit pos. No world bullet, no hooks. ]]--
 do
     G.MM_ShootActive = false
-    local RANGE = 24
     local function headOf(target)
         local char = target and target.Character
         return char and (char:FindFirstChild("Head") or char:FindFirstChild("HumanoidRootPart"))
@@ -1699,65 +1698,11 @@ do
         pcall(function() vel = head.AssemblyLinearVelocity end)
         return head.Position + Vector3.new(vel.X, 0, vel.Z) * 0.12
     end
-    local function aimOrigin(look)
-        local back = Vector3.new(1, 0, 0)
-        local h = hrp()
-        if h then
-            local d = Vector3.new(h.Position.X - look.X, 0, h.Position.Z - look.Z)
-            if d.Magnitude > 1 then back = d.Unit end
-        end
-        return look + back * RANGE + Vector3.new(0, 4, 0)
-    end
-    local function centerMouse()
-        pcall(function()
-            local vim = game:GetService("VirtualInputManager")
-            local vs = cam.ViewportSize
-            vim:SendMouseMoveEvent(vs.X * 0.5, vs.Y * 0.5, game)
-        end)
-    end
-    local function holdAim(cf)
-        return RunSvc.RenderStepped:Connect(function()
-            cam.CameraType = Enum.CameraType.Scriptable
-            cam.CFrame = cf
-        end)
-    end
-    local function releaseAim(conn)
-        if conn then pcall(function() conn:Disconnect() end) end
-        pcall(function() cam.CameraType = Enum.CameraType.Custom end)
-    end
-    local function holdGun(gun, cf)
-        local handle = gun and gun:FindFirstChild("Handle")
-        if not handle then return function() end end
-        local grips = {}
-        local function scan(root)
-            if not root then return end
-            for _, d in ipairs(root:GetChildren()) do
-                if (d:IsA("Weld") or d:IsA("Motor6D") or d:IsA("WeldConstraint"))
-                    and (d.Part0 == handle or d.Part1 == handle or d.Name == "RightGrip") then
-                    grips[#grips + 1] = d
-                    pcall(function() d.Enabled = false end)
-                end
-            end
-        end
-        scan(handle)
-        local char = me.Character
-        if char then
-            scan(char:FindFirstChild("Right Arm"))
-            scan(char:FindFirstChild("RightHand"))
-        end
-        pcall(function()
-            handle.Anchored = true
-            handle.CFrame = cf
-        end)
-        local conn = RunSvc.Heartbeat:Connect(function()
-            pcall(function() handle.CFrame = cf end)
-        end)
-        return function()
-            if conn then pcall(function() conn:Disconnect() end) end
-            pcall(function() handle.Anchored = false end)
-            for i = 1, #grips do
-                pcall(function() grips[i].Enabled = true end)
-            end
+    local function shootRemote(gun)
+        local r = gun:FindFirstChild("ShootGun")
+        if r then return r end
+        for _, d in ipairs(gun:GetDescendants()) do
+            if d.Name == "ShootGun" then return d end
         end
     end
     local function resolveShootTarget(query)
@@ -1783,16 +1728,16 @@ do
         local head = headOf(target)
         if not head then return false end
         local look = aimPoint(head)
-        local cf = CFrame.lookAt(aimOrigin(look), look)
-        local camConn = holdAim(cf)
-        local restoreGun = holdGun(gun, cf)
-        centerMouse()
-        RunSvc.Heartbeat:Wait()
-        pcall(function() gun:Activate() end)
-        task.wait(0.14)
-        restoreGun()
-        releaseAim(camConn)
-        return true
+        local rf = shootRemote(gun)
+        if not rf then return false end
+        local t = tick()
+        local ok = false
+        if rf:IsA("RemoteFunction") then
+            ok = pcall(function() rf:InvokeServer(t, look) end)
+        elseif rf:IsA("RemoteEvent") then
+            ok = pcall(function() rf:FireServer(t, look) end)
+        end
+        return ok
     end
     local function shootTargetLoop(target)
         G.MM_ShootActive = true

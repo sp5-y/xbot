@@ -1,4 +1,4 @@
---[[ Xeno V1.05 XBOT_BUILD 20261006b ]]--
+--[[ Xeno V1.03 XBOT_BUILD 20261006c ]]--
 local Players = game:GetService("Players")
 local cref = cloneref or function(x) return x end
 local TCS = cref(game:GetService("TextChatService"))
@@ -1215,6 +1215,168 @@ end
         end
         return botHasGun()
     end
+
+    -- MM2 has no GiveGun / DropGun remote. GunDrop is server-spawned on sheriff/hero death.
+    -- If GunDrop already exists, firetouch the TARGET onto it (no bot death).
+    -- If the bot is holding the gun, only death creates GunDrop. CanBeDropped is almost always locked.
+    task.spawn(function()
+        local hits = {}
+        pcall(function()
+            for _, d in ipairs(RS:GetDescendants()) do
+                if d:IsA("RemoteEvent") or d:IsA("RemoteFunction") then
+                    local n = d.Name:lower()
+                    if n:find("gun", 1, true) or n:find("drop", 1, true) or n:find("give", 1, true)
+                       or n:find("weapon", 1, true) then
+                        table.insert(hits, d.ClassName .. " " .. d:GetFullName())
+                    end
+                end
+            end
+        end)
+        if #hits > 0 then
+            log("mm2 remotes: " .. table.concat(hits, " | "))
+        else
+            log("mm2 remotes: no Give/Drop/Gun remotes — death or GunDrop touch only")
+        end
+    end)
+
+    local function touchCharacter(char, drop)
+        if not (char and drop) then return end
+        for _, p in ipairs(char:GetChildren()) do
+            if p:IsA("BasePart") then fireTouch(p, drop) end
+        end
+        firePrompt(drop)
+    end
+
+    G.MM_DeliverDrop = function(target, timeout)
+        timeout = timeout or 1.35
+        if not isAlive(target) then return false end
+        local t0 = tick()
+        while session.active and tick() - t0 < timeout do
+            if playerHas(target, G.MM_GunNames) then return true end
+            if botHasGun() then return false end
+            local drop = findDroppedGun()
+            if not drop then return playerHas(target, G.MM_GunNames) end
+            touchCharacter(target.Character, drop)
+            task.wait(0.05)
+        end
+        return playerHas(target, G.MM_GunNames)
+    end
+
+    local function pressBackspace()
+        pcall(function()
+            local vim = game:GetService("VirtualInputManager")
+            vim:SendKeyEvent(true, Enum.KeyCode.Backspace, false, game)
+            task.wait()
+            vim:SendKeyEvent(false, Enum.KeyCode.Backspace, false, game)
+        end)
+        pcall(function()
+            local kp = rawget(G, "keypress") or rawget(_G, "keypress")
+            local kr = rawget(G, "keyrelease") or rawget(_G, "keyrelease")
+            if type(kp) == "function" then
+                kp(0x08)
+                task.wait()
+                if type(kr) == "function" then kr(0x08) end
+            end
+        end)
+    end
+
+    local function setCanBeDropped(gun)
+        pcall(function() gun.CanBeDropped = true end)
+        pcall(function()
+            if sethiddenproperty then sethiddenproperty(gun, "CanBeDropped", true) end
+        end)
+        pcall(function()
+            if setscriptable then
+                setscriptable(gun, "CanBeDropped", true)
+                gun.CanBeDropped = true
+            end
+        end)
+    end
+
+    local function fireGunDropRemotes(gun)
+        for _, d in ipairs(gun:GetDescendants()) do
+            if d:IsA("RemoteEvent") or d:IsA("RemoteFunction") then
+                local n = d.Name:lower()
+                if n:find("drop", 1, true) or n:find("throw", 1, true) or n:find("unequip", 1, true) then
+                    log("gun: tool remote " .. d.ClassName .. " " .. d:GetFullName())
+                    if d:IsA("RemoteEvent") then
+                        pcall(function() d:FireServer() end)
+                    else
+                        pcall(function() d:InvokeServer() end)
+                    end
+                end
+            end
+        end
+    end
+
+    -- Engine drop only works while equipped. Backpack Unequip does not drop.
+    -- Server CanBeDropped is almost always false; client set is local unless the engine accepts it.
+    G.MM_ForceDropGun = function()
+        local gun = getHeldTool(me, G.MM_GunNames)
+        if not gun then return false end
+        local hum = me.Character and me.Character:FindFirstChildOfClass("Humanoid")
+        if not hum then return false end
+        pcall(function() StarterGui:SetCoreGuiEnabled(Enum.CoreGuiType.Backpack, true) end)
+        if gun.Parent ~= me.Character then
+            pcall(function() hum:EquipTool(gun) end)
+            task.wait(0.06)
+            gun = getHeldTool(me, G.MM_GunNames)
+            if not gun then return false end
+        end
+        log("gun: force-drop start CanBeDropped=" .. tostring(gun.CanBeDropped) .. " parent=" .. tostring(gun.Parent and gun.Parent.Name))
+        fireGunDropRemotes(gun)
+        setCanBeDropped(gun)
+        if gun.Parent ~= me.Character then
+            pcall(function() hum:EquipTool(gun) end)
+            task.wait(0.04)
+        end
+        pressBackspace()
+        task.wait(0.05)
+        gun = getHeldTool(me, G.MM_GunNames)
+        if gun then
+            setCanBeDropped(gun)
+            pcall(function() gun.Parent = workspace end)
+        end
+        local t0 = tick()
+        while tick() - t0 < 0.6 do
+            if findDroppedGun() then
+                log("gun: force-drop created GunDrop")
+                return true
+            end
+            if not botHasGun() then
+                for _, o in ipairs(workspace:GetChildren()) do
+                    if o:IsA("Tool") and table.find(G.MM_GunNames, o.Name) then
+                        log("gun: force-drop left Tool in workspace")
+                        return true
+                    end
+                end
+            end
+            task.wait(0.05)
+        end
+        if botHasGun() then
+            log("gun: server rejected backpack drop (CanBeDropped locked)")
+            return false
+        end
+        return findDroppedGun() ~= nil
+    end
+    G.MM_TryClientDrop = G.MM_ForceDropGun
+
+    G.MM_DieInPlace = function()
+        local char = me.Character
+        if not char then return end
+        local h = char:FindFirstChild("HumanoidRootPart")
+        if h then
+            pcall(function() h.Anchored = false end)
+            zeroVel(h)
+        end
+        local hum = char:FindFirstChildOfClass("Humanoid")
+        if hum then
+            pcall(function() hum.Health = 0 end)
+            pcall(function() hum:TakeDamage(hum.MaxHealth * 2) end)
+            pcall(function() hum:ChangeState(Enum.HumanoidStateType.Dead) end)
+        end
+        pcall(function() char:BreakJoints() end)
+    end
 end)()
 
 --[[ Anti Fling ]]--
@@ -1378,11 +1540,14 @@ local function tpHome()
 end
 local function reset(stay)
     stopFollow()
+    if stay and G.MM_DieInPlace then
+        G.MM_DieInPlace()
+        return
+    end
     local char = me.Character
     if not char then return end
     local h = char:FindFirstChild("HumanoidRootPart")
-    -- Void-TP first makes GunDrop spawn in the void. Die in place when delivering.
-    if h and not stay then
+    if h then
         pcall(function() h.CFrame = CFrame.new(0, -10000, 0) end)
     end
     local hum = char:FindFirstChildOfClass("Humanoid")
@@ -1405,14 +1570,12 @@ local function runDeferredOwnerResetIfIdle()
         task.spawn(function() pcall(reset) end)
     end
 end
-local function dropGunAt(target, boost)
-    if _G.MM_StabBusy then return false end
-    if not isAlive(target) then return false end
+local function standOnTarget(target, boost)
     boost = boost or 1
     stopFollow()
     local h = hrp()
-    local oh = target.Character:FindFirstChild("HumanoidRootPart")
-    local hum = target.Character:FindFirstChildOfClass("Humanoid")
+    local oh = target.Character and target.Character:FindFirstChild("HumanoidRootPart")
+    local hum = target.Character and target.Character:FindFirstChildOfClass("Humanoid")
     if not (h and oh) then return false end
     local samplePos, sampleAt = oh.Position, tick()
     task.wait(GUN_MOTION_SAMPLE_SEC)
@@ -1427,21 +1590,6 @@ local function dropGunAt(target, boost)
     zeroVel(h)
     h.CFrame = CFrame.new(dropPos, face)
     zeroVel(h)
-    local movedFrom, movedAt = oh.Position, tick()
-    task.wait(0.05)
-    local fresh = target.Character and target.Character:FindFirstChild("HumanoidRootPart")
-    local freshHum = target.Character and target.Character:FindFirstChildOfClass("Humanoid")
-    if fresh and isAlive(target) then
-        dt = math.max(tick() - movedAt, 0.03)
-        observedVelocity = (fresh.Position - movedFrom) / dt
-        lead = G.MM_gunDropLead(fresh, freshHum, boost, observedVelocity, target.UserId, dt)
-        dropPos = fresh.Position + lead + Vector3.new(0, 0.1, 0)
-        face = lead.Magnitude > 0.1 and (dropPos + lead.Unit) or (fresh.Position + fresh.CFrame.LookVector)
-        h.CFrame = CFrame.new(dropPos, face)
-        zeroVel(h)
-    end
-    task.wait(0.24)
-    reset(true)
     return true
 end
 function G.MM_TargetHasGun(target)
@@ -1465,21 +1613,39 @@ local function bringGun(target)
     target = target or findOwner()
     if not isAlive(target) then return finish(false) end
     if G.MM_TargetHasGun(target) then return finish(true) end
-    for attempt = 1, 3 do
-        if not botHasGun() then
-            if not (G.MM_GrabDroppedGun and G.MM_GrabDroppedGun(2.4)) then
-                return finish(false)
-            end
-        end
-        if not botHasGun() then return finish(false) end
-        local boost = attempt == 1 and 0.8 or (attempt == 2 and 1 or 1.25)
-        if not dropGunAt(target, boost) then return finish(false) end
-        if G.MM_WaitForGunPickup(target, 2.1) then
+
+    -- 1) GunDrop already on the map: touch it to the target. Bot stays alive.
+    if findDroppedGun() and not botHasGun() then
+        if G.MM_DeliverDrop and G.MM_DeliverDrop(target, 1.4) then
+            log("gun: delivered GunDrop without reset")
             return finish(true)
         end
-        task.wait(0.12)
+        if G.MM_TargetHasGun(target) then return finish(true) end
     end
-    return finish(G.MM_TargetHasGun(target))
+
+    -- 2) Bot must hold it (sheriff/hero or we just picked up). No GiveGun remote.
+    if not botHasGun() then
+        if not (G.MM_GrabDroppedGun and G.MM_GrabDroppedGun(2.4)) then
+            return finish(false)
+        end
+    end
+    if not botHasGun() then return finish(false) end
+
+    if not standOnTarget(target, 0.8) then return finish(false) end
+    if G.MM_TryClientDrop and G.MM_TryClientDrop() then
+        if G.MM_DeliverDrop then G.MM_DeliverDrop(target, 0.8) end
+        if G.MM_WaitForGunPickup(target, 1.2) then
+            log("gun: CanBeDropped worked — no reset")
+            tpHome()
+            return finish(true)
+        end
+    end
+
+    -- 3) Only server-legal drop left: die in place on them. No LoadCharacter / void.
+    if not standOnTarget(target, 1) then return finish(false) end
+    task.wait(0.08)
+    if G.MM_DieInPlace then G.MM_DieInPlace() else reset(true) end
+    return finish(G.MM_WaitForGunPickup(target, 2.1))
 end
 local function stashGunAtSpawn()
     G.MM_ActionBegin()
@@ -1489,15 +1655,25 @@ local function stashGunAtSpawn()
     end
     if _G.MM_StabBusy then return finish(false) end
     if not SPAWN_CFRAME or not isAlive(me) then return finish(false) end
+    local drop = findDroppedGun()
+    if drop and not botHasGun() then
+        local nearSpawn = (drop.Position - SPAWN_CFRAME.Position).Magnitude < 18
+        if nearSpawn then
+            return finish(true)
+        end
+    end
     if not botHasGun() then
         if not (G.MM_GrabDroppedGun and G.MM_GrabDroppedGun(2.8)) then
             return finish(false)
         end
         if not botHasGun() then return finish(false) end
     end
-    for i = 1, 2 do tpHome(); task.wait(0.15) end
-    task.wait(0.28)
-    reset(true)
+    tpHome()
+    task.wait(0.12)
+    if G.MM_TryClientDrop and G.MM_TryClientDrop() then
+        return finish(true)
+    end
+    if G.MM_DieInPlace then G.MM_DieInPlace() else reset(true) end
     return finish(true)
 end
 local function ownerMurdererActive(murderer, ownerPlayer)
@@ -2294,7 +2470,7 @@ local COMMAND_HELP = {
     togglealerts = "Toggle kill alerts (ignores resets)",
     togglereset = "Toggle auto-reset when owner dies",
     toggledrop = "Toggle stashing guns when you are murderer",
-    drop = "Drop gun at spawn",
+    drop = "Stash gun at spawn (touch-drop if possible, else die in place)",
     reset = "Force bot respawn",
     tp = "<player> - Teleport bot to a player",
     tpmurd = "Teleport bot to the murderer",
@@ -2302,7 +2478,7 @@ local COMMAND_HELP = {
     spawn = "Teleport bot to spawn",
     follow = "<player> - Follow a player",
     unfollow = "Stop following current player",
-    gun = "<player> - Deliver gun to a player",
+    gun = "<player> - Give GunDrop via touch if dropped; else die-in-place (no GiveGun remote)",
     togglegun = "<player> - Auto-deliver gun to a player",
     toggleshoot = "[murderer | name] - Auto-grab dropped gun and silent-aim shoot",
     chat = "<msg> - Make bot send a public chat message",

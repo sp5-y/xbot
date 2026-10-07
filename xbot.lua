@@ -1,4 +1,4 @@
---[[ Xeno V1.04 XBOT_BUILD 20261006s ]]--
+--[[ Xeno V1.04 XBOT_BUILD 20261006t ]]--
 local GRAPHICS = true
 local TARGET_FPS = 50
 local Players = game:GetService("Players")
@@ -291,6 +291,9 @@ G.MM_OnPlayerKilled = nil
         if n == 0 then return end
         local playerCount = #Players:GetPlayers()
         if sawRole then
+            if not G.MM_RoundLive then
+                G.MM_RoundPulse = tick()
+            end
             G.MM_RoundLive = true
         elseif n >= math.max(2, playerCount - 1) then
             G.MM_RoundLive = false
@@ -333,6 +336,7 @@ G.MM_OnPlayerKilled = nil
             if rec.Role == "Murderer" or rec.Role == "Sheriff" or rec.Role == "Hero" then
                 G.MM_RoundLive = true
             end
+            G.MM_RoundPulse = tick()
         end)
     end)
     pcall(function()
@@ -1535,9 +1539,8 @@ local function tpHome()
 end
 local function goSpawnWhenReady()
     task.spawn(function()
-        for _ = 1, 30 do
+        for _ = 1, 20 do
             if not session.active then return end
-            if _G.MM_ShootBusy or _G.MM_GunBusy or _G.MM_StabBusy then return end
             if hrp() then
                 tpHome()
                 return
@@ -1546,6 +1549,16 @@ local function goSpawnWhenReady()
         end
     end)
 end
+local function homeBurst()
+    task.spawn(function()
+        for _ = 1, 16 do
+            if not session.active then return end
+            if hrp() then tpHome() end
+            task.wait(0.12)
+        end
+    end)
+end
+G.MM_HomeBurst = homeBurst
 if me.Character then goSpawnWhenReady() end
 trackConnection(me.CharacterAdded:Connect(function()
     goSpawnWhenReady()
@@ -1718,64 +1731,82 @@ do
         return root.Position + vel / 40
     end
     local function isRemote(x)
-        return x and (x:IsA("RemoteFunction") or x:IsA("RemoteEvent"))
+        local ok, a = pcall(function()
+            return x and (x:IsA("RemoteFunction") or x:IsA("RemoteEvent"))
+        end)
+        return ok and a
+    end
+    local function pickKind(inst)
+        local n = (inst and inst.Name or ""):lower()
+        local p = inst and inst.Parent and inst.Parent.Name:lower() or ""
+        if n:find("shoot", 1, true) then return "classic" end
+        if n:find("beam", 1, true) or p:find("beam", 1, true) then return "beam" end
+        return "beam"
+    end
+    local function scanTree(root, prefer)
+        if not root then return end
+        local any
+        for _, d in ipairs(root:GetDescendants()) do
+            if isRemote(d) then
+                local n = d.Name:lower()
+                local p = d.Parent and d.Parent.Name:lower() or ""
+                if prefer == "beam" and (n:find("beam", 1, true) or p:find("beam", 1, true) or n == "remotefunction") then
+                    return d, "beam"
+                end
+                if n:find("shoot", 1, true) or n:find("beam", 1, true) or p:find("beam", 1, true)
+                    or p:find("knifelocal", 1, true) or n:find("gun", 1, true) then
+                    return d, pickKind(d)
+                end
+                if not any then any = d end
+            end
+        end
+        if any then return any, pickKind(any) end
     end
     local function shootRemote(gun)
-        local kl = gun:FindFirstChild("KnifeLocal", true)
-        if kl then
-            local beam = kl:FindFirstChild("CreateBeam", true)
+        local found, kind
+        pcall(function()
+            local kl = gun:FindFirstChild("KnifeLocal", true)
+            local beam = kl and kl:FindFirstChild("CreateBeam", true) or gun:FindFirstChild("CreateBeam", true)
             if beam then
-                local rf = beam:FindFirstChildWhichIsA("RemoteFunction") or beam:FindFirstChildWhichIsA("RemoteEvent")
-                if isRemote(rf) then return rf, "beam" end
-                if isRemote(beam) then return beam, "beam" end
-            end
-        end
-        local beam = gun:FindFirstChild("CreateBeam", true)
-        if beam then
-            local rf = beam:FindFirstChildWhichIsA("RemoteFunction") or beam:FindFirstChildWhichIsA("RemoteEvent")
-            if isRemote(rf) then return rf, "beam" end
-            if isRemote(beam) then return beam, "beam" end
-        end
-        local sg = gun:FindFirstChild("ShootGun", true)
-        if isRemote(sg) then return sg, "classic" end
-        for _, d in ipairs(gun:GetDescendants()) do
-            if d:IsA("RemoteFunction") then return d, "beam" end
-        end
-        if getsenv then
-            local ls = gun:FindFirstChildWhichIsA("LocalScript", true)
-            if ls then
-                local ok, env = pcall(getsenv, ls)
-                if ok and type(env) == "table" then
-                    for _, v in pairs(env) do
-                        if isRemote(v) then return v, "beam" end
-                    end
+                for _, c in ipairs(beam:GetChildren()) do
+                    if isRemote(c) then found, kind = c, "beam" return end
                 end
+                if isRemote(beam) then found, kind = beam, "beam" return end
             end
-        end
+            local sg = gun:FindFirstChild("ShootGun", true)
+            if isRemote(sg) then found, kind = sg, "classic" return end
+            found, kind = scanTree(gun, "beam")
+            if found then return end
+            found, kind = scanTree(me.Character, "beam")
+            if found then return end
+            found, kind = scanTree(RS, "beam")
+        end)
+        return found, kind
+    end
+    local function dumpGun(gun)
+        local parts = {}
+        pcall(function()
+            for _, d in ipairs(gun:GetDescendants()) do
+                parts[#parts + 1] = d.ClassName .. ":" .. d.Name
+            end
+        end)
+        log("gun tree " .. tostring(gun and gun.Name) .. " => " .. table.concat(parts, ", "))
     end
     local function silentFire(gun, pos)
         local rf, kind = shootRemote(gun)
         if not rf then
-            log("shoot: no gun remote (KnifeLocal.CreateBeam / ShootGun)")
+            dumpGun(gun)
             return false
         end
-        log("shoot remote: " .. rf:GetFullName())
+        pcall(function() log("shoot remote: " .. rf:GetFullName() .. " " .. tostring(kind)) end)
         local function invoke(a, b, c)
             if rf:IsA("RemoteFunction") then
                 return pcall(function()
-                    if c ~= nil then
-                        rf:InvokeServer(a, b, c)
-                    else
-                        rf:InvokeServer(a, b)
-                    end
+                    if c ~= nil then rf:InvokeServer(a, b, c) else rf:InvokeServer(a, b) end
                 end)
             end
             return pcall(function()
-                if c ~= nil then
-                    rf:FireServer(a, b, c)
-                else
-                    rf:FireServer(a, b)
-                end
+                if c ~= nil then rf:FireServer(a, b, c) else rf:FireServer(a, b) end
             end)
         end
         if kind == "classic" then
@@ -1846,7 +1877,15 @@ do
                 G.MM_ShootActive = false
                 return false, "No gun available"
             end
-            shootOnce(target, gun)
+            local ready = false
+            for _ = 1, 18 do
+                if select(1, shootRemote(gun)) then ready = true break end
+                task.wait(0.08)
+            end
+            if not ready then
+                dumpGun(gun)
+            end
+            pcall(function() shootOnce(target, gun) end)
             if not isAlive(target) then
                 G.MM_ShootActive = false
                 return true, "Shot " .. name
@@ -4265,6 +4304,7 @@ end
 --[[ Main loop ]]--
 local function runMainLoop()
     local lastMurderId, announced
+    local lastRoundPulse = 0
     local ownerMurdStashBusy = false
     local nextAutoGunAt = 0
     local nextAutoShootAt = 0
@@ -4277,6 +4317,12 @@ while session.active and gui.Parent do
         local roundActive = isRoundActive()
 
     local liveNow = (G.MM_RoundLive == true) or (m ~= nil) or botM
+    local pulse = tonumber(G.MM_RoundPulse) or 0
+    if pulse > 0 and pulse ~= lastRoundPulse then
+        lastRoundPulse = pulse
+        announced = false
+        homeBurst()
+    end
     if m then
         if lastMurderId ~= m.UserId then
             lastMurderId = m.UserId
@@ -4303,7 +4349,7 @@ while session.active and gui.Parent do
         gunDelivered = false
         shootDone = false
         revealAnnouncePending = true
-        tpHome()
+        homeBurst()
         local owner = findOwner() or findConfiguredOwner()
         task.spawn(function()
             local curM, curS, curBotM, curBotS = resolveRoleSnapshot(2.5)

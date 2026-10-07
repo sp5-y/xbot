@@ -1,4 +1,4 @@
---[[ Xeno V1.04 XBOT_BUILD 20261006m ]]--
+--[[ Xeno V1.04 XBOT_BUILD 20261006o ]]--
 local GRAPHICS = true
 local TARGET_FPS = 50
 local Players = game:GetService("Players")
@@ -1686,64 +1686,95 @@ local function equipTool(tool)
     return tool and tool.Parent == me.Character
 end
 
---[[ Sheriff shoot — stay put, send hit pos. No world bullet, no hooks. ]]--
+--[[ Sheriff shoot — move gun Handle to 30 studs, fire, character stays. ]]--
 do
     G.MM_ShootActive = false
+    local RANGE = 30
+    local HOLD = 0.45
     local function headOf(target)
         local char = target and target.Character
         return char and (char:FindFirstChild("Head") or char:FindFirstChild("HumanoidRootPart"))
     end
-    local function aimPoint(head)
+    local function aimPoint(target)
+        local head = headOf(target)
+        if not head then return end
+        local root = target.Character and target.Character:FindFirstChild("HumanoidRootPart") or head
         local vel = Vector3.zero
-        pcall(function() vel = head.AssemblyLinearVelocity end)
-        return head.Position + Vector3.new(vel.X, 0, vel.Z) * 0.12
+        pcall(function() vel = root.AssemblyLinearVelocity end)
+        return head.Position + Vector3.new(vel.X, 0, vel.Z) / 40
     end
-    local function isShootRemote(x)
-        return x and (x:IsA("RemoteFunction") or x:IsA("RemoteEvent"))
+    local function gunOrigin(look)
+        local back = Vector3.new(1, 0, 0)
+        local h = hrp()
+        if h then
+            local d = Vector3.new(h.Position.X - look.X, 0, h.Position.Z - look.Z)
+            if d.Magnitude > 1 then back = d.Unit end
+        end
+        return look + back * RANGE + Vector3.new(0, 3, 0)
     end
-    local function shootRemote(gun)
-        local r = gun:FindFirstChild("ShootGun")
-        if isShootRemote(r) then return r end
-        for _, d in ipairs(gun:GetDescendants()) do
-            if isShootRemote(d) and d.Name:lower():find("shoot", 1, true) then
-                return d
+    local function disableGrips(handle)
+        local char = me.Character
+        if not (handle and char) then return end
+        for _, d in ipairs(char:GetDescendants()) do
+            if (d:IsA("Weld") or d:IsA("Motor6D") or d:IsA("WeldConstraint"))
+                and (d.Name == "RightGrip" or d.Part0 == handle or d.Part1 == handle) then
+                pcall(function() d.Enabled = false end)
             end
         end
-        if getsenv then
-            local ls = gun:FindFirstChildWhichIsA("LocalScript", true)
-            if ls then
-                local ok, env = pcall(getsenv, ls)
-                if ok and type(env) == "table" then
-                    for _, v in pairs(env) do
-                        if isShootRemote(v) then return v end
-                    end
-                end
+        for _, d in ipairs(handle:GetChildren()) do
+            if d:IsA("Weld") or d:IsA("Motor6D") or d:IsA("WeldConstraint") then
+                pcall(function() d.Enabled = false end)
             end
         end
-        for _, d in ipairs(gun:GetDescendants()) do
-            if isShootRemote(d) then return d end
+    end
+    local function enableGrips(handle)
+        local char = me.Character
+        if not (handle and char) then return end
+        for _, d in ipairs(char:GetDescendants()) do
+            if d.Name == "RightGrip" or ((d:IsA("Weld") or d:IsA("Motor6D") or d:IsA("WeldConstraint"))
+                and (d.Part0 == handle or d.Part1 == handle)) then
+                pcall(function() d.Enabled = true end)
+            end
         end
     end
-    local function fireRemote(rf, look)
-        local t = tick()
-        local calls
-        if rf:IsA("RemoteFunction") then
-            calls = {
-                function() rf:InvokeServer(t, look) end,
-                function() rf:InvokeServer(t, CFrame.new(look)) end,
-                function() rf:InvokeServer(look) end,
-            }
+    local function plantGunAndFire(target, gun)
+        local look = aimPoint(target)
+        local handle = gun and gun:FindFirstChild("Handle")
+        if not look then return false end
+        local cf = CFrame.lookAt(gunOrigin(look), look)
+        local conn
+        if handle then
+            disableGrips(handle)
+            pcall(function()
+                handle.Anchored = true
+                handle.CFrame = cf
+            end)
+            conn = RunSvc.Heartbeat:Connect(function()
+                disableGrips(handle)
+                pcall(function()
+                    handle.CFrame = cf
+                    cam.CameraType = Enum.CameraType.Scriptable
+                    cam.CFrame = cf
+                end)
+            end)
         else
-            calls = {
-                function() rf:FireServer(t, look) end,
-                function() rf:FireServer(t, CFrame.new(look)) end,
-                function() rf:FireServer(look) end,
-            }
+            conn = RunSvc.Heartbeat:Connect(function()
+                pcall(function()
+                    cam.CameraType = Enum.CameraType.Scriptable
+                    cam.CFrame = cf
+                end)
+            end)
         end
-        for i = 1, #calls do
-            if pcall(calls[i]) then return true end
+        task.wait(0.08)
+        pcall(function() gun:Activate() end)
+        task.wait(HOLD)
+        if conn then pcall(function() conn:Disconnect() end) end
+        if handle then
+            pcall(function() handle.Anchored = false end)
+            enableGrips(handle)
         end
-        return false
+        pcall(function() cam.CameraType = Enum.CameraType.Custom end)
+        return true
     end
     local function resolveShootTarget(query)
         query = tostring(query or ""):match("^%s*(.-)%s*$") or ""
@@ -1765,13 +1796,7 @@ do
         return picked, nil
     end
     local function shootOnce(target, gun)
-        local head = headOf(target)
-        if not head then return false end
-        local look = aimPoint(head)
-        local rf = shootRemote(gun)
-        if rf and fireRemote(rf, look) then return true end
-        pcall(function() gun:Activate() end)
-        return true
+        return plantGunAndFire(target, gun)
     end
     local function shootTargetLoop(target)
         G.MM_ShootActive = true
@@ -2359,7 +2384,7 @@ end
 local COMMAND_HELP = {
     reveal = "Show current murderer and sheriff",
     stab = "all | sheriff | <name> - Murderer only, stab targets",
-    shoot = "murderer | sheriff | <name> - Silent aim, character stays put",
+    shoot = "murderer | sheriff | <name> - Plants gun 30 studs out and fires",
     togglereveal = "Toggle automatic role callout each round",
     togglealerts = "Toggle kill alerts (ignores resets)",
     togglereset = "Toggle auto-reset when owner dies",

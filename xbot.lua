@@ -1,4 +1,4 @@
---[[ Xeno V1.04 XBOT_BUILD 20261009i ]]--
+--[[ Xeno V1.05 XBOT_BUILD 20261009i ]]--
 local GRAPHICS = true
 local TARGET_FPS = 50
 local Players = game:GetService("Players")

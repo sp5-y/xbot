@@ -1,4 +1,4 @@
---[[ Xeno V1.04 XBOT_BUILD 20261009b ]]--
+--[[ Xeno V1.04 XBOT_BUILD 20261009e ]]--
 local GRAPHICS = true
 local TARGET_FPS = 50
 local Players = game:GetService("Players")
@@ -252,6 +252,7 @@ end
 G.MM_PlayerData = {}
 G.MM_HasKilledField = false
 G.MM_RoundLive = false
+G.MM_RoleSentThisRound = false
 G.MM_OnPlayerKilled = nil
 ;(function()
     local function parseKilled(info)
@@ -281,7 +282,10 @@ G.MM_OnPlayerKilled = nil
             if type(kb) == "string" and kb ~= "" then killer = kb end
         end
         local dead = info.Dead == true or info.dead == true
-        local role = info.Role or info.role
+        local role = info.Role or info.role or info.CurrentRole or info.Class
+        if type(role) == "table" then
+            role = role.Name or role.Role or role.role
+        end
         if (not role or role == "Unknown") and old and old.Role and old.Role ~= "Unknown" then
             if dead or killed or old.Dead or old.Killed then
                 role = old.Role
@@ -302,6 +306,43 @@ G.MM_OnPlayerKilled = nil
                     sawRole = true
                 end
                 G.MM_PlayerData[name] = rec
+                local pl
+                if type(info) == "table" then
+                    local iuid = info.UserId or info.userId or info.UserID
+                    if iuid then
+                        pl = Players:GetPlayerByUserId(tonumber(iuid))
+                    end
+                    if not pl and typeof(info.Player) == "Instance" and info.Player:IsA("Player") then
+                        pl = info.Player
+                    end
+                    local pname = info.Name or info.name or info.Username or info.PlayerName
+                    if not pl and type(info.Player) == "string" then
+                        pname = pname or info.Player
+                    end
+                    if not pl and pname then
+                        pl = Players:FindFirstChild(tostring(pname))
+                    end
+                end
+                if not pl then
+                    local uid = tonumber(name)
+                    if uid then
+                        pl = Players:GetPlayerByUserId(uid)
+                    else
+                        pl = Players:FindFirstChild(tostring(name))
+                        if not pl then
+                            for _, cand in ipairs(Players:GetPlayers()) do
+                                if tostring(cand.DisplayName) == tostring(name) then
+                                    pl = cand
+                                    break
+                                end
+                            end
+                        end
+                    end
+                end
+                if pl then
+                    G.MM_PlayerData[pl.Name] = rec
+                    G.MM_PlayerData[tostring(pl.UserId)] = rec
+                end
                 if old and not old.Killed and rec.Killed then
                     local cb = G.MM_OnPlayerKilled
                     if cb then pcall(cb, name, rec) end
@@ -384,29 +425,63 @@ G.MM_OnPlayerKilled = nil
             G.MM_PlayerData = {}
             G.MM_RoundLive = false
             G.MM_SuppressGunDrop = nil
+            G.MM_RoleSentThisRound = false
+            G.MM_RoleSentKey = nil
         end)
     end)
-    G.MM_FindRole = function(want)
+    local function recOf(p)
+        if not p then return end
+        return G.MM_PlayerData[p.Name] or G.MM_PlayerData[tostring(p.UserId)] or G.MM_PlayerData[p.DisplayName]
+    end
+    local function roleIs(rec, want)
+        if not rec or type(rec.Role) ~= "string" then return false end
+        return rec.Role:lower() == tostring(want):lower()
+    end
+    local function matchRole(want, allowDead)
         for _, p in ipairs(Players:GetPlayers()) do
-            local rec = G.MM_PlayerData[p.Name]
-            if rec and rec.Role == want and not rec.Dead then
+            local rec = recOf(p)
+            if roleIs(rec, want) and (allowDead or not rec.Dead) then
                 return p
             end
         end
+        for key, rec in pairs(G.MM_PlayerData) do
+            if roleIs(rec, want) and (allowDead or not rec.Dead) then
+                local uid = tonumber(key)
+                local p = uid and Players:GetPlayerByUserId(uid) or Players:FindFirstChild(tostring(key))
+                if p then return p end
+            end
+        end
+    end
+    G.MM_FindRole = function(want)
+        local hit = matchRole(want, false) or matchRole(want, true)
+        if hit then return hit end
         if want == "Murderer" then
             if botHasKnife() then return me end
             return findHolder({"Knife"})
         end
         if want == "Sheriff" or want == "Hero" then
             if botHasGun() then
-                local rec = G.MM_PlayerData[me.Name]
-                if rec and rec.Role == want then return me end
+                local rec = recOf(me)
+                if roleIs(rec, want) then return me end
                 if want == "Sheriff" and (not rec or rec.Role ~= "Hero") then return me end
             end
             local h = findHolder(G.MM_GunNames)
+            if not h then
+                for _, p in ipairs(Players:GetPlayers()) do
+                    if p ~= me and p.Character then
+                        for _, d in ipairs(p.Character:GetDescendants()) do
+                            if table.find(G.MM_GunNames, d.Name) then
+                                h = p
+                                break
+                            end
+                        end
+                    end
+                    if h then break end
+                end
+            end
             if not h then return end
-            local rec = G.MM_PlayerData[h.Name]
-            if rec and rec.Role == want then return h end
+            local rec = recOf(h)
+            if roleIs(rec, want) then return h end
             if not rec then return h end
             if want == "Sheriff" and rec.Role ~= "Hero" then return h end
             if want == "Hero" and rec.Role == "Hero" then return h end
@@ -414,7 +489,7 @@ G.MM_OnPlayerKilled = nil
     end
     G.MM_RoleOf = function(p)
         if not p then return end
-        local rec = G.MM_PlayerData[p.Name]
+        local rec = recOf(p)
         if rec and rec.Role and rec.Role ~= "Unknown" then return rec.Role end
         if playerHas(p, G.MM_KnifeNames) then return "Murderer" end
         if playerHas(p, G.MM_GunNames) then
@@ -1143,6 +1218,8 @@ local function restoreStandBody()
         pcall(function() track:Destroy() end)
         G.MM_StandTrack = nil
     end
+    G.MM_EmoteUntil = 0
+    G.MM_StandEmoteOk = false
     pcall(function()
         for _, d in ipairs(char:GetDescendants()) do
             if d:IsA("Motor6D") then
@@ -1170,6 +1247,16 @@ local function restoreStandBody()
     if hl then pcall(function() hl:Destroy() end) end
     local h = char:FindFirstChild("HumanoidRootPart")
     if h then pcall(function() h.Anchored = false end) end
+    local stash = me:FindFirstChild("MM_HiddenTools")
+    if stash then
+        local bag = me:FindFirstChildOfClass("Backpack")
+        for _, t in ipairs(stash:GetChildren()) do
+            pcall(function()
+                t.Parent = bag or me
+            end)
+        end
+        pcall(function() stash:Destroy() end)
+    end
 end
 
 local function stopFollow()
@@ -1253,6 +1340,42 @@ end
 local function tryStandAnimation(char)
     local hum = char and char:FindFirstChildOfClass("Humanoid")
     if not hum then return end
+    if G.MM_StandTrack and G.MM_StandTrack.IsPlaying then return end
+    local names = {"Endless Angelic Aura"}
+    pcall(function()
+        local desc = hum:GetAppliedDescription()
+        if not desc then desc = me:GetAppliedDescription() end
+        local emotes = desc and desc:GetEmotes()
+        if type(emotes) ~= "table" then return end
+        for emoteName, ids in pairs(emotes) do
+            local id = type(ids) == "table" and ids[1] or ids
+            local n = tostring(emoteName):lower()
+            if n:find("angelic", 1, true) or n:find("endless", 1, true) or tostring(id) == "124474822519936" then
+                table.insert(names, 1, emoteName)
+            end
+        end
+    end)
+    for _, emoteName in ipairs(names) do
+        local named = false
+        pcall(function()
+            named = hum:PlayEmote(emoteName) == true
+        end)
+        if not named then
+            pcall(function()
+                if hum.PlayEmoteAsync then
+                    hum:PlayEmoteAsync(emoteName)
+                    named = true
+                end
+            end)
+        end
+        if named then
+            G.MM_EmoteUntil = tick() + 1e8
+            G.MM_StandEmoteOk = true
+            G.MM_StandEmoteName = emoteName
+            return
+        end
+    end
+    if G.MM_StandEmoteOk then return end
     pcall(function()
         for _, tr in ipairs(hum:GetPlayingAnimationTracks()) do
             tr:Stop(0)
@@ -1303,6 +1426,11 @@ local function tryStandAnimation(char)
         end
         ks:Destroy()
     end)
+    if playId("rbxassetid://124474822519936") then
+        G.MM_EmoteUntil = tick() + 1e8
+        G.MM_StandEmoteOk = true
+        return
+    end
     if G.MM_StandTrack and G.MM_StandTrack.IsPlaying then return end
     for _, id in ipairs({
         "rbxassetid://616006778",
@@ -1314,19 +1442,59 @@ local function tryStandAnimation(char)
     end
 end
 
+local function hideBackWeapons(char, first)
+    if not char then return end
+    local stash = me:FindFirstChild("MM_HiddenTools")
+    if not stash then
+        stash = Instance.new("Folder")
+        stash.Name = "MM_HiddenTools"
+        stash.Parent = me
+    end
+    local bag = me:FindFirstChildOfClass("Backpack")
+    if first then
+        local hum = char:FindFirstChildOfClass("Humanoid")
+        pcall(function()
+            if hum then hum:UnequipTools() end
+        end)
+    end
+    for _, bagRef in ipairs({ char, bag }) do
+        if bagRef then
+            for _, t in ipairs(bagRef:GetChildren()) do
+                if t:IsA("Tool") then
+                    pcall(function() t.Parent = stash end)
+                end
+            end
+        end
+    end
+    local keep = {
+        HumanoidRootPart = true, Torso = true, UpperTorso = true, LowerTorso = true,
+        Head = true, Humanoid = true, Animate = true, MM_StandAura = true,
+    }
+    for _, d in ipairs(char:GetDescendants()) do
+        if not (keep[d.Name] or d:IsA("Humanoid") or d:IsA("Highlight")) then
+            local n = d.Name:lower()
+            if n:find("knife", 1, true) or n:find("gun", 1, true) or n:find("revolver", 1, true)
+                or n:find("luger", 1, true) or n:find("holster", 1, true) or n:find("sheath", 1, true) then
+                if d:IsA("BasePart") or d:IsA("Accessory") or d:IsA("Model") or d:IsA("Weld") or d:IsA("WeldConstraint") then
+                    pcall(function() d:Destroy() end)
+                end
+            end
+        end
+    end
+end
+
 local function prepareStandBody(char)
     if not char then return end
     local hum = char:FindFirstChildOfClass("Humanoid")
     if hum then
         pcall(function()
-            hum.PlatformStand = true
+            hum.PlatformStand = false
             hum.AutoRotate = false
             hum.WalkSpeed = 0
             hum.JumpPower = 0
         end)
     end
-    local anim = char:FindFirstChild("Animate")
-    if anim then pcall(function() anim.Disabled = true end) end
+    hideBackWeapons(char, true)
     tryStandAnimation(char)
     if not char:FindFirstChild("MM_StandAura") then
         pcall(function()
@@ -1372,9 +1540,12 @@ local function startSummonLoop(userId)
     G.MM_FollowGen = (tonumber(G.MM_FollowGen) or 0) + 1
     local gen = G.MM_FollowGen
     local bornAt = tick()
+    G.MM_StandEmoteOk = false
     prepareStandBody(me.Character)
     task.spawn(function()
         local lastChar
+        local lastHide = 0
+        local lastEmote = 0
         while session.active and gen == G.MM_FollowGen and G.MM_SummonUserId do
             local target = Players:GetPlayerByUserId(G.MM_SummonUserId)
             if not target then
@@ -1384,16 +1555,141 @@ local function startSummonLoop(userId)
             local char = me.Character
             if char and char ~= lastChar then
                 lastChar = char
+                G.MM_StandEmoteOk = false
                 prepareStandBody(char)
+                lastEmote = tick()
             end
             local hum = char and char:FindFirstChildOfClass("Humanoid")
             if hum and hum.Health > 0 then
+                if tick() - lastHide > 0.45 then
+                    lastHide = tick()
+                    hideBackWeapons(char)
+                end
                 summonSnap(target, bornAt)
-                applyStandMotors(char, tick())
+                local track = G.MM_StandTrack
+                local emoteOn = (track and track.IsPlaying) or G.MM_StandEmoteOk
+                    or tick() < (tonumber(G.MM_EmoteUntil) or 0)
+                if (not emoteOn) or (tick() - lastEmote > 6) then
+                    lastEmote = tick()
+                    tryStandAnimation(char)
+                    emoteOn = (G.MM_StandTrack and G.MM_StandTrack.IsPlaying) or G.MM_StandEmoteOk
+                end
+                if not emoteOn then
+                    applyStandMotors(char, tick())
+                end
             end
             task.wait(0.03)
         end
     end)
+end
+
+local function playAnimAsset(hum, assetId, looped)
+    assetId = tostring(assetId or ""):gsub("%D", "")
+    if assetId == "" then return false end
+    local animator = hum:FindFirstChildOfClass("Animator")
+    if not animator then
+        animator = Instance.new("Animator")
+        animator.Parent = hum
+    end
+    local anim = Instance.new("Animation")
+    anim.Name = "MM_EmoteClip"
+    anim.AnimationId = "rbxassetid://" .. assetId
+    local track
+    local ok = pcall(function()
+        track = animator:LoadAnimation(anim)
+    end)
+    if not ok or not track then
+        anim:Destroy()
+        return false
+    end
+    track.Looped = looped == true
+    track.Priority = Enum.AnimationPriority.Action4
+    local played = pcall(function()
+        track:Play(0.2, 1, 1)
+    end)
+    if played and track.IsPlaying then
+        if G.MM_StandTrack then
+            pcall(function() G.MM_StandTrack:Stop(0.1) end)
+        end
+        G.MM_StandTrack = track
+        return true
+    end
+    pcall(function() track:Stop() end)
+    anim:Destroy()
+    return false
+end
+
+local function equippedEmoteMatch(hum, query)
+    query = tostring(query or ""):lower()
+    local desc
+    pcall(function() desc = hum:GetAppliedDescription() end)
+    if not desc then
+        pcall(function() desc = me:GetAppliedDescription() end)
+    end
+    if not desc then return end
+    local emotes
+    pcall(function() emotes = desc:GetEmotes() end)
+    if type(emotes) ~= "table" then return end
+    local digits = query:gsub("%D", "")
+    for emoteName, ids in pairs(emotes) do
+        local id = type(ids) == "table" and ids[1] or ids
+        local n = tostring(emoteName):lower()
+        if n == query or n:find(query, 1, true) or (digits ~= "" and tostring(id) == digits) then
+            return emoteName, id
+        end
+    end
+end
+
+local function playBotEmote(name)
+    name = tostring(name or ""):gsub("^/e%s+", ""):gsub("^rbxassetid://", ""):gsub("^%s+", ""):gsub("%s+$", "")
+    if name == "" then
+        return false, "wave | dance | laugh | 124474822519936 | Endless Angelic Aura"
+    end
+    local char = me.Character
+    local hum = char and char:FindFirstChildOfClass("Humanoid")
+    if not hum then return false, "No character" end
+    local q = name:lower()
+    local exact, assetId = equippedEmoteMatch(hum, q)
+    if q:match("^%d+$") then
+        assetId = assetId or q
+    end
+    G.MM_EmoteUntil = tick() + 12
+    local played = false
+    if exact then
+        pcall(function()
+            if hum:PlayEmote(exact) then played = true end
+        end)
+        if not played then
+            pcall(function()
+                if hum.PlayEmoteAsync then
+                    hum:PlayEmoteAsync(exact)
+                    played = true
+                end
+            end)
+        end
+    end
+    if not played then
+        pcall(function()
+            if hum:PlayEmote(name) then played = true end
+        end)
+    end
+    if not played and assetId and playAnimAsset(hum, assetId, true) then
+        played = true
+    end
+    if not played and q:match("^%d+$") and playAnimAsset(hum, q, true) then
+        played = true
+    end
+    pcall(function()
+        local animate = char:FindFirstChild("Animate")
+        local pf = animate and animate:FindFirstChild("PlayEmote")
+        if pf and pf:IsA("BindableFunction") then
+            pf:Invoke(exact or name)
+        end
+    end)
+    if played then
+        return true, exact or name
+    end
+    return false, exact or name
 end
 local GUN_MOTION_SAMPLE_SEC = 0.1
 do
@@ -2818,6 +3114,7 @@ local COMMAND_HELP = {
     unfollow = "Stop following current player",
     summon = "Stand-float behind the owner",
     unsummon = "Dismiss the stand",
+    emote = "<name|id> - Play an equipped emote (Endless Angelic Aura / 124474822519936)",
     gun = "<player> - Give GunDrop via touch if dropped; else die-in-place (no GiveGun remote)",
     togglegun = "<player> - Auto-deliver gun to a player",
     toggleshoot = "[murderer | name] - Auto-grab dropped gun and silent-aim shoot",
@@ -2827,7 +3124,7 @@ local COMMAND_HELP = {
 }
 local HELP_ORDER = {
     "owner", "adopt", "unadopt", "tp", "reveal", "stab", "shoot", "gun", "drop", "fling", "togglegun", "toggleshoot", "togglereveal", "togglealerts",
-    "reset", "follow", "unfollow", "summon", "unsummon", "chat", "help",
+    "reset", "follow", "unfollow", "summon", "unsummon", "emote", "chat", "help",
 }
 local PREMIUM_ONLY_COMMANDS = {
     togglereset = true,
@@ -3205,6 +3502,14 @@ local function handleCommand(p, msg, viaPublic)
         local murd = (G.MM_FindRole and G.MM_FindRole("Murderer")) or m
         local sher = (G.MM_FindRole and G.MM_FindRole("Sheriff")) or s
         local hero = G.MM_FindRole and G.MM_FindRole("Hero")
+        if not sher then
+            for _ = 1, 8 do
+                task.wait(0.2)
+                sher = (G.MM_FindRole and G.MM_FindRole("Sheriff")) or findHolder(G.MM_GunNames)
+                hero = hero or (G.MM_FindRole and G.MM_FindRole("Hero"))
+                if sher or hero then break end
+            end
+        end
         local botM, botS = botHasKnife(), botHasGun()
         local mL = (murd == me or botM) and "Me" or (murd and shortName(murd)) or "?"
         local sL
@@ -3213,9 +3518,10 @@ local function handleCommand(p, msg, viaPublic)
         else
             sL = (sher == me or botS) and "Me" or (sher and shortName(sher)) or "?"
         end
-        whisper("Murderer: " .. mL)
-        task.wait(0.3)
-        whisper("Sheriff: " .. sL)
+        local line = "Murderer: " .. mL .. " | Sheriff: " .. sL
+        if not whisperOk(line) then
+            whisper(line)
+        end
     elseif cmd == "tp" then
         local t = findPlayer(args[2]) or findOwner()
         if not t then whisper("Player not found") return end
@@ -3424,6 +3730,16 @@ local function handleCommand(p, msg, viaPublic)
         if not isSummoned() then whisper("Stand is not out") return end
         stopFollow()
         whisper("Stand dismissed")
+    elseif cmd == "emote" then
+        local q = restOfChatArgs(args)
+        local ok, info = playBotEmote(q)
+        if q == "" then
+            whisper("!emote " .. tostring(info))
+        elseif ok then
+            whisper("Emote: " .. tostring(info))
+        else
+            whisper("Emote failed — try wave, dance, laugh")
+        end
     elseif cmd == "help" then
         local tail = restOfChatArgs(args)
         tail = (tail:gsub("^!+", ""):match("^%s*(.-)%s*$") or "")
@@ -4736,23 +5052,31 @@ local function resolveRoleSnapshot(timeout)
     return curM, curS, curBotM, curBotS
 end
 
-local function sendRoundRoleCallouts(curM, curS, curBotM, curBotS)
+local function sendRoundRoleCallouts(curM, curS, curBotM, curBotS, force)
     if not resolveWhisperTarget() then return false end
     local mLabel = curBotM and "Me" or (curM and shortName(curM)) or "?"
     local sLabel = curBotS and "Me" or (curS and shortName(curS)) or "?"
+    if curS then
+        local rec = G.MM_PlayerData[curS.Name]
+        if rec and tostring(rec.Role or ""):lower() == "hero" then
+            sLabel = sLabel .. " (hero)"
+        end
+    end
     local key = mLabel .. "|" .. sLabel
-    if G.MM_LastRoleCallout == key and (tick() - (tonumber(G.MM_LastRoleCalloutAt) or 0)) < 12 then
-        return true
+    if not force then
+        if G.MM_RoleSentThisRound then return true end
+        if G.MM_LastRoleCallout == key and (tick() - (tonumber(G.MM_LastRoleCalloutAt) or 0)) < 45 then
+            return true
+        end
     end
-    if not whisperOk("Murderer: " .. mLabel) then
-        whisper("Murderer: " .. mLabel)
-    end
-    task.wait(0.35)
-    if not whisperOk("Sheriff: " .. sLabel) then
-        whisper("Sheriff: " .. sLabel)
+    local line = "Murderer: " .. mLabel .. " | Sheriff: " .. sLabel
+    if not whisperOk(line) then
+        whisper(line)
     end
     G.MM_LastRoleCallout = key
     G.MM_LastRoleCalloutAt = tick()
+    G.MM_RoleSentThisRound = true
+    G.MM_RoleSentKey = key
     return true
 end
 
@@ -4789,7 +5113,7 @@ while session.active and gui.Parent do
     if pulse > 0 and pulse ~= lastRoundPulse then
         lastRoundPulse = pulse
         homeBurst()
-        if (tick() - lastAnnounceAt) > 10 then
+        if not G.MM_RoleSentThisRound and (tick() - lastAnnounceAt) > 20 then
             announced = false
             G.MM_BlockGunGrab = false
         end
@@ -4807,11 +5131,13 @@ while session.active and gui.Parent do
     end
     if not liveNow then
         if lobbySince == 0 then lobbySince = tick() end
-        if tick() - lobbySince > 1.5 then
+        if tick() - lobbySince > 8 then
             announced, gunDelivered, shootDone, revealAnnouncePending = false, false, false, false
             ownerMurdStashBusy = false
             roleAnnounceUnlockAt = 0
             G.MM_BlockGunGrab = false
+            G.MM_RoleSentThisRound = false
+            G.MM_RoleSentKey = nil
         end
     else
         lobbySince = 0
@@ -4826,8 +5152,8 @@ while session.active and gui.Parent do
         homeBurst()
         local owner = findOwner() or findConfiguredOwner()
         task.spawn(function()
-            local curM, curS, curBotM, curBotS = resolveRoleSnapshot(2.5)
-            if toggleReveal then
+            local curM, curS, curBotM, curBotS = resolveRoleSnapshot(3.2)
+            if toggleReveal and not G.MM_RoleSentThisRound then
                 local _
                 _, curM, curS, curBotM, curBotS = waitForRoleCallouts(curM, curS, curBotM, curBotS)
             else

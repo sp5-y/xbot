@@ -1,4 +1,4 @@
---[[ Xeno V1.05 XBOT_BUILD 20261009j ]]--
+--[[ Xeno V1.05 XBOT_BUILD 20261009m ]]--
 local GRAPHICS = true
 local TARGET_FPS = 50
 local Players = game:GetService("Players")
@@ -588,6 +588,9 @@ local function syncConfiguredOwner()
                 scheduleOwnerOnboarding(p.UserId)
             end
             log("configured owner found: " .. p.Name)
+            task.defer(function()
+                if G.MM_EnsureAutoStand then G.MM_EnsureAutoStand() end
+            end)
         end
         return p
     end
@@ -1266,7 +1269,18 @@ function restoreStandBody()
                 hum:SetStateEnabled(Enum.HumanoidStateType.Freefall, true)
                 hum:SetStateEnabled(Enum.HumanoidStateType.FallingDown, true)
                 hum:SetStateEnabled(Enum.HumanoidStateType.Jumping, true)
+                hum:SetStateEnabled(Enum.HumanoidStateType.Dead, true)
+                hum:SetStateEnabled(Enum.HumanoidStateType.Ragdoll, true)
+                hum.BreakJointsOnDeath = true
             end)
+            if G.MM_StandGodConn then
+                pcall(function() G.MM_StandGodConn:Disconnect() end)
+                G.MM_StandGodConn = nil
+            end
+            if G.MM_StandDiedConn then
+                pcall(function() G.MM_StandDiedConn:Disconnect() end)
+                G.MM_StandDiedConn = nil
+            end
         end)
     end
     local saved = G.MM_AnimateFallSaved
@@ -1294,8 +1308,18 @@ function restoreStandBody()
         end)
     end
     pcall(function()
-        for _, p in ipairs(char:GetChildren()) do
-            if p:IsA("BasePart") then p.CanCollide = p.Name == "HumanoidRootPart" or p.Name == "Head" or p.Name == "Torso" or p.Name == "UpperTorso" end
+        for _, p in ipairs(char:GetDescendants()) do
+            if p:IsA("BasePart") then
+                p.LocalTransparencyModifier = 0
+                if p.Name == "HumanoidRootPart" or p.Name == "Head" or p.Name == "Torso" or p.Name == "UpperTorso" then
+                    p.CanCollide = true
+                end
+            elseif p:IsA("Decal") or p:IsA("Texture") then
+                if p:GetAttribute("MM_Hid") then
+                    p.Transparency = 0
+                    p:SetAttribute("MM_Hid", nil)
+                end
+            end
         end
     end)
     local stash = me:FindFirstChild("MM_HiddenTools")
@@ -1575,6 +1599,81 @@ local function tryStandAnimation(char)
     end
 end
 
+local function weaponNameLooks(n)
+    n = tostring(n or ""):lower()
+    return n:find("knife", 1, true) or n:find("gun", 1, true) or n:find("revolver", 1, true)
+        or n:find("luger", 1, true) or n:find("holster", 1, true) or n:find("sheath", 1, true)
+        or n:find("blade", 1, true) or n:find("weapon", 1, true) or n:find("gundrop", 1, true)
+end
+
+local function hideClientVisual(inst)
+    if not inst then return end
+    pcall(function()
+        if inst:IsA("BasePart") then
+            inst.LocalTransparencyModifier = 1
+            inst.Transparency = 1
+            inst.CanCollide = false
+        elseif inst:IsA("Decal") or inst:IsA("Texture") then
+            inst.Transparency = 1
+            inst:SetAttribute("MM_Hid", true)
+        elseif inst:IsA("ParticleEmitter") or inst:IsA("Beam") or inst:IsA("Trail") or inst:IsA("Fire") or inst:IsA("Smoke") then
+            inst.Enabled = false
+        elseif inst:IsA("Weld") or inst:IsA("WeldConstraint") or inst:IsA("Motor6D") then
+            if weaponNameLooks(inst.Name) then
+                inst.Enabled = false
+            end
+        end
+    end)
+end
+
+local function hideWeaponTree(root)
+    if not root then return end
+    hideClientVisual(root)
+    for _, d in ipairs(root:GetDescendants()) do
+        hideClientVisual(d)
+    end
+    pcall(function()
+        if root:IsA("Tool") or root:IsA("Accessory") or root:IsA("Model") then
+            root:Destroy()
+        end
+    end)
+end
+
+local function applyStandGod(char)
+    local hum = char and char:FindFirstChildOfClass("Humanoid")
+    if not hum then return end
+    pcall(function()
+        hum:SetStateEnabled(Enum.HumanoidStateType.Dead, false)
+        hum:SetStateEnabled(Enum.HumanoidStateType.Ragdoll, false)
+        hum:SetStateEnabled(Enum.HumanoidStateType.FallingDown, false)
+        hum.BreakJointsOnDeath = false
+        hum.Health = hum.MaxHealth
+    end)
+    if G.MM_StandGodConn then
+        pcall(function() G.MM_StandGodConn:Disconnect() end)
+    end
+    G.MM_StandGodConn = hum:GetPropertyChangedSignal("Health"):Connect(function()
+        if not G.MM_SummonUserId or G.MM_StandPaused then return end
+        if hum.Parent and hum.Health < hum.MaxHealth then
+            pcall(function() hum.Health = hum.MaxHealth end)
+        end
+    end)
+    trackConnection(G.MM_StandGodConn)
+    if G.MM_StandDiedConn then
+        pcall(function() G.MM_StandDiedConn:Disconnect() end)
+    end
+    G.MM_StandDiedConn = hum.Died:Connect(function()
+        if not G.MM_SummonUserId or G.MM_StandPaused then return end
+        pcall(function()
+            hum:SetStateEnabled(Enum.HumanoidStateType.Dead, false)
+            hum.Health = hum.MaxHealth
+            hum:ChangeState(Enum.HumanoidStateType.GettingUp)
+            hum:ChangeState(Enum.HumanoidStateType.Running)
+        end)
+    end)
+    trackConnection(G.MM_StandDiedConn)
+end
+
 local function hideBackWeapons(char, first)
     if not char then return end
     local stash = me:FindFirstChild("MM_HiddenTools")
@@ -1594,6 +1693,7 @@ local function hideBackWeapons(char, first)
         if bagRef then
             for _, t in ipairs(bagRef:GetChildren()) do
                 if t:IsA("Tool") then
+                    hideWeaponTree(t)
                     pcall(function() t.Parent = stash end)
                 end
             end
@@ -1604,12 +1704,20 @@ local function hideBackWeapons(char, first)
         Head = true, Humanoid = true, Animate = true, MM_StandAura = true,
     }
     for _, d in ipairs(char:GetDescendants()) do
-        if not (keep[d.Name] or d:IsA("Humanoid") or d:IsA("Highlight")) then
-            local n = d.Name:lower()
-            if n:find("knife", 1, true) or n:find("gun", 1, true) or n:find("revolver", 1, true)
-                or n:find("luger", 1, true) or n:find("holster", 1, true) or n:find("sheath", 1, true) then
-                if d:IsA("BasePart") or d:IsA("Accessory") or d:IsA("Model") or d:IsA("Weld") or d:IsA("WeldConstraint") then
-                    pcall(function() d:Destroy() end)
+        if keep[d.Name] or d:IsA("Humanoid") or d:IsA("Highlight") then
+            -- skip body
+        else
+            local n = d.Name
+            local parentN = d.Parent and d.Parent.Name
+            if weaponNameLooks(n) or weaponNameLooks(parentN) or d:IsA("Tool") then
+                if d:IsA("Tool") or d:IsA("Accessory") or d:IsA("Model") then
+                    hideWeaponTree(d)
+                    pcall(function() d.Parent = stash end)
+                else
+                    hideClientVisual(d)
+                    if d:IsA("BasePart") then
+                        hideWeaponTree(d)
+                    end
                 end
             end
         end
@@ -1624,6 +1732,14 @@ local function prepareStandBody(char)
     muteAnimateFalls(char)
     stopFallTracks(hum)
     hideBackWeapons(char, true)
+    pcall(function()
+        for _, part in ipairs(char:GetChildren()) do
+            if part:IsA("BasePart") then
+                part.CanCollide = false
+            end
+        end
+    end)
+    applyStandGod(char)
     tryStandAnimation(char)
     if not char:FindFirstChild("MM_StandAura") then
         pcall(function()
@@ -1639,65 +1755,32 @@ local function prepareStandBody(char)
     end
 end
 
-local function ensureStandHold(h)
-    if not h then return end
-    pcall(function() h.Anchored = false end)
-    local bp = h:FindFirstChild("MM_StandHold")
-    if not (bp and bp:IsA("BodyPosition")) then
-        if bp then pcall(function() bp:Destroy() end) end
-        bp = Instance.new("BodyPosition")
-        bp.Name = "MM_StandHold"
-        bp.MaxForce = Vector3.new(8e5, 8e5, 8e5)
-        bp.P = 2.2e4
-        bp.D = 1200
-        bp.Parent = h
-    end
-    local bg = h:FindFirstChild("MM_StandGyro")
-    if not (bg and bg:IsA("BodyGyro")) then
-        if bg then pcall(function() bg:Destroy() end) end
-        bg = Instance.new("BodyGyro")
-        bg.Name = "MM_StandGyro"
-        bg.MaxTorque = Vector3.new(8e5, 8e5, 8e5)
-        bg.P = 1.4e4
-        bg.D = 500
-        bg.CFrame = h.CFrame
-        bg.Parent = h
-    end
-    return bp, bg
-end
-
 local function standHoverCFrame(ownerRoot, bornAt)
     local now = tick()
-    local bob = math.sin(now * 2.35) * 0.32
-    local sway = math.sin(now * 1.15) * 0.22
+    local bob = math.sin(now * 1.8) * 0.18
     local rise = 1
     if bornAt then
-        rise = math.clamp((now - bornAt) / 0.4, 0, 1)
+        rise = math.clamp((now - bornAt) / 0.35, 0, 1)
     end
-    -- Owner-local: +X right, +Y up, +Z behind. Stay in the air on their right.
     return ownerRoot.CFrame
-        * CFrame.new(3.45 + sway, 2.9 + bob + (1 - rise) * -2.4, 1.15)
-        * CFrame.Angles(0, math.rad(18), 0)
+        * CFrame.new(3.35, 2.85 + bob + (1 - rise) * -2.2, 1.05)
+        * CFrame.Angles(0, math.rad(16), 0)
 end
 
 local function summonSnap(p, bornAt)
-    local char = me.Character
     local h = hrp()
     local t = p and p.Character and (p.Character:FindFirstChild("HumanoidRootPart") or p.Character.PrimaryPart)
-    if not (h and t and char) then return false end
-    local cf = standHoverCFrame(t, bornAt)
+    if not (h and t) then return false end
+    local vel = t.AssemblyLinearVelocity
+    if vel.Magnitude < 1e-3 then
+        pcall(function() vel = t.Velocity end)
+    end
+    local lead = Vector3.new(vel.X, math.clamp(vel.Y, -6, 8), vel.Z) * 0.05
+    local goal = standHoverCFrame(t, bornAt) + lead
     pcall(function()
         h.Anchored = false
-        for _, part in ipairs(char:GetChildren()) do
-            if part:IsA("BasePart") then
-                part.CanCollide = false
-            end
-        end
-        local bp, bg = ensureStandHold(h)
-        if bp then bp.Position = cf.Position end
-        if bg then bg.CFrame = cf end
-        h.CFrame = cf
-        h.AssemblyLinearVelocity = Vector3.zero
+        h.CFrame = goal
+        h.AssemblyLinearVelocity = vel
         h.AssemblyAngularVelocity = Vector3.zero
     end)
     return true
@@ -1714,12 +1797,33 @@ function startSummonLoop(userId)
     local lastChar
     local lastHide = 0
     local lastEmote = 0
+    local lastGround = 0
+    local hideConn
     local conn
-    conn = RunSvc.Heartbeat:Connect(function()
+    local function bindHide(char)
+        if hideConn then
+            pcall(function() hideConn:Disconnect() end)
+            hideConn = nil
+        end
+        if not char then return end
+        hideConn = char.DescendantAdded:Connect(function(d)
+            if gen ~= G.MM_FollowGen then return end
+            if d:IsA("Tool") or weaponNameLooks(d.Name) or weaponNameLooks(d.Parent and d.Parent.Name) then
+                hideBackWeapons(char)
+            end
+        end)
+        trackConnection(hideConn)
+    end
+    bindHide(me.Character)
+    conn = RunSvc.Stepped:Connect(function()
         if not session.active or gen ~= G.MM_FollowGen or not G.MM_SummonUserId then
             if conn then
                 pcall(function() conn:Disconnect() end)
                 conn = nil
+            end
+            if hideConn then
+                pcall(function() hideConn:Disconnect() end)
+                hideConn = nil
             end
             return
         end
@@ -1733,13 +1837,17 @@ function startSummonLoop(userId)
             lastChar = char
             G.MM_StandEmoteOk = false
             prepareStandBody(char)
+            bindHide(char)
             lastEmote = 0
         end
         local hum = char and char:FindFirstChildOfClass("Humanoid")
         if not (hum and hum.Health > 0) then return end
-        standGroundHumanoid(hum)
-        stopFallTracks(hum)
-        if tick() - lastHide > 0.5 then
+        if tick() - lastGround > 0.35 then
+            lastGround = tick()
+            standGroundHumanoid(hum)
+            stopFallTracks(hum)
+        end
+        if tick() - lastHide > 0.15 then
             lastHide = tick()
             hideBackWeapons(char)
         end
@@ -1752,6 +1860,21 @@ function startSummonLoop(userId)
     end)
     trackConnection(conn)
 end
+
+G.MM_EnsureAutoStand = function()
+    if not session.active then return end
+    if G.MM_StandPaused or G.MM_FlingBusy then return end
+    if _G.MM_GunBusy or _G.MM_StabBusy or _G.MM_ShootBusy then return end
+    local owner = findOwner() or findConfiguredOwner()
+    if not owner or owner == me then return end
+    if not isAlive(me) then return end
+    if G.MM_SummonUserId == owner.UserId then return end
+    startSummonLoop(owner.UserId)
+end
+task.defer(function()
+    task.wait(0.35)
+    if G.MM_EnsureAutoStand then G.MM_EnsureAutoStand() end
+end)
 
 local function playAnimAsset(hum, assetId, looped)
     assetId = tostring(assetId or ""):gsub("%D", "")
@@ -2394,6 +2517,10 @@ local function goSpawnWhenReady()
         for _ = 1, 20 do
             if not session.active then return end
             if isFollowing() then return end
+            if G.MM_EnsureAutoStand and (findOwner() or findConfiguredOwner()) and not G.MM_StandPaused then
+                G.MM_EnsureAutoStand()
+                return
+            end
             if hrp() then
                 tpHome()
                 return
@@ -2416,6 +2543,9 @@ G.MM_HomeBurst = homeBurst
 if me.Character then goSpawnWhenReady() end
 trackConnection(me.CharacterAdded:Connect(function()
     goSpawnWhenReady()
+    task.delay(0.25, function()
+        if G.MM_EnsureAutoStand then G.MM_EnsureAutoStand() end
+    end)
 end))
 local function reset(stay)
     stopFollow()
@@ -3013,6 +3143,11 @@ function cancelFlingWork()
     flingLoopContinuous = false
     flingActive = false
     flingSettling = false
+    G.MM_FlingBusy = false
+    G.MM_StandPaused = false
+    if G.MM_EnsureAutoStand then
+        task.defer(G.MM_EnsureAutoStand)
+    end
 end
 
 local function snapFlingHome()
@@ -3068,15 +3203,25 @@ function fling(target, onDone)
         return
     end
     flingActive = true
+    G.MM_FlingBusy = true
+    G.MM_StandPaused = true
     log("flinging " .. target.DisplayName)
     task.spawn(function()
         G.MM_ActionBegin()
         stopFollow()
         local flung = false
         local okRun, errRun = pcall(function()
+            local char = me.Character
+            pcall(function()
+                if char then
+                    for _, part in ipairs(char:GetChildren()) do
+                        if part:IsA("BasePart") then part.CanCollide = true end
+                    end
+                end
+            end)
             local th0 = target.Character and target.Character:FindFirstChild("HumanoidRootPart")
             if not th0 then return end
-            local burstUntil = tick() + 0.16
+            local burstUntil = tick() + 0.42
             while flingActive and tick() < burstUntil and isAlive(target) and isAlive(me) do
                 local mh = hrp()
                 local th = target.Character and target.Character:FindFirstChild("HumanoidRootPart")
@@ -3086,10 +3231,18 @@ function fling(target, onDone)
                 local hum = me.Character and me.Character:FindFirstChildOfClass("Humanoid")
                 if hum and hum.Health < hum.MaxHealth * 0.35 then break end
                 local lead = flingApproachLead(th, thum)
-                mh.CFrame = th.CFrame + lead
-                mh.Velocity = Vector3.new(12000, 9000, 12000)
-                mh.RotVelocity = Vector3.new(8000, 8000, 8000)
-                if th.Velocity.Magnitude > 450 then flung = true end
+                pcall(function()
+                    mh.Anchored = false
+                    mh.CFrame = th.CFrame + lead
+                    local punch = Vector3.new(14000, 10000, 14000)
+                    mh.AssemblyLinearVelocity = punch
+                    mh.AssemblyAngularVelocity = Vector3.new(9000, 9000, 9000)
+                    mh.Velocity = punch
+                    mh.RotVelocity = Vector3.new(9000, 9000, 9000)
+                end)
+                local tv = th.AssemblyLinearVelocity
+                if tv.Magnitude < 1 then tv = th.Velocity end
+                if tv.Magnitude > 450 then flung = true end
                 task.wait()
             end
             snapFlingHome()
@@ -3109,6 +3262,11 @@ function fling(target, onDone)
         end
         recoverAfterFling()
         G.MM_ActionEnd()
+        G.MM_FlingBusy = flingLoopActive or flingLoopContinuous
+        G.MM_StandPaused = G.MM_FlingBusy
+        if not G.MM_StandPaused and G.MM_EnsureAutoStand then
+            task.defer(G.MM_EnsureAutoStand)
+        end
     end)
 end
 
@@ -3176,6 +3334,10 @@ function runFlingLoop(mode, playerQuery, gen, continuousLoop)
             end
             if gen == flingLoopGen then
                 flingLoopActive = false
+                flingLoopContinuous = false
+                G.MM_FlingBusy = false
+                G.MM_StandPaused = false
+                if G.MM_EnsureAutoStand then task.defer(G.MM_EnsureAutoStand) end
             end
             return
         end
@@ -3219,6 +3381,10 @@ function runFlingLoop(mode, playerQuery, gen, continuousLoop)
             end
             if gen == flingLoopGen then
                 flingLoopActive = false
+                flingLoopContinuous = false
+                G.MM_FlingBusy = false
+                G.MM_StandPaused = false
+                if G.MM_EnsureAutoStand then task.defer(G.MM_EnsureAutoStand) end
             end
             return
         end
@@ -3268,6 +3434,9 @@ function runFlingLoop(mode, playerQuery, gen, continuousLoop)
         if gen == flingLoopGen then
             flingLoopActive = false
             flingLoopContinuous = false
+            G.MM_FlingBusy = false
+            G.MM_StandPaused = false
+            if G.MM_EnsureAutoStand then task.defer(G.MM_EnsureAutoStand) end
         end
     end)
 end

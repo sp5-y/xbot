@@ -1,4 +1,4 @@
---[[ Xeno V1.05 XBOT_BUILD 20261009i ]]--
+--[[ Xeno V1.05 XBOT_BUILD 20261009j ]]--
 local GRAPHICS = true
 local TARGET_FPS = 50
 local Players = game:GetService("Players")
@@ -1283,7 +1283,21 @@ function restoreStandBody()
     local hl = char:FindFirstChild("MM_StandAura")
     if hl then pcall(function() hl:Destroy() end) end
     local h = char:FindFirstChild("HumanoidRootPart")
-    if h then pcall(function() h.Anchored = false end) end
+    if h then
+        for _, n in ipairs({"MM_StandHold", "MM_StandGyro", "MM_StandVel", "MM_StandAP", "MM_StandAO", "MM_StandAtt"}) do
+            local o = h:FindFirstChild(n)
+            if o then pcall(function() o:Destroy() end) end
+        end
+        pcall(function()
+            h.Anchored = false
+            h.CanCollide = true
+        end)
+    end
+    pcall(function()
+        for _, p in ipairs(char:GetChildren()) do
+            if p:IsA("BasePart") then p.CanCollide = p.Name == "HumanoidRootPart" or p.Name == "Head" or p.Name == "Torso" or p.Name == "UpperTorso" end
+        end
+    end)
     local stash = me:FindFirstChild("MM_HiddenTools")
     if stash then
         local bag = me:FindFirstChildOfClass("Backpack")
@@ -1625,26 +1639,66 @@ local function prepareStandBody(char)
     end
 end
 
-local function summonSnap(p, bornAt)
-    local h = hrp()
-    local t = p and p.Character and (p.Character:FindFirstChild("HumanoidRootPart") or p.Character.PrimaryPart)
-    if not (h and t) then return false end
+local function ensureStandHold(h)
+    if not h then return end
+    pcall(function() h.Anchored = false end)
+    local bp = h:FindFirstChild("MM_StandHold")
+    if not (bp and bp:IsA("BodyPosition")) then
+        if bp then pcall(function() bp:Destroy() end) end
+        bp = Instance.new("BodyPosition")
+        bp.Name = "MM_StandHold"
+        bp.MaxForce = Vector3.new(8e5, 8e5, 8e5)
+        bp.P = 2.2e4
+        bp.D = 1200
+        bp.Parent = h
+    end
+    local bg = h:FindFirstChild("MM_StandGyro")
+    if not (bg and bg:IsA("BodyGyro")) then
+        if bg then pcall(function() bg:Destroy() end) end
+        bg = Instance.new("BodyGyro")
+        bg.Name = "MM_StandGyro"
+        bg.MaxTorque = Vector3.new(8e5, 8e5, 8e5)
+        bg.P = 1.4e4
+        bg.D = 500
+        bg.CFrame = h.CFrame
+        bg.Parent = h
+    end
+    return bp, bg
+end
+
+local function standHoverCFrame(ownerRoot, bornAt)
     local now = tick()
-    local bob = math.sin(now * 2.6) * 0.42
-    local sway = math.sin(now * 1.35) * 0.55
-    local spin = math.sin(now * 0.7) * 0.12
+    local bob = math.sin(now * 2.35) * 0.32
+    local sway = math.sin(now * 1.15) * 0.22
     local rise = 1
     if bornAt then
-        rise = math.clamp((now - bornAt) / 0.45, 0, 1)
+        rise = math.clamp((now - bornAt) / 0.4, 0, 1)
     end
-    local extraY = (1 - rise) * -3.8
+    -- Owner-local: +X right, +Y up, +Z behind. Stay in the air on their right.
+    return ownerRoot.CFrame
+        * CFrame.new(3.45 + sway, 2.9 + bob + (1 - rise) * -2.4, 1.15)
+        * CFrame.Angles(0, math.rad(18), 0)
+end
+
+local function summonSnap(p, bornAt)
+    local char = me.Character
+    local h = hrp()
+    local t = p and p.Character and (p.Character:FindFirstChild("HumanoidRootPart") or p.Character.PrimaryPart)
+    if not (h and t and char) then return false end
+    local cf = standHoverCFrame(t, bornAt)
     pcall(function()
-        h.Anchored = true
+        h.Anchored = false
+        for _, part in ipairs(char:GetChildren()) do
+            if part:IsA("BasePart") then
+                part.CanCollide = false
+            end
+        end
+        local bp, bg = ensureStandHold(h)
+        if bp then bp.Position = cf.Position end
+        if bg then bg.CFrame = cf end
+        h.CFrame = cf
         h.AssemblyLinearVelocity = Vector3.zero
         h.AssemblyAngularVelocity = Vector3.zero
-        h.CFrame = t.CFrame
-            * CFrame.new(2.15 + sway, 2.55 + bob + extraY, 3.55)
-            * CFrame.Angles(math.rad(-10), math.rad(22 + spin * 20), math.rad(8))
     end)
     return true
 end
@@ -1657,43 +1711,46 @@ function startSummonLoop(userId)
     local bornAt = tick()
     G.MM_StandEmoteOk = false
     prepareStandBody(me.Character)
-    task.spawn(function()
-        local lastChar
-        local lastHide = 0
-        local lastEmote = 0
-        while session.active and gen == G.MM_FollowGen and G.MM_SummonUserId do
-            local target = Players:GetPlayerByUserId(G.MM_SummonUserId)
-            if not target then
-                stopFollow()
-                break
+    local lastChar
+    local lastHide = 0
+    local lastEmote = 0
+    local conn
+    conn = RunSvc.Heartbeat:Connect(function()
+        if not session.active or gen ~= G.MM_FollowGen or not G.MM_SummonUserId then
+            if conn then
+                pcall(function() conn:Disconnect() end)
+                conn = nil
             end
-            local char = me.Character
-            if char and char ~= lastChar then
-                lastChar = char
-                G.MM_StandEmoteOk = false
-                prepareStandBody(char)
-                lastEmote = tick()
-            end
-            local hum = char and char:FindFirstChildOfClass("Humanoid")
-            if hum and hum.Health > 0 then
-                standGroundHumanoid(hum)
-                stopFallTracks(hum)
-                if tick() - lastHide > 0.45 then
-                    lastHide = tick()
-                    hideBackWeapons(char)
-                end
-                summonSnap(target, bornAt)
-                local track = G.MM_StandTrack
-                local emoteOn = (track and track.IsPlaying) or G.MM_StandEmoteOk
-                if (not emoteOn) or (tick() - lastEmote > 4) then
-                    lastEmote = tick()
-                    tryStandAnimation(char)
-                    emoteOn = (G.MM_StandTrack and G.MM_StandTrack.IsPlaying) or G.MM_StandEmoteOk
-                end
-            end
-            task.wait(0.03)
+            return
+        end
+        local target = Players:GetPlayerByUserId(G.MM_SummonUserId)
+        if not target then
+            stopFollow()
+            return
+        end
+        local char = me.Character
+        if char and char ~= lastChar then
+            lastChar = char
+            G.MM_StandEmoteOk = false
+            prepareStandBody(char)
+            lastEmote = 0
+        end
+        local hum = char and char:FindFirstChildOfClass("Humanoid")
+        if not (hum and hum.Health > 0) then return end
+        standGroundHumanoid(hum)
+        stopFallTracks(hum)
+        if tick() - lastHide > 0.5 then
+            lastHide = tick()
+            hideBackWeapons(char)
+        end
+        summonSnap(target, bornAt)
+        local emoteOn = (G.MM_StandTrack and G.MM_StandTrack.IsPlaying) or G.MM_StandEmoteOk
+        if (not emoteOn) or (tick() - lastEmote > 8) then
+            lastEmote = tick()
+            tryStandAnimation(char)
         end
     end)
+    trackConnection(conn)
 end
 
 local function playAnimAsset(hum, assetId, looped)

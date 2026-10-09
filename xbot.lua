@@ -1,4 +1,4 @@
---[[ Xeno V1.04 XBOT_BUILD 20261008g ]]--
+--[[ Xeno V1.04 XBOT_BUILD 20261009a ]]--
 local GRAPHICS = true
 local TARGET_FPS = 50
 local Players = game:GetService("Players")
@@ -1134,12 +1134,38 @@ end
 
 --[[ Movement ]]--
 local function hrp() return me.Character and me.Character:FindFirstChild("HumanoidRootPart") end
+local function restoreStandBody()
+    local char = me.Character
+    if not char then return end
+    local hum = char:FindFirstChildOfClass("Humanoid")
+    if hum then
+        pcall(function()
+            hum.PlatformStand = false
+            hum.AutoRotate = true
+            if hum.WalkSpeed < 1 then hum.WalkSpeed = 16 end
+            if hum.JumpPower < 1 then hum.JumpPower = 50 end
+        end)
+    end
+    local anim = char:FindFirstChild("Animate")
+    if anim then pcall(function() anim.Disabled = false end) end
+    local hl = char:FindFirstChild("MM_StandAura")
+    if hl then pcall(function() hl:Destroy() end) end
+    local h = char:FindFirstChild("HumanoidRootPart")
+    if h then pcall(function() h.Anchored = false end) end
+end
+
 local function stopFollow()
+    local wasSummon = G.MM_SummonUserId ~= nil
     G.MM_FollowUserId = nil
+    G.MM_SummonUserId = nil
     G.MM_FollowGen = (tonumber(G.MM_FollowGen) or 0) + 1
+    if wasSummon then restoreStandBody() end
 end
 local function isFollowing()
-    return G.MM_FollowUserId ~= nil
+    return G.MM_FollowUserId ~= nil or G.MM_SummonUserId ~= nil
+end
+local function isSummoned()
+    return G.MM_SummonUserId ~= nil
 end
 local function followSnap(p)
     local h = hrp()
@@ -1169,6 +1195,86 @@ local function startFollowLoop()
                 followSnap(target)
             end
             task.wait(0.08)
+        end
+    end)
+end
+
+local function prepareStandBody(char)
+    if not char then return end
+    local hum = char:FindFirstChildOfClass("Humanoid")
+    if hum then
+        pcall(function()
+            hum.PlatformStand = true
+            hum.AutoRotate = false
+            hum.WalkSpeed = 0
+            hum.JumpPower = 0
+        end)
+    end
+    local anim = char:FindFirstChild("Animate")
+    if anim then pcall(function() anim.Disabled = true end) end
+    if not char:FindFirstChild("MM_StandAura") then
+        pcall(function()
+            local hl = Instance.new("Highlight")
+            hl.Name = "MM_StandAura"
+            hl.FillColor = Color3.fromRGB(170, 70, 255)
+            hl.OutlineColor = Color3.fromRGB(255, 230, 255)
+            hl.FillTransparency = 0.62
+            hl.OutlineTransparency = 0.15
+            hl.DepthMode = Enum.HighlightDepthMode.Occluded
+            hl.Parent = char
+        end)
+    end
+end
+
+local function summonSnap(p, bornAt)
+    local h = hrp()
+    local t = p and p.Character and (p.Character:FindFirstChild("HumanoidRootPart") or p.Character.PrimaryPart)
+    if not (h and t) then return false end
+    local now = tick()
+    local bob = math.sin(now * 2.6) * 0.42
+    local sway = math.sin(now * 1.35) * 0.55
+    local spin = math.sin(now * 0.7) * 0.12
+    local rise = 1
+    if bornAt then
+        rise = math.clamp((now - bornAt) / 0.45, 0, 1)
+    end
+    local extraY = (1 - rise) * -3.8
+    pcall(function()
+        h.Anchored = false
+        h.AssemblyLinearVelocity = Vector3.zero
+        h.AssemblyAngularVelocity = Vector3.zero
+        h.CFrame = t.CFrame
+            * CFrame.new(2.15 + sway, 2.55 + bob + extraY, 3.55)
+            * CFrame.Angles(math.rad(-10), math.rad(22 + spin * 20), math.rad(8))
+    end)
+    return true
+end
+
+local function startSummonLoop(userId)
+    G.MM_FollowUserId = nil
+    G.MM_SummonUserId = userId
+    G.MM_FollowGen = (tonumber(G.MM_FollowGen) or 0) + 1
+    local gen = G.MM_FollowGen
+    local bornAt = tick()
+    prepareStandBody(me.Character)
+    task.spawn(function()
+        local lastChar
+        while session.active and gen == G.MM_FollowGen and G.MM_SummonUserId do
+            local target = Players:GetPlayerByUserId(G.MM_SummonUserId)
+            if not target then
+                stopFollow()
+                break
+            end
+            local char = me.Character
+            if char and char ~= lastChar then
+                lastChar = char
+                prepareStandBody(char)
+            end
+            local hum = char and char:FindFirstChildOfClass("Humanoid")
+            if hum and hum.Health > 0 then
+                summonSnap(target, bornAt)
+            end
+            task.wait(0.03)
         end
     end)
 end
@@ -2593,6 +2699,8 @@ local COMMAND_HELP = {
     spawn = "Teleport bot to spawn",
     follow = "<player> - Follow a player",
     unfollow = "Stop following current player",
+    summon = "Stand-float behind the owner",
+    unsummon = "Dismiss the stand",
     gun = "<player> - Give GunDrop via touch if dropped; else die-in-place (no GiveGun remote)",
     togglegun = "<player> - Auto-deliver gun to a player",
     toggleshoot = "[murderer | name] - Auto-grab dropped gun and silent-aim shoot",
@@ -2602,7 +2710,7 @@ local COMMAND_HELP = {
 }
 local HELP_ORDER = {
     "owner", "adopt", "unadopt", "tp", "reveal", "stab", "shoot", "gun", "drop", "fling", "togglegun", "toggleshoot", "togglereveal", "togglealerts",
-    "reset", "follow", "unfollow", "chat", "help",
+    "reset", "follow", "unfollow", "summon", "unsummon", "chat", "help",
 }
 local PREMIUM_ONLY_COMMANDS = {
     togglereset = true,
@@ -3173,16 +3281,32 @@ local function handleCommand(p, msg, viaPublic)
         local q = restOfChatArgs(args)
         local t = (q ~= "" and (findOtherPlayer(q) or findPlayer(q))) or findOwner()
         if not t or t == me then whisper("Player not found") return end
+        restoreStandBody()
+        G.MM_SummonUserId = nil
         G.MM_FollowUserId = t.UserId
         followSnap(t)
         startFollowLoop()
         whisper("Following " .. shortName(t))
     elseif cmd == "unfollow" then
-        if not isFollowing() then whisper("Not following anyone") return end
+        if not G.MM_FollowUserId then whisper("Not following anyone") return end
         local cur = Players:GetPlayerByUserId(G.MM_FollowUserId)
         local name = cur and shortName(cur) or "them"
         stopFollow()
         whisper("Unfollowed " .. name)
+    elseif cmd == "summon" then
+        if isSummoned() then
+            stopFollow()
+            whisper("Stand dismissed")
+            return
+        end
+        local owner = findOwner() or findConfiguredOwner()
+        if not owner or owner == me then whisper("No owner to summon to") return end
+        startSummonLoop(owner.UserId)
+        whisper("Stand summoned")
+    elseif cmd == "unsummon" then
+        if not isSummoned() then whisper("Stand is not out") return end
+        stopFollow()
+        whisper("Stand dismissed")
     elseif cmd == "help" then
         local tail = restOfChatArgs(args)
         tail = (tail:gsub("^!+", ""):match("^%s*(.-)%s*$") or "")

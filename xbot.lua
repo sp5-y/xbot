@@ -1,4 +1,4 @@
---[[ Xeno V1.04 XBOT_BUILD 20261009h ]]--
+--[[ Xeno V1.04 XBOT_BUILD 20261009i ]]--
 local GRAPHICS = true
 local TARGET_FPS = 50
 local Players = game:GetService("Players")
@@ -1048,6 +1048,8 @@ local function httpJson(method, url, payload)
     end
 end
 
+local hopServer, getPingMs, queueRegionSpreadOnTeleport
+do
 local function queuePingSearchOnTeleport()
     local queueFn = queue_on_teleport
         or (syn and syn.queue_on_teleport)
@@ -1064,7 +1066,7 @@ end)
     end)
 end
 
-local function queueRegionSpreadOnTeleport()
+function queueRegionSpreadOnTeleport()
     local queueFn = queue_on_teleport
         or (syn and syn.queue_on_teleport)
         or (fluxus and fluxus.queue_on_teleport)
@@ -1122,7 +1124,7 @@ local function hopMarkSeen(serverId)
     table.insert(G.MM_HopSeenServers, sid)
 end
 
-local function getPingMs()
+function getPingMs()
     local ok, value = pcall(function()
         return Stats.Network.ServerStatsItem["Data Ping"]:GetValueString()
     end)
@@ -1188,7 +1190,7 @@ local function resolveHopServerId(targetServerId)
     return serverId
 end
 
-local function hopServer(reason, continuePingSearch, targetServerId)
+function hopServer(reason, continuePingSearch, targetServerId)
     if hopBusy then return false end
     hopBusy = true
     stopFollow()
@@ -1224,10 +1226,13 @@ local function hopServer(reason, continuePingSearch, targetServerId)
     hopMarkSeen(serverId)
     return true
 end
+end
 
 --[[ Movement ]]--
-local function hrp() return me.Character and me.Character:FindFirstChild("HumanoidRootPart") end
-local function restoreStandBody()
+local hrp, restoreStandBody, stopFollow, isFollowing, isSummoned, startFollowLoop, startSummonLoop, playBotEmote
+do
+function hrp() return me.Character and me.Character:FindFirstChild("HumanoidRootPart") end
+function restoreStandBody()
     local char = me.Character
     if not char then return end
     local track = G.MM_StandTrack
@@ -1291,17 +1296,17 @@ local function restoreStandBody()
     end
 end
 
-local function stopFollow()
+function stopFollow()
     local wasSummon = G.MM_SummonUserId ~= nil
     G.MM_FollowUserId = nil
     G.MM_SummonUserId = nil
     G.MM_FollowGen = (tonumber(G.MM_FollowGen) or 0) + 1
     if wasSummon then restoreStandBody() end
 end
-local function isFollowing()
+function isFollowing()
     return G.MM_FollowUserId ~= nil or G.MM_SummonUserId ~= nil
 end
-local function isSummoned()
+function isSummoned()
     return G.MM_SummonUserId ~= nil
 end
 local function followSnap(p)
@@ -1317,7 +1322,7 @@ local function followSnap(p)
     end)
     return true
 end
-local function startFollowLoop()
+function startFollowLoop()
     G.MM_FollowGen = (tonumber(G.MM_FollowGen) or 0) + 1
     local gen = G.MM_FollowGen
     task.spawn(function()
@@ -1644,7 +1649,7 @@ local function summonSnap(p, bornAt)
     return true
 end
 
-local function startSummonLoop(userId)
+function startSummonLoop(userId)
     G.MM_FollowUserId = nil
     G.MM_SummonUserId = userId
     G.MM_FollowGen = (tonumber(G.MM_FollowGen) or 0) + 1
@@ -1748,7 +1753,7 @@ local function equippedEmoteMatch(hum, query)
     end
 end
 
-local function playBotEmote(name)
+function playBotEmote(name)
     name = tostring(name or ""):gsub("^/e%s+", ""):gsub("^rbxassetid://", ""):gsub("^%s+", ""):gsub("%s+$", "")
     if name == "" then
         return false, "wave | dance | laugh | 124474822519936 | Endless Angelic Aura"
@@ -1798,6 +1803,7 @@ local function playBotEmote(name)
         return true, exact or name
     end
     return false, exact or name
+end
 end
 local GUN_MOTION_SAMPLE_SEC = 0.1
 do
@@ -2731,6 +2737,8 @@ do
     end
 end
 
+local stabTargetLoop, stabAllTargets
+do
 local STAB_PREDICT_T = 0.12
 local STAB_MAX_LEAD = 2.6
 local STAB_MELEE_OFFSET = 1.05
@@ -2868,7 +2876,7 @@ end
 
 local STAB_TIMEOUT_SEC = 45
 
-local function stabTargetLoop(target)
+function stabTargetLoop(target)
     if target == me then return false, "Invalid target" end
     if not botHasKnife() then return false, "Bot needs to be murderer" end
     if not isAlive(target) then return false, "Player not found" end
@@ -2932,6 +2940,7 @@ local function stabAllTargets()
     if killed > 0 then return true, "Stabbed " .. tostring(killed) .. " player(s)" end
     return true, "Stab all finished"
 end
+end
 
 --[[ Fling ]]--
 local flingActive = false
@@ -2939,8 +2948,9 @@ local flingLoopGen = 0
 local flingLoopActive = false
 local flingLoopContinuous = false
 local flingSettling = false
-
-local function cancelFlingWork()
+local cancelFlingWork, fling, waitFlingDone, runFlingLoop
+do
+function cancelFlingWork()
     flingLoopGen = flingLoopGen + 1
     flingLoopActive = false
     flingLoopContinuous = false
@@ -2984,7 +2994,7 @@ local function recoverAfterFling()
     flingSettling = false
 end
 
-local function fling(target, onDone)
+function fling(target, onDone)
     local onDoneFn = onDone
     if flingActive then
         if onDoneFn then onDoneFn(false) end
@@ -3045,7 +3055,7 @@ local function fling(target, onDone)
     end)
 end
 
-local function waitFlingDone(gen, timeout)
+function waitFlingDone(gen, timeout)
     local t0 = tick()
     while (flingActive or flingSettling) and tick() - t0 < (timeout or 25) do
         if gen ~= flingLoopGen then break end
@@ -3084,7 +3094,7 @@ local function waitAfterLoopFling(target, gen, loopBegan, hadSuccess)
     end
 end
 
-local function runFlingLoop(mode, playerQuery, gen, continuousLoop)
+function runFlingLoop(mode, playerQuery, gen, continuousLoop)
     task.spawn(function()
         if mode == "all" then
             local targets = {}
@@ -3203,6 +3213,7 @@ local function runFlingLoop(mode, playerQuery, gen, continuousLoop)
             flingLoopContinuous = false
         end
     end)
+end
 end
 
 --[[ Round ]]--
@@ -5165,6 +5176,8 @@ if XENO_BRIDGE_ENABLED then
     end)
 end
 
+local runMainLoop
+do
 local function resolveRoleSnapshot(timeout)
     local deadline = tick() + (timeout or 0)
     local curM, curS, curBotM, curBotS
@@ -5223,7 +5236,7 @@ local function waitForRoleCallouts(curM, curS, curBotM, curBotS)
 end
 
 --[[ Main loop ]]--
-local function runMainLoop()
+function runMainLoop()
     local lastMurderId, announced
     local lastRoundPulse = 0
     local lastAnnounceAt = 0
@@ -5424,6 +5437,7 @@ cam.FieldOfView = DEFAULT_FOV
 do local h = me.Character and me.Character:FindFirstChildOfClass("Humanoid")
    if h then cam.CameraSubject = h end end
     cleanupSession()
+end
 end
 
 runMainLoop()

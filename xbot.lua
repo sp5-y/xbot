@@ -1,4 +1,4 @@
---[[ Xeno V1.04 XBOT_BUILD 20261009a ]]--
+--[[ Xeno V1.04 XBOT_BUILD 20261009b ]]--
 local GRAPHICS = true
 local TARGET_FPS = 50
 local Players = game:GetService("Players")
@@ -1137,9 +1137,27 @@ local function hrp() return me.Character and me.Character:FindFirstChild("Humano
 local function restoreStandBody()
     local char = me.Character
     if not char then return end
+    local track = G.MM_StandTrack
+    if track then
+        pcall(function() track:Stop(0.15) end)
+        pcall(function() track:Destroy() end)
+        G.MM_StandTrack = nil
+    end
+    pcall(function()
+        for _, d in ipairs(char:GetDescendants()) do
+            if d:IsA("Motor6D") then
+                d.Transform = CFrame.new()
+            end
+        end
+    end)
     local hum = char:FindFirstChildOfClass("Humanoid")
     if hum then
         pcall(function()
+            for _, tr in ipairs(hum:GetPlayingAnimationTracks()) do
+                if tostring(tr.Name):find("MM_Stand", 1, true) then
+                    tr:Stop(0.1)
+                end
+            end
             hum.PlatformStand = false
             hum.AutoRotate = true
             if hum.WalkSpeed < 1 then hum.WalkSpeed = 16 end
@@ -1199,6 +1217,103 @@ local function startFollowLoop()
     end)
 end
 
+local function applyStandMotors(char, now)
+    if not char then return end
+    local pulse = math.sin(now * 3.15) * 0.12
+    local flex = math.sin(now * 1.7) * 0.08
+    local map = {}
+    for _, d in ipairs(char:GetDescendants()) do
+        if d:IsA("Motor6D") and d.Part1 then
+            map[d.Part1.Name] = d
+        end
+    end
+    local function pose(name, cf)
+        local m = map[name]
+        if m then m.Transform = cf end
+    end
+    pose("RightUpperArm", CFrame.Angles(math.rad(-18 + flex * 10), math.rad(22), math.rad(102 + pulse * 16)))
+    pose("RightLowerArm", CFrame.Angles(math.rad(-42), math.rad(8), math.rad(-12)))
+    pose("RightHand", CFrame.Angles(0, 0, math.rad(-18)))
+    pose("LeftUpperArm", CFrame.Angles(math.rad(18), math.rad(-12), math.rad(-78 - pulse * 10)))
+    pose("LeftLowerArm", CFrame.Angles(math.rad(-62), 0, math.rad(10)))
+    pose("UpperTorso", CFrame.Angles(math.rad(-14), math.rad(-20), math.rad(8)))
+    pose("LowerTorso", CFrame.Angles(math.rad(4), math.rad(-6), 0))
+    pose("Head", CFrame.Angles(math.rad(-10), math.rad(24), math.rad(4)))
+    pose("RightUpperLeg", CFrame.Angles(math.rad(12 + flex * 6), 0, math.rad(8)))
+    pose("RightLowerLeg", CFrame.Angles(math.rad(-18), 0, 0))
+    pose("LeftUpperLeg", CFrame.Angles(math.rad(14), 0, math.rad(-8)))
+    pose("LeftLowerLeg", CFrame.Angles(math.rad(-16), 0, 0))
+    pose("Right Arm", CFrame.Angles(math.rad(-28), math.rad(18), math.rad(105 + pulse * 14)))
+    pose("Left Arm", CFrame.Angles(math.rad(12), math.rad(-6), math.rad(-82)))
+    pose("Torso", CFrame.Angles(math.rad(-10), math.rad(-16), math.rad(6)))
+    pose("Right Leg", CFrame.Angles(math.rad(8), 0, math.rad(6)))
+    pose("Left Leg", CFrame.Angles(math.rad(10), 0, math.rad(-6)))
+end
+
+local function tryStandAnimation(char)
+    local hum = char and char:FindFirstChildOfClass("Humanoid")
+    if not hum then return end
+    pcall(function()
+        for _, tr in ipairs(hum:GetPlayingAnimationTracks()) do
+            tr:Stop(0)
+        end
+    end)
+    local animator = hum:FindFirstChildOfClass("Animator")
+    if not animator then
+        animator = Instance.new("Animator")
+        animator.Parent = hum
+    end
+    local function playId(id)
+        local anim = Instance.new("Animation")
+        anim.Name = "MM_StandClip"
+        anim.AnimationId = id
+        local track
+        local ok = pcall(function()
+            track = animator:LoadAnimation(anim)
+        end)
+        if not ok or not track then
+            anim:Destroy()
+            return false
+        end
+        track.Looped = true
+        track.Priority = Enum.AnimationPriority.Action4
+        local played = pcall(function() track:Play(0.2, 1, 0.85) end)
+        if played and track.IsPlaying then
+            G.MM_StandTrack = track
+            return true
+        end
+        pcall(function() track:Stop() end)
+        anim:Destroy()
+        return false
+    end
+    pcall(function()
+        local acp = game:GetService("AnimationClipProvider")
+        local ks = Instance.new("KeyframeSequence")
+        ks.Loop = true
+        ks.Priority = Enum.AnimationPriority.Action4
+        local kf = Instance.new("Keyframe")
+        kf.Time = 0
+        kf.Parent = ks
+        local hash
+        local ok = pcall(function()
+            hash = acp:RegisterAnimationClip(ks)
+        end)
+        if ok and type(hash) == "string" and hash ~= "" then
+            playId(hash)
+        end
+        ks:Destroy()
+    end)
+    if G.MM_StandTrack and G.MM_StandTrack.IsPlaying then return end
+    for _, id in ipairs({
+        "rbxassetid://616006778",
+        "rbxassetid://507770818",
+        "rbxassetid://507776043",
+        "rbxassetid://10714029112",
+    }) do
+        if playId(id) then return end
+    end
+end
+
 local function prepareStandBody(char)
     if not char then return end
     local hum = char:FindFirstChildOfClass("Humanoid")
@@ -1212,6 +1327,7 @@ local function prepareStandBody(char)
     end
     local anim = char:FindFirstChild("Animate")
     if anim then pcall(function() anim.Disabled = true end) end
+    tryStandAnimation(char)
     if not char:FindFirstChild("MM_StandAura") then
         pcall(function()
             local hl = Instance.new("Highlight")
@@ -1273,6 +1389,7 @@ local function startSummonLoop(userId)
             local hum = char and char:FindFirstChildOfClass("Humanoid")
             if hum and hum.Health > 0 then
                 summonSnap(target, bornAt)
+                applyStandMotors(char, tick())
             end
             task.wait(0.03)
         end

@@ -1,4 +1,4 @@
---[[ Xeno V1.05 XBOT_BUILD 20261009o ]]--
+--[[ Xeno V1.05 XBOT_BUILD 20261009p ]]--
 local GRAPHICS = true
 local TARGET_FPS = 50
 local Players = game:GetService("Players")
@@ -11,8 +11,16 @@ local Http = cref(game:GetService("HttpService"))
 local Stats = cref(game:GetService("Stats"))
 local StarterGui = cref(game:GetService("StarterGui"))
 local TeleportSvc = cref(game:GetService("TeleportService"))
-local isLegacy = TCS.ChatVersion == Enum.ChatVersion.LegacyChatService
-local me, cam = Players.LocalPlayer, workspace.CurrentCamera
+local isLegacy = TCS and TCS.ChatVersion == Enum.ChatVersion.LegacyChatService
+local me = Players.LocalPlayer
+if not me then
+    for _ = 1, 40 do
+        task.wait(0.05)
+        me = Players.LocalPlayer
+        if me then break end
+    end
+end
+local cam = workspace.CurrentCamera or workspace:FindFirstChildWhichIsA("Camera")
 local UIS = cref(game:GetService("UserInputService"))
 local DEFAULT_FOV, WIDE_FOV = 70, 100
 local SPAWN_CFRAME = CFrame.new(14.3513288, 505.044952, -58.2513657, 1, 0, 0, 0, 1, 0, 0, 0, 1)
@@ -28,9 +36,16 @@ local shootTargetId = nil
 local shootDone = false
 local hopBusy = false
 local PING_MIN_MS, PING_MAX_MS = 50, 90
-local G = getgenv and getgenv() or _G
+local G = _G
+pcall(function()
+    if type(getgenv) == "function" then
+        G = getgenv() or G
+    end
+end)
+if type(G) ~= "table" then G = {} end
 G.MM_UnderSpawn = SPAWN_CFRAME * CFrame.new(0, -34, 0)
 G.MM_ShootActive = false
+G.MM_BootReady = false
 pcall(function()
     RunSvc:Set3dRenderingEnabled(true)
     if setfpscap then setfpscap(TARGET_FPS) end
@@ -93,9 +108,12 @@ do
         session.ownerId = pending
     end
 end
-cam.FieldOfView = DEFAULT_FOV
-do local h = me.Character and me.Character:FindFirstChildOfClass("Humanoid") 
-   if h then cam.CameraSubject = h end end
+pcall(function()
+    if not cam then cam = workspace.CurrentCamera end
+    if cam then cam.FieldOfView = DEFAULT_FOV end
+    local h = me and me.Character and me.Character:FindFirstChildOfClass("Humanoid")
+    if cam and h then cam.CameraSubject = h end
+end)
 
 --[[ Render / FPS — keep 3D on so leftover farm-mode loops cannot blank the screen ]]--
 task.spawn(function()
@@ -1920,20 +1938,22 @@ local function startHideLoop()
 end
 
 G.MM_EnsureAutoStand = function()
-    if not session.active then return end
-    if G.MM_StandPaused or G.MM_FlingBusy then return end
-    if _G.MM_GunBusy or _G.MM_StabBusy or _G.MM_ShootBusy then return end
-    local owner = findOwner() or findConfiguredOwner()
-    if not owner or owner == me then return end
-    if not unitAlive(me) then return end
-    if wantStandFollow(owner) then
-        if G.MM_SummonUserId == owner.UserId then return end
-        log("stand: follow " .. owner.Name)
-        startSummonLoop(owner.UserId)
-        return
-    end
-    if G.MM_Hiding then return end
-    startHideLoop()
+    if not G.MM_BootReady or not session.active then return end
+    pcall(function()
+        if G.MM_StandPaused or G.MM_FlingBusy then return end
+        if _G.MM_GunBusy or _G.MM_StabBusy or _G.MM_ShootBusy then return end
+        local owner = findOwner() or findConfiguredOwner()
+        if not owner or owner == me then return end
+        if not unitAlive(me) then return end
+        if wantStandFollow(owner) then
+            if G.MM_SummonUserId == owner.UserId then return end
+            log("stand: follow " .. owner.Name)
+            startSummonLoop(owner.UserId)
+            return
+        end
+        if G.MM_Hiding then return end
+        startHideLoop()
+    end)
 end
 task.spawn(function()
     for _, d in ipairs({0.2, 0.7, 1.6, 3.2}) do
@@ -5567,7 +5587,7 @@ function runMainLoop()
     local nextAutoGunAt = 0
     local nextAutoShootAt = 0
     local lastAutoDropSig = nil
-while session.active and gui.Parent do
+while session.active and gui and gui.Parent do
     local m = (G.MM_FindRole and G.MM_FindRole("Murderer")) or findHolder({"Knife"})
     local s = (G.MM_FindRole and G.MM_FindRole("Sheriff"))
         or (G.MM_FindRole and G.MM_FindRole("Hero"))
@@ -5753,19 +5773,30 @@ while session.active and gui.Parent do
 
     local spec = findOwner() or findConfiguredOwner()
     local subject = (spec and spec.Character and spec.Character:FindFirstChildOfClass("Humanoid"))
-                  or (me.Character and me.Character:FindFirstChildOfClass("Humanoid"))
-    if cam.CameraType ~= Enum.CameraType.Custom then cam.CameraType = Enum.CameraType.Custom end
-    if subject then cam.CameraSubject = subject end
-    cam.FieldOfView = WIDE_FOV
+                  or (me and me.Character and me.Character:FindFirstChildOfClass("Humanoid"))
+    pcall(function()
+        if not cam then cam = workspace.CurrentCamera end
+        if not cam then return end
+        if cam.CameraType ~= Enum.CameraType.Custom then cam.CameraType = Enum.CameraType.Custom end
+        if subject then cam.CameraSubject = subject end
+        cam.FieldOfView = WIDE_FOV
+    end)
     task.wait(0.5)
 end
 
 --[[ Cleanup ]]--
-cam.FieldOfView = DEFAULT_FOV
-do local h = me.Character and me.Character:FindFirstChildOfClass("Humanoid")
-   if h then cam.CameraSubject = h end end
+pcall(function()
+    if not cam then cam = workspace.CurrentCamera end
+    if cam then cam.FieldOfView = DEFAULT_FOV end
+    local h = me and me.Character and me.Character:FindFirstChildOfClass("Humanoid")
+    if cam and h then cam.CameraSubject = h end
+end)
     cleanupSession()
 end
 end
 
+G.MM_BootReady = true
+pcall(function()
+    if G.MM_EnsureAutoStand then G.MM_EnsureAutoStand() end
+end)
 runMainLoop()

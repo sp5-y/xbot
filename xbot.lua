@@ -1,4 +1,4 @@
---[[ Xeno V1.04 XBOT_BUILD 20261009e ]]--
+--[[ Xeno V1.04 XBOT_BUILD 20261009h ]]--
 local GRAPHICS = true
 local TARGET_FPS = 50
 local Players = game:GetService("Players")
@@ -199,22 +199,29 @@ local function findHolder(names)
 end
 local function botHasGun() return playerHas(me, G.MM_GunNames) end
 local function botHasKnife() return playerHas(me, G.MM_KnifeNames) end
+G.MM_MarkIgnoreDrop = function(pos, secs)
+    secs = tonumber(secs) or 10
+    G.MM_BlockGunGrab = true
+    G.MM_SkipGunUntil = tick() + secs
+    if pos then
+        G.MM_IgnoreDropPos = pos
+        G.MM_IgnoreDropUntil = tick() + secs
+    end
+end
 local function findDroppedGun()
+    local function leftover(part)
+        if not part then return true end
+        if part.Position.Y < -40 then return true end
+        local untilT = tonumber(G.MM_IgnoreDropUntil) or 0
+        local ip = G.MM_IgnoreDropPos
+        if ip and tick() < untilT and (part.Position - ip).Magnitude < 32 then
+            return true
+        end
+        return false
+    end
     local function usable(part)
         if not part or not part.Parent then return end
-        if part.Position.Y < -40 then return end
-        local data = G.MM_PlayerData
-        if type(data) == "table" then
-            for name, rec in pairs(data) do
-                if rec and rec.Dead and not rec.Killed then
-                    local pl = Players:FindFirstChild(name)
-                    local rh = pl and pl.Character and (pl.Character:FindFirstChild("HumanoidRootPart") or pl.Character.PrimaryPart)
-                    if rh and (rh.Position - part.Position).Magnitude < 36 then
-                        return
-                    end
-                end
-            end
-        end
+        if leftover(part) then return end
         return part
     end
     local function asPart(obj)
@@ -938,6 +945,17 @@ local function whisperOk(m, target)
     end
     return false
 end
+local function sendRoleLines(mLabel, sLabel)
+    local mLine = "Murderer: " .. tostring(mLabel)
+    local sLine = "Sheriff: " .. tostring(sLabel)
+    if not whisperOk(mLine) then whisper(mLine) end
+    task.wait(1.2)
+    if not whisperOk(sLine) then
+        task.wait(0.85)
+        if not whisperOk(sLine) then whisper(sLine) end
+    end
+    return true
+end
 local function channelLooksPrivate(name)
     name = tostring(name or "")
     if name == "" then return true end
@@ -1239,7 +1257,21 @@ local function restoreStandBody()
             hum.AutoRotate = true
             if hum.WalkSpeed < 1 then hum.WalkSpeed = 16 end
             if hum.JumpPower < 1 then hum.JumpPower = 50 end
+            pcall(function()
+                hum:SetStateEnabled(Enum.HumanoidStateType.Freefall, true)
+                hum:SetStateEnabled(Enum.HumanoidStateType.FallingDown, true)
+                hum:SetStateEnabled(Enum.HumanoidStateType.Jumping, true)
+            end)
         end)
+    end
+    local saved = G.MM_AnimateFallSaved
+    G.MM_AnimateFallSaved = nil
+    if type(saved) == "table" then
+        for _, e in ipairs(saved) do
+            if e.inst and e.inst.Parent then
+                pcall(function() e.inst.AnimationId = e.id end)
+            end
+        end
     end
     local anim = char:FindFirstChild("Animate")
     if anim then pcall(function() anim.Disabled = false end) end
@@ -1304,6 +1336,60 @@ local function startFollowLoop()
     end)
 end
 
+local function muteAnimateFalls(char)
+    if not char or G.MM_AnimateFallSaved then return end
+    local animate = char:FindFirstChild("Animate")
+    if not animate then return end
+    local saved = {}
+    for _, child in ipairs(animate:GetChildren()) do
+        local n = child.Name:lower()
+        if n:find("fall", 1, true) or n == "jump" or n == "jumpl" then
+            for _, a in ipairs(child:GetDescendants()) do
+                if a:IsA("Animation") then
+                    table.insert(saved, {inst = a, id = a.AnimationId})
+                    pcall(function() a.AnimationId = "" end)
+                end
+            end
+        end
+    end
+    G.MM_AnimateFallSaved = saved
+end
+
+local function standGroundHumanoid(hum, forceState)
+    if not hum then return end
+    pcall(function()
+        hum.PlatformStand = false
+        hum.AutoRotate = false
+        hum.WalkSpeed = 0
+        hum.JumpPower = 0
+        hum:SetStateEnabled(Enum.HumanoidStateType.Freefall, false)
+        hum:SetStateEnabled(Enum.HumanoidStateType.FallingDown, false)
+        hum:SetStateEnabled(Enum.HumanoidStateType.Jumping, false)
+        local st = hum:GetState()
+        if forceState or st == Enum.HumanoidStateType.Freefall
+            or st == Enum.HumanoidStateType.FallingDown
+            or st == Enum.HumanoidStateType.Jumping then
+            hum:ChangeState(Enum.HumanoidStateType.Running)
+        end
+    end)
+end
+
+local function stopFallTracks(hum)
+    if not hum then return end
+    pcall(function()
+        for _, tr in ipairs(hum:GetPlayingAnimationTracks()) do
+            local n = tostring(tr.Name):lower()
+            local aid = ""
+            pcall(function()
+                aid = tostring(tr.Animation and tr.Animation.AnimationId or ""):lower()
+            end)
+            if n:find("fall", 1, true) or n:find("jump", 1, true) or aid:find("fall", 1, true) then
+                tr:Stop(0)
+            end
+        end
+    end)
+end
+
 local function applyStandMotors(char, now)
     if not char then return end
     local pulse = math.sin(now * 3.15) * 0.12
@@ -1337,56 +1423,108 @@ local function applyStandMotors(char, now)
     pose("Left Leg", CFrame.Angles(math.rad(10), 0, math.rad(-6)))
 end
 
-local function tryStandAnimation(char)
-    local hum = char and char:FindFirstChildOfClass("Humanoid")
-    if not hum then return end
-    if G.MM_StandTrack and G.MM_StandTrack.IsPlaying then return end
-    local names = {"Endless Angelic Aura"}
-    pcall(function()
-        local desc = hum:GetAppliedDescription()
-        if not desc then desc = me:GetAppliedDescription() end
-        local emotes = desc and desc:GetEmotes()
+local function auraEmoteTargets(hum)
+    local names, ids, seen = {"Endless Angelic Aura"}, {"124474822519936"}, {}
+    local function addName(n)
+        n = tostring(n or "")
+        if n == "" or seen[n] then return end
+        seen[n] = true
+        table.insert(names, 1, n)
+    end
+    local function addId(id)
+        id = tostring(id or ""):gsub("%D", "")
+        if id ~= "" then table.insert(ids, id) end
+    end
+    local function takeEmotes(emotes)
         if type(emotes) ~= "table" then return end
-        for emoteName, ids in pairs(emotes) do
-            local id = type(ids) == "table" and ids[1] or ids
+        for emoteName, list in pairs(emotes) do
+            local id = type(list) == "table" and list[1] or list
             local n = tostring(emoteName):lower()
             if n:find("angelic", 1, true) or n:find("endless", 1, true) or tostring(id) == "124474822519936" then
-                table.insert(names, 1, emoteName)
+                addName(emoteName)
+                addId(id)
+            end
+        end
+    end
+    pcall(function()
+        local desc = hum:GetAppliedDescription() or me:GetAppliedDescription()
+        if desc then takeEmotes(desc:GetEmotes()) end
+    end)
+    pcall(function() takeEmotes(hum:GetEmotes()) end)
+    pcall(function()
+        for _, slot in ipairs(hum:GetEquippedEmotes() or {}) do
+            if type(slot) == "table" and slot.Name then
+                local n = tostring(slot.Name):lower()
+                if n:find("angelic", 1, true) or n:find("endless", 1, true) then
+                    addName(slot.Name)
+                end
+            elseif type(slot) == "string" then
+                local n = slot:lower()
+                if n:find("angelic", 1, true) or n:find("endless", 1, true) then
+                    addName(slot)
+                end
             end
         end
     end)
+    return names, ids
+end
+
+local function invokeAnimateEmote(char, emoteName)
+    local animate = char and char:FindFirstChild("Animate")
+    if not animate then return false end
+    local ok = false
+    pcall(function()
+        local pf = animate:FindFirstChild("PlayEmote") or animate:FindFirstChild("playEmote")
+        if pf and pf:IsA("BindableFunction") then
+            local ret = pf:Invoke(emoteName)
+            ok = ret ~= false
+        elseif pf and pf:IsA("BindableEvent") then
+            pf:Fire(emoteName)
+            ok = true
+        end
+    end)
+    return ok
+end
+
+local function tryStandAnimation(char)
+    local hum = char and char:FindFirstChildOfClass("Humanoid")
+    if not hum then return end
+    standGroundHumanoid(hum, not G.MM_StandEmoteOk)
+    muteAnimateFalls(char)
+    stopFallTracks(hum)
+    if G.MM_StandTrack and G.MM_StandTrack.IsPlaying then
+        G.MM_StandEmoteOk = true
+        return
+    end
+    local names, ids = auraEmoteTargets(hum)
     for _, emoteName in ipairs(names) do
         local named = false
         pcall(function()
             named = hum:PlayEmote(emoteName) == true
         end)
-        if not named then
-            pcall(function()
-                if hum.PlayEmoteAsync then
-                    hum:PlayEmoteAsync(emoteName)
-                    named = true
-                end
-            end)
+        if invokeAnimateEmote(char, emoteName) then
+            named = true
         end
         if named then
             G.MM_EmoteUntil = tick() + 1e8
             G.MM_StandEmoteOk = true
             G.MM_StandEmoteName = emoteName
+            stopFallTracks(hum)
             return
         end
     end
-    if G.MM_StandEmoteOk then return end
-    pcall(function()
-        for _, tr in ipairs(hum:GetPlayingAnimationTracks()) do
-            tr:Stop(0)
-        end
-    end)
     local animator = hum:FindFirstChildOfClass("Animator")
     if not animator then
         animator = Instance.new("Animator")
         animator.Parent = hum
     end
     local function playId(id)
+        id = tostring(id or "")
+        if id:find("%D") then
+            -- keep rbxassetid://
+        else
+            id = "rbxassetid://" .. id
+        end
         local anim = Instance.new("Animation")
         anim.Name = "MM_StandClip"
         anim.AnimationId = id
@@ -1400,7 +1538,7 @@ local function tryStandAnimation(char)
         end
         track.Looped = true
         track.Priority = Enum.AnimationPriority.Action4
-        local played = pcall(function() track:Play(0.2, 1, 0.85) end)
+        local played = pcall(function() track:Play(0.2, 1, 1) end)
         if played and track.IsPlaying then
             G.MM_StandTrack = track
             return true
@@ -1409,36 +1547,12 @@ local function tryStandAnimation(char)
         anim:Destroy()
         return false
     end
-    pcall(function()
-        local acp = game:GetService("AnimationClipProvider")
-        local ks = Instance.new("KeyframeSequence")
-        ks.Loop = true
-        ks.Priority = Enum.AnimationPriority.Action4
-        local kf = Instance.new("Keyframe")
-        kf.Time = 0
-        kf.Parent = ks
-        local hash
-        local ok = pcall(function()
-            hash = acp:RegisterAnimationClip(ks)
-        end)
-        if ok and type(hash) == "string" and hash ~= "" then
-            playId(hash)
+    for _, id in ipairs(ids) do
+        if playId(id) then
+            G.MM_EmoteUntil = tick() + 1e8
+            G.MM_StandEmoteOk = true
+            return
         end
-        ks:Destroy()
-    end)
-    if playId("rbxassetid://124474822519936") then
-        G.MM_EmoteUntil = tick() + 1e8
-        G.MM_StandEmoteOk = true
-        return
-    end
-    if G.MM_StandTrack and G.MM_StandTrack.IsPlaying then return end
-    for _, id in ipairs({
-        "rbxassetid://616006778",
-        "rbxassetid://507770818",
-        "rbxassetid://507776043",
-        "rbxassetid://10714029112",
-    }) do
-        if playId(id) then return end
     end
 end
 
@@ -1485,15 +1599,11 @@ end
 
 local function prepareStandBody(char)
     if not char then return end
+    G.MM_AnimateFallSaved = nil
     local hum = char:FindFirstChildOfClass("Humanoid")
-    if hum then
-        pcall(function()
-            hum.PlatformStand = false
-            hum.AutoRotate = false
-            hum.WalkSpeed = 0
-            hum.JumpPower = 0
-        end)
-    end
+    standGroundHumanoid(hum, true)
+    muteAnimateFalls(char)
+    stopFallTracks(hum)
     hideBackWeapons(char, true)
     tryStandAnimation(char)
     if not char:FindFirstChild("MM_StandAura") then
@@ -1524,7 +1634,7 @@ local function summonSnap(p, bornAt)
     end
     local extraY = (1 - rise) * -3.8
     pcall(function()
-        h.Anchored = false
+        h.Anchored = true
         h.AssemblyLinearVelocity = Vector3.zero
         h.AssemblyAngularVelocity = Vector3.zero
         h.CFrame = t.CFrame
@@ -1561,6 +1671,8 @@ local function startSummonLoop(userId)
             end
             local hum = char and char:FindFirstChildOfClass("Humanoid")
             if hum and hum.Health > 0 then
+                standGroundHumanoid(hum)
+                stopFallTracks(hum)
                 if tick() - lastHide > 0.45 then
                     lastHide = tick()
                     hideBackWeapons(char)
@@ -1568,14 +1680,10 @@ local function startSummonLoop(userId)
                 summonSnap(target, bornAt)
                 local track = G.MM_StandTrack
                 local emoteOn = (track and track.IsPlaying) or G.MM_StandEmoteOk
-                    or tick() < (tonumber(G.MM_EmoteUntil) or 0)
-                if (not emoteOn) or (tick() - lastEmote > 6) then
+                if (not emoteOn) or (tick() - lastEmote > 4) then
                     lastEmote = tick()
                     tryStandAnimation(char)
                     emoteOn = (G.MM_StandTrack and G.MM_StandTrack.IsPlaying) or G.MM_StandEmoteOk
-                end
-                if not emoteOn then
-                    applyStandMotors(char, tick())
                 end
             end
             task.wait(0.03)
@@ -1859,7 +1967,7 @@ end
         while session.active and tick() - t0 < timeout do
             if not isAlive(me) then return false end
             if not force and G.MM_BlockGunGrab then return false end
-            if tick() < (tonumber(G.MM_SkipGunUntil) or 0) then return false end
+            if not force and tick() < (tonumber(G.MM_SkipGunUntil) or 0) then return false end
             if botHasGun() then return true end
             local drop = findDroppedGun()
             if not drop then
@@ -2037,11 +2145,15 @@ end
     G.MM_TryClientDrop = G.MM_ForceDropGun
 
     G.MM_DieInPlace = function()
-        G.MM_BlockGunGrab = true
-        G.MM_SkipGunUntil = tick() + 8
         local char = me.Character
         if not char then return end
         local h = char:FindFirstChild("HumanoidRootPart")
+        if G.MM_MarkIgnoreDrop then
+            G.MM_MarkIgnoreDrop(h and h.Position, 8)
+        else
+            G.MM_BlockGunGrab = true
+            G.MM_SkipGunUntil = tick() + 8
+        end
         if h then
             pcall(function() h.Anchored = false end)
             zeroVel(h)
@@ -2244,8 +2356,13 @@ trackConnection(me.CharacterAdded:Connect(function()
 end))
 local function reset(stay)
     stopFollow()
-    G.MM_BlockGunGrab = true
-    G.MM_SkipGunUntil = tick() + 12
+    local rh = hrp()
+    if G.MM_MarkIgnoreDrop then
+        G.MM_MarkIgnoreDrop(rh and rh.Position, 12)
+    else
+        G.MM_BlockGunGrab = true
+        G.MM_SkipGunUntil = tick() + 12
+    end
     gunDelivered = true
     if stay and G.MM_DieInPlace then
         G.MM_DieInPlace()
@@ -2342,13 +2459,25 @@ local function bringGun(target, force)
     end
     target = target or findOwner()
     if not isAlive(target) or not isAlive(me) then return finish(false) end
-    if not force and G.MM_BlockGunGrab then return finish(false) end
-    if tick() < (tonumber(G.MM_SkipGunUntil) or 0) then return finish(false) end
+    if isSummoned() or isFollowing() then
+        stopFollow()
+        task.wait(0.05)
+    end
+    local root = hrp()
+    if root then
+        pcall(function() root.Anchored = false end)
+    end
     if G.MM_TargetHasGun(target) then return finish(true) end
+    local drop = findDroppedGun()
+    if not force and not drop and not botHasGun() then
+        if G.MM_BlockGunGrab then return finish(false) end
+        if tick() < (tonumber(G.MM_SkipGunUntil) or 0) then return finish(false) end
+    end
 
     -- 1) GunDrop already on the map: touch it to the target. Bot stays alive.
-    if findDroppedGun() and not botHasGun() then
-        if G.MM_DeliverDrop and G.MM_DeliverDrop(target, 1.4) then
+    if drop and not botHasGun() then
+        log("gun: delivering drop to " .. tostring(target.Name))
+        if G.MM_DeliverDrop and G.MM_DeliverDrop(target, 0.7) then
             log("gun: delivered GunDrop without reset")
             return finish(true)
         end
@@ -2357,7 +2486,7 @@ local function bringGun(target, force)
 
     -- 2) Bot must hold it (sheriff/hero or we just picked up). No GiveGun remote.
     if not botHasGun() then
-        if not (G.MM_GrabDroppedGun and G.MM_GrabDroppedGun(2.4, force)) then
+        if not (G.MM_GrabDroppedGun and G.MM_GrabDroppedGun(2.8, true)) then
             return finish(false)
         end
     end
@@ -2375,9 +2504,11 @@ local function stashGunAtSpawn()
     end
     if _G.MM_StabBusy then return finish(false) end
     if not SPAWN_CFRAME or not isAlive(me) then return finish(false) end
-    if G.MM_BlockGunGrab then return finish(false) end
-    if tick() < (tonumber(G.MM_SkipGunUntil) or 0) then return finish(false) end
     local drop = findDroppedGun()
+    if not drop and not botHasGun() then
+        if G.MM_BlockGunGrab then return finish(false) end
+        if tick() < (tonumber(G.MM_SkipGunUntil) or 0) then return finish(false) end
+    end
     if drop and not botHasGun() then
         local nearSpawn = (drop.Position - SPAWN_CFRAME.Position).Magnitude < 18
         if nearSpawn then
@@ -2399,7 +2530,6 @@ local function ownerMurdererActive(murderer, ownerPlayer)
 end
 local function gunAvailableForOwnerMurdStash()
     if botHasGun() then return true end
-    if G.MM_BlockGunGrab then return false end
     return findDroppedGun() ~= nil
 end
 local function equipTool(tool)
@@ -3518,10 +3648,7 @@ local function handleCommand(p, msg, viaPublic)
         else
             sL = (sher == me or botS) and "Me" or (sher and shortName(sher)) or "?"
         end
-        local line = "Murderer: " .. mL .. " | Sheriff: " .. sL
-        if not whisperOk(line) then
-            whisper(line)
-        end
+        sendRoleLines(mL, sL)
     elseif cmd == "tp" then
         local t = findPlayer(args[2]) or findOwner()
         if not t then whisper("Player not found") return end
@@ -3656,6 +3783,8 @@ local function handleCommand(p, msg, viaPublic)
         reset()
     elseif cmd == "togglegun" then
         if args[2] and ownerIsMurd then whisper(OWNER_MURD_GUN_MSG) return end
+        G.MM_BlockGunGrab = false
+        G.MM_SkipGunUntil = 0
         if args[2] then
             local t = findPlayer(args[2])
             if not t then whisper("Player not found") return end
@@ -4956,8 +5085,13 @@ task.spawn(function()
                 local cur = aliveState(own)
                 local prev = alivePrev[own.UserId]
                 if prev == true and (cur == false or cur == nil) then
-                    G.MM_BlockGunGrab = true
-                    G.MM_SkipGunUntil = tick() + 12
+                    local oh = own.Character and (own.Character:FindFirstChild("HumanoidRootPart") or own.Character.PrimaryPart)
+                    if G.MM_MarkIgnoreDrop then
+                        G.MM_MarkIgnoreDrop(oh and oh.Position, 12)
+                    else
+                        G.MM_BlockGunGrab = true
+                        G.MM_SkipGunUntil = tick() + 12
+                    end
                     gunDelivered = true
                     if not toggleResetOnOwnerDeath then
                         log("owner died (reset on death off)")
@@ -5069,10 +5203,7 @@ local function sendRoundRoleCallouts(curM, curS, curBotM, curBotS, force)
             return true
         end
     end
-    local line = "Murderer: " .. mLabel .. " | Sheriff: " .. sLabel
-    if not whisperOk(line) then
-        whisper(line)
-    end
+    sendRoleLines(mLabel, sLabel)
     G.MM_LastRoleCallout = key
     G.MM_LastRoleCalloutAt = tick()
     G.MM_RoleSentThisRound = true
@@ -5100,6 +5231,7 @@ local function runMainLoop()
     local ownerMurdStashBusy = false
     local nextAutoGunAt = 0
     local nextAutoShootAt = 0
+    local lastAutoDropSig = nil
 while session.active and gui.Parent do
     local m = (G.MM_FindRole and G.MM_FindRole("Murderer")) or findHolder({"Knife"})
     local s = (G.MM_FindRole and G.MM_FindRole("Sheriff"))
@@ -5108,6 +5240,9 @@ while session.active and gui.Parent do
         local botM = (m == me) or botHasKnife()
         local roundActive = isRoundActive()
 
+    if G.MM_BlockGunGrab and tick() >= (tonumber(G.MM_SkipGunUntil) or 0) then
+        G.MM_BlockGunGrab = false
+    end
     local liveNow = (G.MM_RoundLive == true) or (m ~= nil) or botM
     local pulse = tonumber(G.MM_RoundPulse) or 0
     if pulse > 0 and pulse ~= lastRoundPulse then
@@ -5152,20 +5287,22 @@ while session.active and gui.Parent do
         homeBurst()
         local owner = findOwner() or findConfiguredOwner()
         task.spawn(function()
-            local curM, curS, curBotM, curBotS = resolveRoleSnapshot(3.2)
-            if toggleReveal and not G.MM_RoleSentThisRound then
-                local _
-                _, curM, curS, curBotM, curBotS = waitForRoleCallouts(curM, curS, curBotM, curBotS)
-            else
-                curM, curS, curBotM, curBotS = resolveRoleSnapshot(0.5)
-            end
+            local ok, err = pcall(function()
+                local curM, curS, curBotM, curBotS = resolveRoleSnapshot(3.2)
+                if toggleReveal and not G.MM_RoleSentThisRound then
+                    local _
+                    _, curM, curS, curBotM, curBotS = waitForRoleCallouts(curM, curS, curBotM, curBotS)
+                else
+                    curM, curS, curBotM, curBotS = resolveRoleSnapshot(0.5)
+                end
 
-            if curBotM and owner and curS and owner.UserId == curS.UserId then
-                tpTo(owner)
-            elseif not curBotM then
-                tpHome()
-            end
-
+                if curBotM and owner and curS and owner.UserId == curS.UserId then
+                    tpTo(owner)
+                elseif not curBotM then
+                    tpHome()
+                end
+            end)
+            if not ok then log("reveal: " .. tostring(err)) end
             roleAnnounceUnlockAt = tick() + 0.35
             revealAnnouncePending = false
         end)
@@ -5237,21 +5374,35 @@ while session.active and gui.Parent do
     end
 
     local gunTarget = (gunTargetId and Players:GetPlayerByUserId(gunTargetId)) or findOwner()
+    local dropNow = findDroppedGun()
+    if dropNow then
+        local sig = string.format("%.0f:%.0f:%.0f", dropNow.Position.X, dropNow.Position.Y, dropNow.Position.Z)
+        if sig ~= lastAutoDropSig then
+            lastAutoDropSig = sig
+            if toggleGun and gunTarget and not G.MM_TargetHasGun(gunTarget) then
+                gunDelivered = false
+                log("gun: drop seen, auto-gun queued")
+            end
+        end
+    else
+        lastAutoDropSig = nil
+    end
         if toggleGun and not flingLoopContinuous and not botM and not ownerIsMurd and not gunDelivered and not _G.MM_GunBusy and not _G.MM_StabBusy and not _G.MM_ShootBusy
            and not _G.MM_OwnerDiedPendingReset
            and isAlive(me) and me.Character
-           and not revealAnnouncePending and tick() >= roleAnnounceUnlockAt
+           and (dropNow or botHasGun() or tick() >= roleAnnounceUnlockAt)
            and tick() >= nextAutoGunAt
-           and tick() >= (tonumber(G.MM_SkipGunUntil) or 0)
            and not flingActive and not flingLoopActive and not flingSettling
        and gunTarget and gunTarget ~= me and isAlive(gunTarget)
-           and gunAvailableForOwnerMurdStash() then
+           and (botHasGun() or dropNow) then
         nextAutoGunAt = tick() + 2.2
         _G.MM_GunBusy = true
+        log("gun: auto-deliver to " .. gunTarget.Name)
         task.spawn(function()
             local ok = bringGun(gunTarget)
             gunDelivered = ok or G.MM_TargetHasGun(gunTarget)
             if not gunDelivered then
+                log("gun: auto-deliver missed, retrying")
                 nextAutoGunAt = tick() + 0.35
             end
             task.wait(0.4)

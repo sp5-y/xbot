@@ -1,4 +1,4 @@
---[[ Xeno V1.05 XBOT_BUILD 20261009w ]]--
+--[[ Xeno V1.05 XBOT_BUILD 20261009z ]]--
 local GRAPHICS = true
 local TARGET_FPS = 50
 local Players = game:GetService("Players")
@@ -280,6 +280,11 @@ G.MM_PlayerData = {}
 G.MM_HasKilledField = false
 G.MM_RoundLive = false
 G.MM_RoleSentThisRound = false
+G.MM_LastRoleCallout = nil
+G.MM_LastRoleCalloutAt = 0
+G.MM_RoleQ = {}
+G.MM_RoleQBusy = false
+G.MM_RoleSending = nil
 G.MM_OnPlayerKilled = nil
 ;(function()
     local function parseKilled(info)
@@ -690,6 +695,7 @@ G.MM_ApplyOwnerDefaults = function()
     gunTargetId, gunDelivered = nil, false
     shootTargetId, shootDone = nil, false
     G.MM_ForceHide = false
+    G.MM_SummonFocusId = nil
     _G.MM_OwnerDiedPendingReset = false
     G.MM_TipSent = {}
     G.MM_TipRounds = 0
@@ -700,6 +706,7 @@ G.MM_SaveOwnerPrefs = function(uid)
     G.MM_OwnerPrefs[tostring(uid)] = {
         toggles = G.MM_CurrentToggleConfig(),
         forceHide = G.MM_ForceHide == true,
+        summonFocusId = G.MM_SummonFocusId,
         tipsSent = G.MM_TipSent or {},
         tipRounds = tonumber(G.MM_TipRounds) or 0,
         gunTargetId = gunTargetId,
@@ -715,6 +722,7 @@ G.MM_LoadOwnerPrefs = function(uid)
     if type(rec) ~= "table" then return end
     G.MM_ApplyToggleConfig(rec.toggles)
     G.MM_ForceHide = rec.forceHide == true
+    G.MM_SummonFocusId = tonumber(rec.summonFocusId)
     G.MM_TipSent = type(rec.tipsSent) == "table" and rec.tipsSent or {}
     G.MM_TipRounds = tonumber(rec.tipRounds) or 0
     if rec.gunTargetId then gunTargetId = rec.gunTargetId end
@@ -754,6 +762,24 @@ G.MM_NoteRoundForTips = function()
             whisper(text, o)
         end
     end)
+end
+G.MM_SendAdoptAd = function()
+    if session.ownerId then return end
+    local line = "No owner — !adopt to claim this bot"
+    log("adopt advert")
+    if not sendChat(line) then
+        whisper(line)
+    end
+end
+G.MM_NoteRoundForAdoptAd = function()
+    if session.ownerId then
+        G.MM_AdoptAdRounds = 0
+        return
+    end
+    G.MM_AdoptAdRounds = (tonumber(G.MM_AdoptAdRounds) or 0) + 1
+    if (G.MM_AdoptAdRounds % 3) == 0 then
+        G.MM_SendAdoptAd()
+    end
 end
 if session.ownerId then
     G.MM_LoadOwnerPrefs(session.ownerId)
@@ -1115,8 +1141,12 @@ local function sendRoleLineReliable(line, usePublic, target)
 end
 
 local function pumpRoleQueue()
-    if G.MM_RoleQBusy then return end
+    if G.MM_RoleQBusy then
+        if tick() - (tonumber(G.MM_RoleQBusyAt) or 0) < 40 then return end
+        G.MM_RoleQBusy = false
+    end
     G.MM_RoleQBusy = true
+    G.MM_RoleQBusyAt = tick()
     task.spawn(function()
         while session.active do
             local q = G.MM_RoleQ
@@ -2325,9 +2355,25 @@ G.MM_EnsureAutoStand = function()
             startHideLoop()
             return
         end
-        if G.MM_SummonUserId == owner.UserId and G.MM_StandLoopAlive then return end
-        log("stand: follow " .. owner.Name)
-        startSummonLoop(owner.UserId)
+        local focusId = tonumber(G.MM_SummonFocusId)
+        if focusId then
+            local focus = Players:GetPlayerByUserId(focusId)
+            if focus and focus ~= me then
+                if G.MM_SummonUserId == focus.UserId and G.MM_StandLoopAlive then return end
+                log("stand: follow " .. focus.Name)
+                startSummonLoop(focus.UserId)
+                return
+            end
+            G.MM_SummonFocusId = nil
+        end
+        if wantStandFollow(owner) then
+            if G.MM_SummonUserId == owner.UserId and G.MM_StandLoopAlive then return end
+            log("stand: follow " .. owner.Name)
+            startSummonLoop(owner.UserId)
+            return
+        end
+        if G.MM_Hiding and G.MM_StandLoopAlive then return end
+        startHideLoop()
     end)
 end
 task.spawn(function()
@@ -4013,11 +4059,12 @@ local COMMAND_HELP = {
     tpmurd = "Teleport bot to the murderer",
     tpsher = "Teleport bot to the sheriff",
     spawn = "Teleport bot to spawn",
-    follow = "<player> - Follow a player",
-    unfollow = "Stop following current player",
+    home = "Same as !spawn",
     hide = "Stay under the map until !summon",
-    summon = "Turn stand follow on (on by default)",
+    summon = "[player] - Stand follow you, or a player",
     unsummon = "Same as !hide",
+    tpmurd = "Teleport bot to the murderer",
+    tpsher = "Teleport bot to the sheriff",
     emote = "<name|id> - Play an equipped emote (Endless Angelic Aura / 124474822519936)",
     gun = "<player> - Give GunDrop via touch if dropped; else die-in-place (no GiveGun remote)",
     togglegun = "<player> - Auto-deliver gun to a player",
@@ -4027,8 +4074,9 @@ local COMMAND_HELP = {
     help = "<cmd> - Show command list or explain one command",
 }
 local HELP_ORDER = {
-    "owner", "adopt", "unadopt", "tp", "reveal", "stab", "shoot", "gun", "drop", "fling", "togglegun", "toggleshoot", "togglereveal", "togglealerts",
-    "reset", "follow", "unfollow", "hide", "summon", "unsummon", "emote", "chat", "help",
+    "owner", "adopt", "unadopt", "tp", "tpmurd", "tpsher", "reveal", "stab", "shoot", "gun", "drop", "fling",
+    "togglegun", "toggleshoot", "togglereveal", "togglealerts", "togglereset", "toggledrop",
+    "reset", "spawn", "hide", "summon", "unsummon", "emote", "chat", "help",
 }
 local PREMIUM_ONLY_COMMANDS = {
     togglereset = true,
@@ -4052,10 +4100,6 @@ local function helpKeysForOwner()
     end
     local out = {}
     for _, k in ipairs(keys) do
-        if k == "reset" then
-            table.insert(out, "togglereset")
-            table.insert(out, "toggledrop")
-        end
         table.insert(out, k)
     end
     return out
@@ -4251,6 +4295,10 @@ task.spawn(function()
         end
         task.wait(0.5)
     end
+    if session.active and not session.ownerId and G.MM_SendAdoptAd then
+        G.MM_AdoptAdRounds = 0
+        G.MM_SendAdoptAd()
+    end
 end)
 
 local function ownerLabel(pl)
@@ -4272,6 +4320,7 @@ local function setAdoptedOwner(pl)
     G.MM_OwnerReleased = false
     _G.MM_OwnerDiedPendingReset = false
     pcall(function() G.MM_LoadOwnerPrefs(pl.UserId) end)
+    G.MM_AdoptAdRounds = 0
     scheduleOwnerOnboarding(pl.UserId)
 end
 
@@ -4322,7 +4371,9 @@ local function handleCommand(p, msg, viaPublic)
         G.MM_OwnerReleased = true
         gunTargetId, gunDelivered = nil, false
         pcall(function() G.MM_ApplyOwnerDefaults() end)
+        G.MM_AdoptAdRounds = 0
         whisper("Unadopted — !adopt to claim")
+        if G.MM_SendAdoptAd then G.MM_SendAdoptAd() end
         return
     end
     if not authorizeCommand(p) then return end
@@ -4435,7 +4486,7 @@ local function handleCommand(p, msg, viaPublic)
         else
             sL = (sher == me or botS) and (useMe and "Me" or shortName(me)) or (sher and shortName(sher)) or "?"
         end
-        sendRoleLines(mL, sL, viaPublic and not revealTo, revealTo)
+        sendRoleLines(mL, sL, false, revealTo)
         if revealTo then
             whisper("Revealed to " .. commandTargetLabel(revealTo))
         end
@@ -4625,34 +4676,28 @@ local function handleCommand(p, msg, viaPublic)
         toggleDrop = not toggleDrop
         whisper("Murderer gun stash: " .. (toggleDrop and "on" or "off"))
         if session.ownerId then pcall(function() G.MM_SaveOwnerPrefs(session.ownerId) end) end
-    elseif cmd == "follow" then
-        local q = restOfChatArgs(args)
-        local t = (q ~= "" and (findOtherPlayer(q) or findPlayer(q))) or findOwner()
-        if not t or t == me then whisper("Player not found") return end
-        restoreStandBody()
-        G.MM_SummonUserId = nil
-        G.MM_FollowUserId = t.UserId
-        followSnap(t)
-        startFollowLoop()
-        whisper("Following " .. shortName(t))
-    elseif cmd == "unfollow" then
-        if not G.MM_FollowUserId then whisper("Not following anyone") return end
-        local cur = Players:GetPlayerByUserId(G.MM_FollowUserId)
-        local name = cur and shortName(cur) or "them"
-        stopFollow()
-        whisper("Unfollowed " .. name)
     elseif cmd == "hide" or cmd == "unsummon" then
         G.MM_ForceHide = true
+        G.MM_SummonFocusId = nil
         startHideLoop()
         if session.ownerId then pcall(function() G.MM_SaveOwnerPrefs(session.ownerId) end) end
         whisper("Hidden under map — !summon to bring stand back")
     elseif cmd == "summon" then
         G.MM_ForceHide = false
-        local owner = findOwner() or findConfiguredOwner()
-        if not owner or owner == me then whisper("No owner to summon to") return end
-        startSummonLoop(owner.UserId)
+        local q = restOfChatArgs(args)
+        local target
+        if q ~= "" then
+            target = findOtherPlayer(q) or findPlayer(q)
+            if not target or target == me then whisper("Player not found") return end
+            G.MM_SummonFocusId = target.UserId
+        else
+            target = findOwner() or findConfiguredOwner()
+            G.MM_SummonFocusId = nil
+            if not target or target == me then whisper("No owner to summon to") return end
+        end
+        startSummonLoop(target.UserId)
         if session.ownerId then pcall(function() G.MM_SaveOwnerPrefs(session.ownerId) end) end
-        whisper("Stand on")
+        whisper("Stand on " .. commandTargetLabel(target))
     elseif cmd == "emote" then
         local q = restOfChatArgs(args)
         local ok, info = playBotEmote(q)
@@ -4799,10 +4844,19 @@ pcall(function()
         if not session.active then return end
         if session.ownerId and p.UserId == session.ownerId then
             if hopBusy then return end
-            session.ownerId = nil
-            G.MM_PendingOwnerId = nil
-            G.MM_OwnerAdopted = false
-            gunTargetId, gunDelivered = nil, false
+            pcall(function() G.MM_SaveOwnerPrefs(session.ownerId) end)
+            local leftId = p.UserId
+            task.defer(function()
+                if hopBusy then return end
+                if session.ownerId ~= leftId then return end
+                session.ownerId = nil
+                G.MM_PendingOwnerId = nil
+                G.MM_OwnerAdopted = false
+                gunTargetId, gunDelivered = nil, false
+                pcall(function() G.MM_ApplyOwnerDefaults() end)
+                G.MM_AdoptAdRounds = 0
+                if G.MM_SendAdoptAd then G.MM_SendAdoptAd() end
+            end)
         end
     end))
 end)
@@ -5993,14 +6047,9 @@ local function sendRoundRoleCallouts(curM, curS, curBotM, curBotS, force)
         end
     end
     local key = mLabel .. "|" .. sLabel
-    if not force then
-        if G.MM_RoleSentThisRound then return true end
-        if G.MM_LastRoleCallout == key and (tick() - (tonumber(G.MM_LastRoleCalloutAt) or 0)) < 45 then
-            return true
-        end
-        G.MM_RoleSentThisRound = true
-    end
+    if not force and G.MM_RoleSentThisRound then return true end
     sendRoleLines(mLabel, sLabel)
+    G.MM_RoleSentThisRound = true
     G.MM_LastRoleCallout = key
     G.MM_LastRoleCalloutAt = tick()
     G.MM_RoleSentKey = key
@@ -6043,15 +6092,12 @@ while session.active and gui and gui.Parent do
     local pulse = tonumber(G.MM_RoundPulse) or 0
     if pulse > 0 and pulse ~= lastRoundPulse then
         lastRoundPulse = pulse
-        homeBurst()
+        G.MM_RoleSentThisRound = false
+        announced = false
         if G.MM_EnsureAutoStand then
             task.defer(G.MM_EnsureAutoStand)
         end
-        if not G.MM_RoleSentThisRound and not revealAnnouncePending and not G.MM_RoleQBusy
-            and (tick() - lastAnnounceAt) > 20 then
-            announced = false
-            G.MM_BlockGunGrab = false
-        end
+        G.MM_BlockGunGrab = false
     end
     if m then
         if lastMurderId ~= m.UserId then
@@ -6087,12 +6133,12 @@ while session.active and gui and gui.Parent do
         gunDelivered = false
         shootDone = false
         revealAnnouncePending = true
-        homeBurst()
+        if G.MM_EnsureAutoStand then G.MM_EnsureAutoStand() end
         local owner = findOwner() or findConfiguredOwner()
         task.spawn(function()
             local ok, err = pcall(function()
                 local curM, curS, curBotM, curBotS = resolveRoleSnapshot(3.2)
-                if toggleReveal and not G.MM_RoleSentThisRound then
+                if toggleReveal then
                     local _
                     _, curM, curS, curBotM, curBotS = waitForRoleCallouts(curM, curS, curBotM, curBotS)
                 else
@@ -6101,13 +6147,14 @@ while session.active and gui and gui.Parent do
 
                 if curBotM and owner and curS and owner.UserId == curS.UserId then
                     tpTo(owner)
-                elseif not curBotM then
-                    tpHome()
+                elseif G.MM_EnsureAutoStand then
+                    G.MM_EnsureAutoStand()
                 end
             end)
             if not ok then log("reveal: " .. tostring(err)) end
             pcall(function()
                 if G.MM_NoteRoundForTips then G.MM_NoteRoundForTips() end
+                if G.MM_NoteRoundForAdoptAd then G.MM_NoteRoundForAdoptAd() end
             end)
             roleAnnounceUnlockAt = tick() + 0.35
             revealAnnouncePending = false

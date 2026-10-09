@@ -1,4 +1,4 @@
---[[ Xeno V1.05 XBOT_BUILD 20261009m ]]--
+--[[ Xeno V1.05 XBOT_BUILD 20261009n ]]--
 local GRAPHICS = true
 local TARGET_FPS = 50
 local Players = game:GetService("Players")
@@ -29,6 +29,7 @@ local shootDone = false
 local hopBusy = false
 local PING_MIN_MS, PING_MAX_MS = 50, 90
 local G = getgenv and getgenv() or _G
+G.MM_UnderSpawn = SPAWN_CFRAME * CFrame.new(0, -34, 0)
 G.MM_ShootActive = false
 pcall(function()
     RunSvc:Set3dRenderingEnabled(true)
@@ -1338,11 +1339,12 @@ function stopFollow()
     local wasSummon = G.MM_SummonUserId ~= nil
     G.MM_FollowUserId = nil
     G.MM_SummonUserId = nil
+    G.MM_Hiding = false
     G.MM_FollowGen = (tonumber(G.MM_FollowGen) or 0) + 1
     if wasSummon then restoreStandBody() end
 end
 function isFollowing()
-    return G.MM_FollowUserId ~= nil or G.MM_SummonUserId ~= nil
+    return G.MM_FollowUserId ~= nil or G.MM_SummonUserId ~= nil or G.MM_Hiding == true
 end
 function isSummoned()
     return G.MM_SummonUserId ~= nil
@@ -1386,7 +1388,8 @@ local function muteAnimateFalls(char)
     local saved = {}
     for _, child in ipairs(animate:GetChildren()) do
         local n = child.Name:lower()
-        if n:find("fall", 1, true) or n == "jump" or n == "jumpl" then
+        if n:find("fall", 1, true) or n == "jump" or n == "jumpl"
+            or n == "walk" or n == "run" or n == "swim" or n == "climb" then
             for _, a in ipairs(child:GetDescendants()) do
                 if a:IsA("Animation") then
                     table.insert(saved, {inst = a, id = a.AnimationId})
@@ -1409,10 +1412,10 @@ local function standGroundHumanoid(hum, forceState)
         hum:SetStateEnabled(Enum.HumanoidStateType.FallingDown, false)
         hum:SetStateEnabled(Enum.HumanoidStateType.Jumping, false)
         local st = hum:GetState()
-        if forceState or st == Enum.HumanoidStateType.Freefall
+        if st == Enum.HumanoidStateType.Freefall
             or st == Enum.HumanoidStateType.FallingDown
             or st == Enum.HumanoidStateType.Jumping then
-            hum:ChangeState(Enum.HumanoidStateType.Running)
+            hum:ChangeState(Enum.HumanoidStateType.GettingUp)
         end
     end)
 end
@@ -1426,7 +1429,9 @@ local function stopFallTracks(hum)
             pcall(function()
                 aid = tostring(tr.Animation and tr.Animation.AnimationId or ""):lower()
             end)
-            if n:find("fall", 1, true) or n:find("jump", 1, true) or aid:find("fall", 1, true) then
+            if n:find("fall", 1, true) or n:find("jump", 1, true) or n:find("walk", 1, true)
+                or n:find("run", 1, true) or n:find("swim", 1, true) or n:find("climb", 1, true)
+                or aid:find("fall", 1, true) then
                 tr:Stop(0)
             end
         end
@@ -1775,12 +1780,12 @@ local function summonSnap(p, bornAt)
     if vel.Magnitude < 1e-3 then
         pcall(function() vel = t.Velocity end)
     end
-    local lead = Vector3.new(vel.X, math.clamp(vel.Y, -6, 8), vel.Z) * 0.05
+    local lead = Vector3.new(vel.X, math.clamp(vel.Y, -8, 10), vel.Z) * 0.03
     local goal = standHoverCFrame(t, bornAt) + lead
     pcall(function()
         h.Anchored = false
         h.CFrame = goal
-        h.AssemblyLinearVelocity = vel
+        h.AssemblyLinearVelocity = Vector3.zero
         h.AssemblyAngularVelocity = Vector3.zero
     end)
     return true
@@ -1789,6 +1794,7 @@ end
 function startSummonLoop(userId)
     G.MM_FollowUserId = nil
     G.MM_SummonUserId = userId
+    G.MM_Hiding = false
     G.MM_FollowGen = (tonumber(G.MM_FollowGen) or 0) + 1
     local gen = G.MM_FollowGen
     local bornAt = tick()
@@ -1842,10 +1848,10 @@ function startSummonLoop(userId)
         end
         local hum = char and char:FindFirstChildOfClass("Humanoid")
         if not (hum and hum.Health > 0) then return end
-        if tick() - lastGround > 0.35 then
+        stopFallTracks(hum)
+        if tick() - lastGround > 0.4 then
             lastGround = tick()
             standGroundHumanoid(hum)
-            stopFallTracks(hum)
         end
         if tick() - lastHide > 0.15 then
             lastHide = tick()
@@ -1861,6 +1867,54 @@ function startSummonLoop(userId)
     trackConnection(conn)
 end
 
+local function ownerInMap(owner)
+    local t = owner and owner.Character and (owner.Character:FindFirstChild("HumanoidRootPart") or owner.Character.PrimaryPart)
+    if t then return t.Position.Y < 430 end
+    return G.MM_RoundLive == true
+end
+
+local function wantStandFollow(owner)
+    if not owner then return false end
+    if not isAlive(owner) then return true end
+    return not ownerInMap(owner)
+end
+
+local function startHideLoop()
+    G.MM_FollowUserId = nil
+    G.MM_SummonUserId = nil
+    G.MM_Hiding = true
+    G.MM_FollowGen = (tonumber(G.MM_FollowGen) or 0) + 1
+    local gen = G.MM_FollowGen
+    restoreStandBody()
+    local conn
+    conn = RunSvc.Stepped:Connect(function()
+        if not session.active or gen ~= G.MM_FollowGen or not G.MM_Hiding then
+            if conn then
+                pcall(function() conn:Disconnect() end)
+                conn = nil
+            end
+            return
+        end
+        local h = hrp()
+        local park = G.MM_UnderSpawn
+        if not (h and park) then return end
+        pcall(function()
+            h.Anchored = false
+            h.CFrame = park
+            h.AssemblyLinearVelocity = Vector3.zero
+            h.AssemblyAngularVelocity = Vector3.zero
+            local char = me.Character
+            if char then
+                for _, part in ipairs(char:GetChildren()) do
+                    if part:IsA("BasePart") then part.CanCollide = false end
+                end
+            end
+        end)
+    end)
+    trackConnection(conn)
+    log("stand: hiding under spawn")
+end
+
 G.MM_EnsureAutoStand = function()
     if not session.active then return end
     if G.MM_StandPaused or G.MM_FlingBusy then return end
@@ -1868,12 +1922,43 @@ G.MM_EnsureAutoStand = function()
     local owner = findOwner() or findConfiguredOwner()
     if not owner or owner == me then return end
     if not isAlive(me) then return end
-    if G.MM_SummonUserId == owner.UserId then return end
-    startSummonLoop(owner.UserId)
+    if wantStandFollow(owner) then
+        if G.MM_SummonUserId == owner.UserId then return end
+        log("stand: follow " .. owner.Name)
+        startSummonLoop(owner.UserId)
+        return
+    end
+    if G.MM_Hiding then return end
+    startHideLoop()
 end
-task.defer(function()
-    task.wait(0.35)
-    if G.MM_EnsureAutoStand then G.MM_EnsureAutoStand() end
+task.spawn(function()
+    for _, d in ipairs({0.2, 0.7, 1.6, 3.2}) do
+        task.wait(d)
+        if G.MM_EnsureAutoStand then G.MM_EnsureAutoStand() end
+    end
+end)
+pcall(function()
+    trackConnection(Players.PlayerAdded:Connect(function(p)
+        task.delay(0.15, function()
+            if G.MM_EnsureAutoStand then G.MM_EnsureAutoStand() end
+        end)
+        pcall(function()
+            trackConnection(p.CharacterAdded:Connect(function()
+                task.delay(0.2, function()
+                    if G.MM_EnsureAutoStand then G.MM_EnsureAutoStand() end
+                end)
+            end))
+        end)
+    end))
+    for _, p in ipairs(Players:GetPlayers()) do
+        pcall(function()
+            trackConnection(p.CharacterAdded:Connect(function()
+                task.delay(0.2, function()
+                    if G.MM_EnsureAutoStand then G.MM_EnsureAutoStand() end
+                end)
+            end))
+        end)
+    end
 end)
 
 local function playAnimAsset(hum, assetId, looped)
@@ -2621,12 +2706,19 @@ local function standOnTarget(target)
     return ok
 end
 local function settleAtSpawn()
-    if not SPAWN_CFRAME or not isAlive(me) then return false end
-    for _ = 1, 12 do
-        tpHome()
+    local park = G.MM_UnderSpawn or (SPAWN_CFRAME and SPAWN_CFRAME * CFrame.new(0, -34, 0))
+    if not park or not isAlive(me) then return false end
+    for _ = 1, 14 do
         local h = hrp()
-        if h and (h.Position - SPAWN_CFRAME.Position).Magnitude < 10 then
-            return true
+        if h then
+            pcall(function()
+                h.Anchored = false
+                h.CFrame = park
+                h.AssemblyLinearVelocity = Vector3.zero
+            end)
+            if (h.Position - park.Position).Magnitude < 8 then
+                return true
+            end
         end
         task.wait(0.07)
     end
@@ -2696,15 +2788,15 @@ local function stashGunAtSpawn()
         return ok
     end
     if _G.MM_StabBusy then return finish(false) end
-    if not SPAWN_CFRAME or not isAlive(me) then return finish(false) end
+    local park = G.MM_UnderSpawn or (SPAWN_CFRAME and SPAWN_CFRAME * CFrame.new(0, -34, 0))
+    if not park or not isAlive(me) then return finish(false) end
     local drop = findDroppedGun()
     if not drop and not botHasGun() then
         if G.MM_BlockGunGrab then return finish(false) end
         if tick() < (tonumber(G.MM_SkipGunUntil) or 0) then return finish(false) end
     end
     if drop and not botHasGun() then
-        local nearSpawn = (drop.Position - SPAWN_CFRAME.Position).Magnitude < 18
-        if nearSpawn then
+        if (drop.Position - park.Position).Magnitude < 16 then
             return finish(true)
         end
     end
@@ -5487,6 +5579,9 @@ while session.active and gui.Parent do
     if pulse > 0 and pulse ~= lastRoundPulse then
         lastRoundPulse = pulse
         homeBurst()
+        if G.MM_EnsureAutoStand then
+            task.defer(G.MM_EnsureAutoStand)
+        end
         if not G.MM_RoleSentThisRound and (tick() - lastAnnounceAt) > 20 then
             announced = false
             G.MM_BlockGunGrab = false
@@ -5515,6 +5610,9 @@ while session.active and gui.Parent do
         end
     else
         lobbySince = 0
+    end
+    if G.MM_EnsureAutoStand then
+        G.MM_EnsureAutoStand()
     end
 
     if (m or botM) and not announced then
@@ -5552,7 +5650,7 @@ while session.active and gui.Parent do
         -- Do not clear toggleGun here — owner-murderer only pauses delivery below; user setting stays on.
 
         -- Owner murderer: stash guns at spawn when enabled with !toggledrop.
-        if session.ownerId and ownerIsMurd and ownerIsPremium() and toggleDrop and roundActive and SPAWN_CFRAME
+        if session.ownerId and ownerIsMurd and ownerIsPremium() and toggleDrop and roundActive and (G.MM_UnderSpawn or SPAWN_CFRAME)
            and not ownerMurdStashBusy and not revealAnnouncePending
            and tick() >= roleAnnounceUnlockAt
            and tick() >= (tonumber(G.MM_SkipGunUntil) or 0)

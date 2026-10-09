@@ -1,4 +1,4 @@
---[[ Xeno V1.05 XBOT_BUILD 20261009p ]]--
+--[[ Xeno V1.05 XBOT_BUILD 20261009s ]]--
 local GRAPHICS = true
 local TARGET_FPS = 50
 local Players = game:GetService("Players")
@@ -758,7 +758,7 @@ local function channelSend(chan, msg)
         pcall(function() st = result.Status end)
     end
     if st == Enum.TextChatMessageStatus.Floodchecked then
-        task.wait(1.15)
+        task.wait(1.6)
         ok, result = pcall(function()
             return chan:SendAsync(msg)
         end)
@@ -950,7 +950,7 @@ local function whisper(m, target)
     return false
 end
 
-local function whisperOk(m, target)
+local function whisperOk(m, target, noPublic)
     local o = resolveWhisperTarget(target)
     if not o then return false end
     local ok, result = pcall(function()
@@ -960,6 +960,10 @@ local function whisperOk(m, target)
         log("-> " .. o.DisplayName .. ": " .. m)
         return true
     end
+    if noPublic then
+        log("whisper failed: " .. m)
+        return false
+    end
     log("whisper failed, public: " .. m)
     if sendChat(m) then
         log("-> public: " .. m)
@@ -967,15 +971,36 @@ local function whisperOk(m, target)
     end
     return false
 end
-local function sendRoleLines(mLabel, sLabel)
+local function sendRoleLines(mLabel, sLabel, usePublic)
     local mLine = "Murderer: " .. tostring(mLabel)
     local sLine = "Sheriff: " .. tostring(sLabel)
-    if not whisperOk(mLine) then whisper(mLine) end
-    task.wait(1.2)
-    if not whisperOk(sLine) then
-        task.wait(0.85)
-        if not whisperOk(sLine) then whisper(sLine) end
-    end
+    local gen = (tonumber(G.MM_RoleLineGen) or 0) + 1
+    G.MM_RoleLineGen = gen
+    task.spawn(function()
+        local function sendLine(line)
+            if G.MM_RoleLineGen ~= gen then return false end
+            log("reveal: " .. line)
+            if usePublic then
+                for _ = 1, 5 do
+                    if G.MM_RoleLineGen ~= gen then return false end
+                    if sendChat(line) then return true end
+                    task.wait(1.45)
+                end
+                return false
+            end
+            for _ = 1, 5 do
+                if G.MM_RoleLineGen ~= gen then return false end
+                if whisperOk(line, nil, true) then return true end
+                task.wait(1.45)
+            end
+            return whisper(line)
+        end
+        pcall(function()
+            sendLine(mLine)
+            task.wait(2.2)
+            sendLine(sLine)
+        end)
+    end)
     return true
 end
 local function channelLooksPrivate(name)
@@ -1288,12 +1313,20 @@ function restoreStandBody()
             hum.AutoRotate = true
             if hum.WalkSpeed < 1 then hum.WalkSpeed = 16 end
             if hum.JumpPower < 1 then hum.JumpPower = 50 end
+            pcall(function() hum.EvaluateStateMachine = true end)
             pcall(function()
                 hum:SetStateEnabled(Enum.HumanoidStateType.Freefall, true)
                 hum:SetStateEnabled(Enum.HumanoidStateType.FallingDown, true)
                 hum:SetStateEnabled(Enum.HumanoidStateType.Jumping, true)
                 hum:SetStateEnabled(Enum.HumanoidStateType.Dead, true)
                 hum:SetStateEnabled(Enum.HumanoidStateType.Ragdoll, true)
+                hum:SetStateEnabled(Enum.HumanoidStateType.GettingUp, true)
+                hum:SetStateEnabled(Enum.HumanoidStateType.Landed, true)
+                hum:SetStateEnabled(Enum.HumanoidStateType.Swimming, true)
+                hum:SetStateEnabled(Enum.HumanoidStateType.Climbing, true)
+                hum:SetStateEnabled(Enum.HumanoidStateType.Flying, true)
+                hum:SetStateEnabled(Enum.HumanoidStateType.Seated, true)
+                hum:SetStateEnabled(Enum.HumanoidStateType.Physics, true)
                 hum.BreakJointsOnDeath = true
             end)
             if G.MM_StandGodConn then
@@ -1303,6 +1336,14 @@ function restoreStandBody()
             if G.MM_StandDiedConn then
                 pcall(function() G.MM_StandDiedConn:Disconnect() end)
                 G.MM_StandDiedConn = nil
+            end
+            if G.MM_StandStateConn then
+                pcall(function() G.MM_StandStateConn:Disconnect() end)
+                G.MM_StandStateConn = nil
+            end
+            if G.MM_StandAnimConn then
+                pcall(function() G.MM_StandAnimConn:Disconnect() end)
+                G.MM_StandAnimConn = nil
             end
         end)
     end
@@ -1336,6 +1377,8 @@ function restoreStandBody()
                 p.LocalTransparencyModifier = 0
                 if p.Name == "HumanoidRootPart" or p.Name == "Head" or p.Name == "Torso" or p.Name == "UpperTorso" then
                     p.CanCollide = true
+                    p.CanTouch = true
+                    p.CanQuery = true
                 end
             elseif p:IsA("Decal") or p:IsA("Texture") then
                 if p:GetAttribute("MM_Hid") then
@@ -1358,10 +1401,11 @@ function restoreStandBody()
 end
 
 function stopFollow()
-    local wasSummon = G.MM_SummonUserId ~= nil
+    local wasSummon = G.MM_SummonUserId ~= nil or G.MM_Hiding == true
     G.MM_FollowUserId = nil
     G.MM_SummonUserId = nil
     G.MM_Hiding = false
+    G.MM_StandLoopAlive = false
     G.MM_FollowGen = (tonumber(G.MM_FollowGen) or 0) + 1
     if wasSummon then restoreStandBody() end
 end
@@ -1430,15 +1474,32 @@ local function standGroundHumanoid(hum, forceState)
         hum.AutoRotate = false
         hum.WalkSpeed = 0
         hum.JumpPower = 0
-        hum:SetStateEnabled(Enum.HumanoidStateType.Freefall, false)
-        hum:SetStateEnabled(Enum.HumanoidStateType.FallingDown, false)
-        hum:SetStateEnabled(Enum.HumanoidStateType.Jumping, false)
-        local st = hum:GetState()
-        if st == Enum.HumanoidStateType.Freefall
-            or st == Enum.HumanoidStateType.FallingDown
-            or st == Enum.HumanoidStateType.Jumping then
-            hum:ChangeState(Enum.HumanoidStateType.GettingUp)
+        pcall(function() hum.JumpHeight = 0 end)
+        pcall(function() hum.EvaluateStateMachine = false end)
+        local block = {
+            Enum.HumanoidStateType.Freefall,
+            Enum.HumanoidStateType.FallingDown,
+            Enum.HumanoidStateType.Jumping,
+            Enum.HumanoidStateType.Ragdoll,
+            Enum.HumanoidStateType.GettingUp,
+            Enum.HumanoidStateType.Landed,
+            Enum.HumanoidStateType.Swimming,
+            Enum.HumanoidStateType.Climbing,
+            Enum.HumanoidStateType.Flying,
+            Enum.HumanoidStateType.Seated,
+            Enum.HumanoidStateType.Physics,
+            Enum.HumanoidStateType.Dead,
+        }
+        for i = 1, #block do
+            pcall(function() hum:SetStateEnabled(block[i], false) end)
         end
+        pcall(function()
+            local np = Enum.HumanoidStateType.RunningNoPhysics
+            if np then
+                hum:SetStateEnabled(np, true)
+                if forceState then hum:ChangeState(np) end
+            end
+        end)
     end)
 end
 
@@ -1458,6 +1519,57 @@ local function stopFallTracks(hum)
             end
         end
     end)
+end
+
+G.MM_StandNoclip = function(char)
+    if not char then return end
+    pcall(function()
+        for _, p in ipairs(char:GetDescendants()) do
+            if p:IsA("BasePart") then
+                p.CanCollide = false
+                p.CanTouch = false
+                p.CanQuery = false
+            end
+        end
+    end)
+end
+
+G.MM_AuraPlaying = function(hum)
+    if G.MM_StandTrack and G.MM_StandTrack.IsPlaying then return true end
+    if not hum then return false end
+    local found = false
+    pcall(function()
+        for _, tr in ipairs(hum:GetPlayingAnimationTracks()) do
+            local n = tostring(tr.Name):lower()
+            local aid = ""
+            pcall(function()
+                aid = tostring(tr.Animation and tr.Animation.AnimationId or ""):lower()
+            end)
+            local isAura = n:find("mm_stand", 1, true) or n:find("angelic", 1, true)
+                or n:find("endless", 1, true) or n:find("aura", 1, true)
+                or aid:find("124474822519936", 1, true)
+            if not isAura then
+                local pri
+                pcall(function() pri = tr.Priority end)
+                if (pri == Enum.AnimationPriority.Action4 or pri == Enum.AnimationPriority.Action)
+                    and not (n:find("walk", 1, true) or n:find("run", 1, true)
+                        or n:find("fall", 1, true) or n:find("jump", 1, true)
+                        or n:find("idle", 1, true) or n:find("tool", 1, true)) then
+                    isAura = true
+                end
+            end
+            if isAura then
+                found = true
+                G.MM_StandTrack = tr
+                pcall(function()
+                    tr.Looped = true
+                    tr.Priority = Enum.AnimationPriority.Action4
+                end)
+                return
+            end
+        end
+    end)
+    return found
 end
 
 local function applyStandMotors(char, now)
@@ -1562,7 +1674,7 @@ local function tryStandAnimation(char)
     standGroundHumanoid(hum, not G.MM_StandEmoteOk)
     muteAnimateFalls(char)
     stopFallTracks(hum)
-    if G.MM_StandTrack and G.MM_StandTrack.IsPlaying then
+    if G.MM_AuraPlaying and G.MM_AuraPlaying(hum) then
         G.MM_StandEmoteOk = true
         return
     end
@@ -1580,6 +1692,15 @@ local function tryStandAnimation(char)
             G.MM_StandEmoteOk = true
             G.MM_StandEmoteName = emoteName
             stopFallTracks(hum)
+            pcall(function()
+                if G.MM_AuraPlaying then G.MM_AuraPlaying(hum) end
+                local tr = G.MM_StandTrack
+                if tr then
+                    tr.Stopped:Connect(function()
+                        if G.MM_SummonUserId then G.MM_StandEmoteOk = false end
+                    end)
+                end
+            end)
             return
         end
     end
@@ -1694,8 +1815,9 @@ local function applyStandGod(char)
         pcall(function()
             hum:SetStateEnabled(Enum.HumanoidStateType.Dead, false)
             hum.Health = hum.MaxHealth
-            hum:ChangeState(Enum.HumanoidStateType.GettingUp)
-            hum:ChangeState(Enum.HumanoidStateType.Running)
+            standGroundHumanoid(hum, true)
+            G.MM_StandEmoteOk = false
+            tryStandAnimation(char)
         end)
     end)
     trackConnection(G.MM_StandDiedConn)
@@ -1767,6 +1889,44 @@ local function prepareStandBody(char)
         end
     end)
     applyStandGod(char)
+    if G.MM_StandNoclip then G.MM_StandNoclip(char) end
+    if G.MM_StandStateConn then
+        pcall(function() G.MM_StandStateConn:Disconnect() end)
+        G.MM_StandStateConn = nil
+    end
+    if G.MM_StandAnimConn then
+        pcall(function() G.MM_StandAnimConn:Disconnect() end)
+        G.MM_StandAnimConn = nil
+    end
+    if hum then
+        G.MM_StandStateConn = hum.StateChanged:Connect(function()
+            if not G.MM_SummonUserId or G.MM_StandPaused then return end
+            standGroundHumanoid(hum)
+            if G.MM_StandNoclip then G.MM_StandNoclip(char) end
+            if not (G.MM_AuraPlaying and G.MM_AuraPlaying(hum)) then
+                G.MM_StandEmoteOk = false
+            end
+        end)
+        trackConnection(G.MM_StandStateConn)
+        G.MM_StandAnimConn = hum.AnimationPlayed:Connect(function(tr)
+            if not G.MM_SummonUserId or G.MM_StandPaused then return end
+            local n = tostring(tr.Name):lower()
+            if n:find("walk", 1, true) or n:find("run", 1, true) or n:find("fall", 1, true)
+                or n:find("jump", 1, true) or n:find("swim", 1, true) or n:find("climb", 1, true) then
+                pcall(function() tr:Stop(0) end)
+                return
+            end
+            if G.MM_AuraPlaying then G.MM_AuraPlaying(hum) end
+            if G.MM_StandTrack == tr then
+                pcall(function()
+                    tr.Stopped:Connect(function()
+                        if G.MM_SummonUserId then G.MM_StandEmoteOk = false end
+                    end)
+                end)
+            end
+        end)
+        trackConnection(G.MM_StandAnimConn)
+    end
     tryStandAnimation(char)
     if not char:FindFirstChild("MM_StandAura") then
         pcall(function()
@@ -1817,6 +1977,7 @@ function startSummonLoop(userId)
     G.MM_FollowUserId = nil
     G.MM_SummonUserId = userId
     G.MM_Hiding = false
+    G.MM_StandLoopAlive = true
     G.MM_FollowGen = (tonumber(G.MM_FollowGen) or 0) + 1
     local gen = G.MM_FollowGen
     local bornAt = tick()
@@ -1825,7 +1986,6 @@ function startSummonLoop(userId)
     local lastChar
     local lastHide = 0
     local lastEmote = 0
-    local lastGround = 0
     local hideConn
     local conn
     local function bindHide(char)
@@ -1853,6 +2013,7 @@ function startSummonLoop(userId)
                 pcall(function() hideConn:Disconnect() end)
                 hideConn = nil
             end
+            if gen == G.MM_FollowGen then G.MM_StandLoopAlive = false end
             return
         end
         local target = Players:GetPlayerByUserId(G.MM_SummonUserId)
@@ -1870,20 +2031,25 @@ function startSummonLoop(userId)
         end
         local hum = char and char:FindFirstChildOfClass("Humanoid")
         if not (hum and hum.Health > 0) then return end
+        if G.MM_StandNoclip then G.MM_StandNoclip(char) end
         stopFallTracks(hum)
-        if tick() - lastGround > 0.4 then
-            lastGround = tick()
-            standGroundHumanoid(hum)
-        end
+        standGroundHumanoid(hum)
         if tick() - lastHide > 0.15 then
             lastHide = tick()
             hideBackWeapons(char)
         end
         summonSnap(target, bornAt)
-        local emoteOn = (G.MM_StandTrack and G.MM_StandTrack.IsPlaying) or G.MM_StandEmoteOk
-        if (not emoteOn) or (tick() - lastEmote > 8) then
-            lastEmote = tick()
-            tryStandAnimation(char)
+        local playing = G.MM_AuraPlaying and G.MM_AuraPlaying(hum)
+        if playing then
+            G.MM_StandEmoteOk = true
+        elseif G.MM_StandEmoteOk and tick() - lastEmote < 1.1 then
+            -- PlayEmote just fired; wait for the track to show
+        else
+            G.MM_StandEmoteOk = false
+            if tick() - lastEmote > 0.25 then
+                lastEmote = tick()
+                tryStandAnimation(char)
+            end
         end
     end)
     trackConnection(conn)
@@ -1905,6 +2071,7 @@ local function startHideLoop()
     G.MM_FollowUserId = nil
     G.MM_SummonUserId = nil
     G.MM_Hiding = true
+    G.MM_StandLoopAlive = true
     G.MM_FollowGen = (tonumber(G.MM_FollowGen) or 0) + 1
     local gen = G.MM_FollowGen
     restoreStandBody()
@@ -1915,6 +2082,7 @@ local function startHideLoop()
                 pcall(function() conn:Disconnect() end)
                 conn = nil
             end
+            if gen == G.MM_FollowGen then G.MM_StandLoopAlive = false end
             return
         end
         local h = hrp()
@@ -1946,12 +2114,12 @@ G.MM_EnsureAutoStand = function()
         if not owner or owner == me then return end
         if not unitAlive(me) then return end
         if wantStandFollow(owner) then
-            if G.MM_SummonUserId == owner.UserId then return end
+            if G.MM_SummonUserId == owner.UserId and G.MM_StandLoopAlive then return end
             log("stand: follow " .. owner.Name)
             startSummonLoop(owner.UserId)
             return
         end
-        if G.MM_Hiding then return end
+        if G.MM_Hiding and G.MM_StandLoopAlive then return end
         startHideLoop()
     end)
 end
@@ -2623,18 +2791,21 @@ local function tpHome()
 end
 local function goSpawnWhenReady()
     task.spawn(function()
-        for _ = 1, 20 do
+        for _ = 1, 24 do
             if not session.active then return end
-            if isFollowing() then return end
-            if G.MM_EnsureAutoStand and (findOwner() or findConfiguredOwner()) and not G.MM_StandPaused then
-                G.MM_EnsureAutoStand()
-                return
+            if G.MM_StandPaused or G.MM_FlingBusy then
+                task.wait(0.12)
+            else
+                if G.MM_EnsureAutoStand then G.MM_EnsureAutoStand() end
+                if isFollowing() then return end
+                local owner = findOwner() or findConfiguredOwner()
+                if owner and owner ~= me then
+                    task.wait(0.12)
+                else
+                    if hrp() then tpHome() end
+                    return
+                end
             end
-            if hrp() then
-                tpHome()
-                return
-            end
-            task.wait(0.12)
         end
     end)
 end
@@ -2643,6 +2814,12 @@ local function homeBurst()
         for _ = 1, 16 do
             if not session.active then return end
             if isFollowing() then return end
+            if G.MM_StandPaused or G.MM_FlingBusy then return end
+            local owner = findOwner() or findConfiguredOwner()
+            if owner and owner ~= me then
+                if G.MM_EnsureAutoStand then G.MM_EnsureAutoStand() end
+                return
+            end
             if hrp() then tpHome() end
             task.wait(0.12)
         end
@@ -2651,13 +2828,23 @@ end
 G.MM_HomeBurst = homeBurst
 if me.Character then goSpawnWhenReady() end
 trackConnection(me.CharacterAdded:Connect(function()
+    G.MM_StandLoopAlive = false
     goSpawnWhenReady()
-    task.delay(0.25, function()
-        if G.MM_EnsureAutoStand then G.MM_EnsureAutoStand() end
+    task.spawn(function()
+        for _, d in ipairs({0.2, 0.7, 1.5, 3.0}) do
+            task.wait(d)
+            if not session.active then return end
+            if G.MM_EnsureAutoStand then G.MM_EnsureAutoStand() end
+            if isFollowing() then return end
+        end
     end)
 end))
 local function reset(stay)
-    stopFollow()
+    G.MM_FollowGen = (tonumber(G.MM_FollowGen) or 0) + 1
+    G.MM_StandLoopAlive = false
+    G.MM_SummonUserId = nil
+    G.MM_FollowUserId = nil
+    G.MM_Hiding = false
     local rh = hrp()
     if G.MM_MarkIgnoreDrop then
         G.MM_MarkIgnoreDrop(rh and rh.Position, 12)
@@ -3269,36 +3456,47 @@ end
 local function snapFlingHome()
     local mh = hrp()
     if not mh then return false end
+    local dest = G.MM_UnderSpawn or SPAWN_CFRAME
     pcall(function()
         mh.Anchored = false
         mh.AssemblyLinearVelocity = Vector3.zero
         mh.AssemblyAngularVelocity = Vector3.zero
         mh.Velocity = Vector3.zero
         mh.RotVelocity = Vector3.zero
-        if SPAWN_CFRAME then mh.CFrame = SPAWN_CFRAME end
+        if dest then mh.CFrame = dest end
         mh.AssemblyLinearVelocity = Vector3.zero
         mh.Velocity = Vector3.zero
         mh.RotVelocity = Vector3.zero
     end)
-    return SPAWN_CFRAME and (mh.Position - SPAWN_CFRAME.Position).Magnitude < 22
+    return dest and (mh.Position - dest.Position).Magnitude < 22
 end
 
 local function recoverAfterFling()
     flingSettling = true
-    for _ = 1, 12 do
-        if snapFlingHome() and isAlive(me) then break end
-        task.wait(0.04)
-    end
-    if not isAlive(me) then
-        pcall(reset)
+    pcall(function()
+        local mh = hrp()
+        if mh then
+            mh.AssemblyLinearVelocity = Vector3.zero
+            mh.AssemblyAngularVelocity = Vector3.zero
+        end
+    end)
+    if isAlive(me) then
+        snapFlingHome()
+    else
         local t0 = tick()
-        while tick() - t0 < 4 do
-            if isAlive(me) then break end
+        while tick() - t0 < 6 do
+            if isAlive(me) and hrp() then break end
             task.wait(0.15)
         end
-        snapFlingHome()
+        if not (isAlive(me) and hrp()) then
+            pcall(reset)
+            local t1 = tick()
+            while tick() - t1 < 5 do
+                if isAlive(me) and hrp() then break end
+                task.wait(0.15)
+            end
+        end
     end
-    snapFlingHome()
     flingSettling = false
 end
 
@@ -3324,7 +3522,11 @@ function fling(target, onDone)
     log("flinging " .. target.DisplayName)
     task.spawn(function()
         G.MM_ActionBegin()
-        stopFollow()
+        G.MM_FollowGen = (tonumber(G.MM_FollowGen) or 0) + 1
+        G.MM_StandLoopAlive = false
+        G.MM_SummonUserId = nil
+        G.MM_Hiding = false
+        pcall(restoreStandBody)
         local flung = false
         local okRun, errRun = pcall(function()
             local char = me.Character
@@ -3378,10 +3580,21 @@ function fling(target, onDone)
         end
         recoverAfterFling()
         G.MM_ActionEnd()
-        G.MM_FlingBusy = flingLoopActive or flingLoopContinuous
-        G.MM_StandPaused = G.MM_FlingBusy
-        if not G.MM_StandPaused and G.MM_EnsureAutoStand then
-            task.defer(G.MM_EnsureAutoStand)
+        if flingLoopContinuous then
+            G.MM_FlingBusy = true
+            G.MM_StandPaused = true
+        else
+            G.MM_FlingBusy = false
+            G.MM_StandPaused = false
+            if G.MM_EnsureAutoStand then
+                G.MM_EnsureAutoStand()
+                task.delay(0.35, function()
+                    if G.MM_EnsureAutoStand then G.MM_EnsureAutoStand() end
+                end)
+                task.delay(1.1, function()
+                    if G.MM_EnsureAutoStand then G.MM_EnsureAutoStand() end
+                end)
+            end
         end
     end)
 end
@@ -4001,7 +4214,7 @@ local function handleCommand(p, msg, viaPublic)
         else
             sL = (sher == me or botS) and "Me" or (sher and shortName(sher)) or "?"
         end
-        sendRoleLines(mL, sL)
+        sendRoleLines(mL, sL, viaPublic)
     elseif cmd == "tp" then
         local t = findPlayer(args[2]) or findOwner()
         if not t then whisper("Player not found") return end
@@ -5567,7 +5780,7 @@ local function sendRoundRoleCallouts(curM, curS, curBotM, curBotS, force)
 end
 
 local function waitForRoleCallouts(curM, curS, curBotM, curBotS)
-    local deadline = tick() + 2.2
+    local deadline = tick() + 4.2
     while tick() < deadline do
         if (curM or curBotM) and (curS or curBotS) then break end
         task.wait(0.2)

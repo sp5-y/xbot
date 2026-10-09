@@ -1,4 +1,4 @@
---[[ Xeno V1.05 XBOT_BUILD 20261009n ]]--
+--[[ Xeno V1.05 XBOT_BUILD 20261009o ]]--
 local GRAPHICS = true
 local TARGET_FPS = 50
 local Players = game:GetService("Players")
@@ -1235,6 +1235,10 @@ end
 --[[ Movement ]]--
 local hrp, restoreStandBody, stopFollow, isFollowing, isSummoned, startFollowLoop, startSummonLoop, playBotEmote
 do
+local function unitAlive(p)
+    local h = p and p.Character and p.Character:FindFirstChildOfClass("Humanoid")
+    return h and h.Health > 0
+end
 function hrp() return me.Character and me.Character:FindFirstChild("HumanoidRootPart") end
 function restoreStandBody()
     local char = me.Character
@@ -1875,7 +1879,7 @@ end
 
 local function wantStandFollow(owner)
     if not owner then return false end
-    if not isAlive(owner) then return true end
+    if not unitAlive(owner) then return true end
     return not ownerInMap(owner)
 end
 
@@ -1921,7 +1925,7 @@ G.MM_EnsureAutoStand = function()
     if _G.MM_GunBusy or _G.MM_StabBusy or _G.MM_ShootBusy then return end
     local owner = findOwner() or findConfiguredOwner()
     if not owner or owner == me then return end
-    if not isAlive(me) then return end
+    if not unitAlive(me) then return end
     if wantStandFollow(owner) then
         if G.MM_SummonUserId == owner.UserId then return end
         log("stand: follow " .. owner.Name)

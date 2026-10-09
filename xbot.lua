@@ -1,4 +1,4 @@
---[[ Xeno V1.04 XBOT_BUILD 20261008a ]]--
+--[[ Xeno V1.04 XBOT_BUILD 20261008g ]]--
 local GRAPHICS = true
 local TARGET_FPS = 50
 local Players = game:GetService("Players")
@@ -203,6 +203,18 @@ local function findDroppedGun()
     local function usable(part)
         if not part or not part.Parent then return end
         if part.Position.Y < -40 then return end
+        local data = G.MM_PlayerData
+        if type(data) == "table" then
+            for name, rec in pairs(data) do
+                if rec and rec.Dead and not rec.Killed then
+                    local pl = Players:FindFirstChild(name)
+                    local rh = pl and pl.Character and (pl.Character:FindFirstChild("HumanoidRootPart") or pl.Character.PrimaryPart)
+                    if rh and (rh.Position - part.Position).Magnitude < 36 then
+                        return
+                    end
+                end
+            end
+        end
         return part
     end
     local function asPart(obj)
@@ -621,24 +633,80 @@ local function getHeldTool(p, names)
     end
 end
 --[[ Chat / Whisper ]]--
-local function sendChat(msg)
-    msg = tostring(msg or ""):match("^%s*(.-)%s*$") or ""
-    if msg == "" then return false end
-    local ok = pcall(function()
-        if not isLegacy then
-            TCS.TextChannels.RBXGeneral:SendAsync(msg)
-        else
-            RS.DefaultChatSystemChatEvents.SayMessageRequest:FireServer(msg, "All")
-        end
-    end)
-    return ok == true
+local function wakeChat()
+    pcall(function() StarterGui:SetCoreGuiEnabled(Enum.CoreGuiType.Chat, true) end)
+    pcall(function() StarterGui:SetCore("ChatActive", true) end)
 end
-pcall(function() StarterGui:SetCore("ChatActive", true) end)
+wakeChat()
+
+local function channelSend(chan, msg)
+    if not chan then return false end
+    local ok, result = pcall(function()
+        return chan:SendAsync(msg)
+    end)
+    if not ok or result == false or result == nil then return false end
+    local st
+    pcall(function() st = result.Status end)
+    if st == nil then return true end
+    local t0 = tick()
+    while st == Enum.TextChatMessageStatus.Sending and tick() - t0 < 2 do
+        task.wait(0.05)
+        pcall(function() st = result.Status end)
+    end
+    if st == Enum.TextChatMessageStatus.Floodchecked then
+        task.wait(1.15)
+        ok, result = pcall(function()
+            return chan:SendAsync(msg)
+        end)
+        if not ok or not result then return false end
+        st = nil
+        pcall(function() st = result.Status end)
+        t0 = tick()
+        while st == Enum.TextChatMessageStatus.Sending and tick() - t0 < 2 do
+            task.wait(0.05)
+            pcall(function() st = result.Status end)
+        end
+    end
+    return st == Enum.TextChatMessageStatus.Success or st == nil
+end
+
+local function sendLegacyPublic(msg)
+    local events = RS:FindFirstChild("DefaultChatSystemChatEvents")
+    local say = events and events:FindFirstChild("SayMessageRequest")
+    if not say then return false end
+    return pcall(function()
+        say:FireServer(msg, "All")
+    end)
+end
 
 local function getGeneralChannel()
     local channels = TCS:FindFirstChild("TextChannels") or TCS:WaitForChild("TextChannels", 8)
     if not channels then return end
     return channels:FindFirstChild("RBXGeneral") or channels:WaitForChild("RBXGeneral", 8)
+end
+
+local function sendChat(msg)
+    msg = tostring(msg or ""):match("^%s*(.-)%s*$") or ""
+    if msg == "" then return false end
+    wakeChat()
+    local ch = getGeneralChannel()
+    if channelSend(ch, msg) then return true end
+    local bar
+    pcall(function()
+        bar = TCS:FindFirstChildOfClass("ChatInputBarConfiguration") or TCS:FindFirstChild("ChatInputBarConfiguration")
+    end)
+    local target = bar and bar.TargetTextChannel
+    if target and target ~= ch and channelSend(target, msg) then return true end
+    local folders = TCS:FindFirstChild("TextChannels")
+    if folders then
+        for _, c in ipairs(folders:GetChildren()) do
+            if c:IsA("TextChannel") and c ~= ch and c.Name:find("General", 1, true) then
+                if channelSend(c, msg) then return true end
+            end
+        end
+    end
+    if sendLegacyPublic(msg) then return true end
+    return false
 end
 
 local function whisperChannelNameFor(uid)
@@ -707,11 +775,7 @@ local function fireLegacyWhisper(o, m)
 end
 
 local function sendOnWhisperChannel(chan, m)
-    if not chan then return false end
-    local ok, result = pcall(function()
-        return chan:SendAsync(m)
-    end)
-    return ok and result ~= false
+    return channelSend(chan, m)
 end
 
 local function openWhisperChannel(o)
@@ -720,9 +784,7 @@ local function openWhisperChannel(o)
     local general = getGeneralChannel()
     if not general then return end
     for _, handle in ipairs(whisperTargets(o)) do
-        pcall(function()
-            general:SendAsync("/w " .. handle .. " .")
-        end)
+        channelSend(general, "/w " .. handle .. " " .. ".")
         ch = pollWhisperChannel(o.UserId, 2.5)
         if ch then return ch end
     end
@@ -732,24 +794,20 @@ end
 local function deliverWhisper(o, m)
     m = tostring(m or "")
     if m == "" then return false end
-    if isLegacy then
-        return fireLegacyWhisper(o, m)
-    end
-    local ch = openWhisperChannel(o)
-    if sendOnWhisperChannel(ch, m) then return true end
-    task.wait(0.25)
-    ch = findWhisperChannel(o.UserId) or openWhisperChannel(o)
-    if sendOnWhisperChannel(ch, m) then return true end
+    wakeChat()
+    local ch = findWhisperChannel(o.UserId)
+    if channelSend(ch, m) then return true end
     local general = getGeneralChannel()
     if general then
         for _, handle in ipairs(whisperTargets(o)) do
-            local ok = pcall(function()
-                general:SendAsync("/w " .. handle .. " " .. m)
-            end)
-            if ok then return true end
+            if channelSend(general, "/w " .. handle .. " " .. m) then return true end
         end
     end
-    return fireLegacyWhisper(o, m)
+    ch = openWhisperChannel(o)
+    if channelSend(ch, m) then return true end
+    if fireLegacyWhisper(o, m) then return true end
+    if sendLegacyPublic("/w " .. o.Name .. " " .. m) then return true end
+    return false
 end
 
 local function resolveWhisperTarget(target)
@@ -772,23 +830,38 @@ end
 local function whisper(m, target)
     local o = resolveWhisperTarget(target)
     if not o then log("whisper: no target") return end
-    log("-> " .. o.DisplayName .. ": " .. m)
-    local ok, err = pcall(function()
-        if not deliverWhisper(o, m) then
-            log("whisper: send failed for " .. o.Name)
-        end
+    local ok, result = pcall(function()
+        return deliverWhisper(o, m)
     end)
-    if not ok then log("whisper: " .. tostring(err)) end
+    if ok and result == true then
+        log("-> " .. o.DisplayName .. ": " .. m)
+        return true
+    end
+    log("whisper failed, public: " .. m)
+    if sendChat(m) then
+        log("-> public: " .. m)
+        return true
+    end
+    log("whisper: send failed for " .. o.Name)
+    return false
 end
 
 local function whisperOk(m, target)
     local o = resolveWhisperTarget(target)
     if not o then return false end
-    log("-> " .. o.DisplayName .. ": " .. m)
     local ok, result = pcall(function()
         return deliverWhisper(o, m)
     end)
-    return ok and result == true
+    if ok and result == true then
+        log("-> " .. o.DisplayName .. ": " .. m)
+        return true
+    end
+    log("whisper failed, public: " .. m)
+    if sendChat(m) then
+        log("-> public: " .. m)
+        return true
+    end
+    return false
 end
 local function channelLooksPrivate(name)
     name = tostring(name or "")
@@ -1061,15 +1134,49 @@ end
 
 --[[ Movement ]]--
 local function hrp() return me.Character and me.Character:FindFirstChild("HumanoidRootPart") end
-local followTarget = nil
 local function stopFollow()
-    followTarget = nil
+    G.MM_FollowUserId = nil
+    G.MM_FollowGen = (tonumber(G.MM_FollowGen) or 0) + 1
+end
+local function isFollowing()
+    return G.MM_FollowUserId ~= nil
+end
+local function followSnap(p)
+    local h = hrp()
+    local t = p and p.Character and (p.Character:FindFirstChild("HumanoidRootPart") or p.Character.PrimaryPart)
+    if not (h and t) then return false end
+    pcall(function()
+        h.Anchored = false
+        h.AssemblyLinearVelocity = Vector3.zero
+        h.AssemblyAngularVelocity = Vector3.zero
+        h.CFrame = t.CFrame * CFrame.new(0, 0.1, 3)
+        h.AssemblyLinearVelocity = Vector3.zero
+    end)
+    return true
+end
+local function startFollowLoop()
+    G.MM_FollowGen = (tonumber(G.MM_FollowGen) or 0) + 1
+    local gen = G.MM_FollowGen
+    task.spawn(function()
+        while session.active and gen == G.MM_FollowGen and G.MM_FollowUserId do
+            local target = Players:GetPlayerByUserId(G.MM_FollowUserId)
+            if not target then
+                stopFollow()
+                break
+            end
+            local hum = me.Character and me.Character:FindFirstChildOfClass("Humanoid")
+            if hum and hum.Health > 0 then
+                followSnap(target)
+            end
+            task.wait(0.08)
+        end
+    end)
 end
 local GUN_MOTION_SAMPLE_SEC = 0.1
 do
-local GUN_DROP_PREDICT_SEC = 0.45
-local GUN_RESET_LATENCY_SEC = 0.18
-local GUN_PICKUP_FORWARD = 0.8
+local GUN_DROP_PREDICT_SEC = 0.28
+local GUN_RESET_LATENCY_SEC = 0.12
+local GUN_PICKUP_FORWARD = 0.7
 local gunPredState = {}
 local function gunDropLead(root, hum, boost, observedVelocity, targetId, dt)
     if not root then return Vector3.zero end
@@ -1124,7 +1231,7 @@ local function gunDropLead(root, hum, boost, observedVelocity, targetId, dt)
     if ah.Magnitude > 1 then
         lead = lead + math.clamp(ah.Magnitude * 0.02, 0, 0.9)
     end
-    lead = math.clamp(lead, 1.7, 10.5)
+    lead = math.clamp(lead, 1.2, 7.5)
     state.last = blended
     return dir * lead
 end
@@ -1222,8 +1329,9 @@ end
         end
         return "No GunDrop in workspace — sheriff hasn't dropped it"
     end
-    G.MM_GrabDroppedGun = function(timeout)
+    G.MM_GrabDroppedGun = function(timeout, force)
         if botHasGun() then return true end
+        if not force and G.MM_BlockGunGrab then return false end
         timeout = timeout or 3.2
         local h = hrp()
         if not (h and isAlive(me)) then return false end
@@ -1231,6 +1339,7 @@ end
         local logged = false
         while session.active and tick() - t0 < timeout do
             if not isAlive(me) then return false end
+            if not force and G.MM_BlockGunGrab then return false end
             if tick() < (tonumber(G.MM_SkipGunUntil) or 0) then return false end
             if botHasGun() then return true end
             local drop = findDroppedGun()
@@ -1409,6 +1518,8 @@ end
     G.MM_TryClientDrop = G.MM_ForceDropGun
 
     G.MM_DieInPlace = function()
+        G.MM_BlockGunGrab = true
+        G.MM_SkipGunUntil = tick() + 8
         local char = me.Character
         if not char then return end
         local h = char:FindFirstChild("HumanoidRootPart")
@@ -1564,7 +1675,6 @@ function G.MM_EndStabBusy()
     G.MM_ActionEnd()
 end
 local function tpTo(p)
-    stopFollow()
     if not _G.MM_StabBusy and me.Character and me.Character:FindFirstChild("Knife") then
         stowKnife()
     end
@@ -1576,7 +1686,7 @@ local function tpTo(p)
     end
 end
 local function tpHome()
-    stopFollow()
+    if isFollowing() then return end
     local h = hrp()
     if h and SPAWN_CFRAME then
         pcall(function() h.Anchored = false end)
@@ -1589,6 +1699,7 @@ local function goSpawnWhenReady()
     task.spawn(function()
         for _ = 1, 20 do
             if not session.active then return end
+            if isFollowing() then return end
             if hrp() then
                 tpHome()
                 return
@@ -1601,6 +1712,7 @@ local function homeBurst()
     task.spawn(function()
         for _ = 1, 16 do
             if not session.active then return end
+            if isFollowing() then return end
             if hrp() then tpHome() end
             task.wait(0.12)
         end
@@ -1613,7 +1725,8 @@ trackConnection(me.CharacterAdded:Connect(function()
 end))
 local function reset(stay)
     stopFollow()
-    G.MM_SkipGunUntil = tick() + 5
+    G.MM_BlockGunGrab = true
+    G.MM_SkipGunUntil = tick() + 12
     gunDelivered = true
     if stay and G.MM_DieInPlace then
         G.MM_DieInPlace()
@@ -1648,14 +1761,31 @@ end
 local function standOnTarget(target)
     stopFollow()
     if not isAlive(target) or not isAlive(me) then return false end
+    local oh0 = target.Character and target.Character:FindFirstChild("HumanoidRootPart")
+    local samplePos = oh0 and oh0.Position
+    local sampleAt = tick()
+    task.wait(0.08)
     local ok = false
-    for _ = 1, 8 do
+    for _ = 1, 6 do
         local h = hrp()
         local oh = target.Character and target.Character:FindFirstChild("HumanoidRootPart")
+        local hum = target.Character and target.Character:FindFirstChildOfClass("Humanoid")
         if not (h and oh and isAlive(target) and isAlive(me)) then return ok end
+        local dt = math.max(tick() - sampleAt, 0.03)
+        local observed = samplePos and (oh.Position - samplePos) / dt or Vector3.zero
+        local lead = Vector3.zero
+        pcall(function()
+            lead = G.MM_gunDropLead(oh, hum, 0.85, observed, target.UserId, dt)
+        end)
+        if lead.Magnitude > 7 then
+            lead = lead.Unit * 7
+        end
+        local dest = oh.Position + lead + Vector3.new(0, 0.2, 0)
+        local look = dest + (lead.Magnitude > 0.25 and lead or oh.CFrame.LookVector)
         zeroVel(h)
-        h.CFrame = oh.CFrame * CFrame.new(0, 0.15, 0.35)
+        h.CFrame = CFrame.new(dest, look)
         zeroVel(h)
+        samplePos, sampleAt = oh.Position, tick()
         ok = true
         task.wait(0.04)
     end
@@ -1684,7 +1814,7 @@ function G.MM_WaitForGunPickup(target, timeout)
     end
     return G.MM_TargetHasGun(target)
 end
-local function bringGun(target)
+local function bringGun(target, force)
     if _G.MM_StabBusy then return false end
     G.MM_ActionBegin()
     local function finish(ok)
@@ -1693,6 +1823,7 @@ local function bringGun(target)
     end
     target = target or findOwner()
     if not isAlive(target) or not isAlive(me) then return finish(false) end
+    if not force and G.MM_BlockGunGrab then return finish(false) end
     if tick() < (tonumber(G.MM_SkipGunUntil) or 0) then return finish(false) end
     if G.MM_TargetHasGun(target) then return finish(true) end
 
@@ -1707,24 +1838,12 @@ local function bringGun(target)
 
     -- 2) Bot must hold it (sheriff/hero or we just picked up). No GiveGun remote.
     if not botHasGun() then
-        if not (G.MM_GrabDroppedGun and G.MM_GrabDroppedGun(2.4)) then
+        if not (G.MM_GrabDroppedGun and G.MM_GrabDroppedGun(2.4, force)) then
             return finish(false)
         end
     end
     if not botHasGun() or not isAlive(target) or not isAlive(me) then return finish(false) end
 
-    if not standOnTarget(target) then return finish(false) end
-    if G.MM_TryClientDrop and G.MM_TryClientDrop() then
-        if G.MM_DeliverDrop then G.MM_DeliverDrop(target, 0.8) end
-        if G.MM_WaitForGunPickup(target, 1.2) then
-            log("gun: CanBeDropped worked — no reset")
-            tpHome()
-            return finish(true)
-        end
-    end
-
-    -- 3) Only server-legal drop left: die in place on them. No LoadCharacter / void.
-    if not isAlive(target) or not isAlive(me) then return finish(false) end
     if not standOnTarget(target) then return finish(false) end
     if G.MM_DieInPlace then G.MM_DieInPlace() else reset(true) end
     return finish(G.MM_WaitForGunPickup(target, 2.1))
@@ -1737,6 +1856,7 @@ local function stashGunAtSpawn()
     end
     if _G.MM_StabBusy then return finish(false) end
     if not SPAWN_CFRAME or not isAlive(me) then return finish(false) end
+    if G.MM_BlockGunGrab then return finish(false) end
     if tick() < (tonumber(G.MM_SkipGunUntil) or 0) then return finish(false) end
     local drop = findDroppedGun()
     if drop and not botHasGun() then
@@ -1752,10 +1872,6 @@ local function stashGunAtSpawn()
         if not botHasGun() then return finish(false) end
     end
     if not settleAtSpawn() then return finish(false) end
-    if G.MM_TryClientDrop and G.MM_TryClientDrop() then
-        return finish(true)
-    end
-    if not settleAtSpawn() then return finish(false) end
     if G.MM_DieInPlace then G.MM_DieInPlace() else reset(true) end
     return finish(true)
 end
@@ -1763,7 +1879,9 @@ local function ownerMurdererActive(murderer, ownerPlayer)
     return ownerPlayer and murderer and murderer.UserId == ownerPlayer.UserId
 end
 local function gunAvailableForOwnerMurdStash()
-    return botHasGun() or findDroppedGun() ~= nil
+    if botHasGun() then return true end
+    if G.MM_BlockGunGrab then return false end
+    return findDroppedGun() ~= nil
 end
 local function equipTool(tool)
     local hum = me.Character and me.Character:FindFirstChildOfClass("Humanoid")
@@ -1926,7 +2044,7 @@ do
                 return false, botHasKnife() and "Bot is murderer — no gun" or "Bot died"
             end
             if not botHasGun() then
-                if not (G.MM_GrabDroppedGun and G.MM_GrabDroppedGun(2.5)) then
+                if G.MM_BlockGunGrab or not (G.MM_GrabDroppedGun and G.MM_GrabDroppedGun(2.5)) then
                     G.MM_ShootActive = false
                     return false, "No gun available"
                 end
@@ -2181,18 +2299,28 @@ local function cancelFlingWork()
     flingSettling = false
 end
 
+local function snapFlingHome()
+    local mh = hrp()
+    if not mh then return false end
+    pcall(function()
+        mh.Anchored = false
+        mh.AssemblyLinearVelocity = Vector3.zero
+        mh.AssemblyAngularVelocity = Vector3.zero
+        mh.Velocity = Vector3.zero
+        mh.RotVelocity = Vector3.zero
+        if SPAWN_CFRAME then mh.CFrame = SPAWN_CFRAME end
+        mh.AssemblyLinearVelocity = Vector3.zero
+        mh.Velocity = Vector3.zero
+        mh.RotVelocity = Vector3.zero
+    end)
+    return SPAWN_CFRAME and (mh.Position - SPAWN_CFRAME.Position).Magnitude < 22
+end
+
 local function recoverAfterFling()
     flingSettling = true
-    for i = 1, 5 do
-        local mh = hrp()
-        if mh then
-            zeroVel(mh)
-            mh.Velocity = Vector3.zero
-            mh.RotVelocity = Vector3.zero
-        end
-        tpHome()
-        task.wait(0.06)
-        if isAlive(me) then break end
+    for _ = 1, 12 do
+        if snapFlingHome() and isAlive(me) then break end
+        task.wait(0.04)
     end
     if not isAlive(me) then
         pcall(reset)
@@ -2201,9 +2329,9 @@ local function recoverAfterFling()
             if isAlive(me) then break end
             task.wait(0.15)
         end
+        snapFlingHome()
     end
-    local mh = hrp()
-    if mh then zeroVel(mh) end
+    snapFlingHome()
     flingSettling = false
 end
 
@@ -2217,63 +2345,53 @@ local function fling(target, onDone)
         if onDoneFn then onDoneFn(false) end
         return
     end
+    local mh0 = hrp()
+    if not mh0 or mh0.Position.Y < -25 then
+        snapFlingHome()
+        if onDoneFn then onDoneFn(false) end
+        return
+    end
     flingActive = true
     log("flinging " .. target.DisplayName)
     task.spawn(function()
         G.MM_ActionBegin()
-        local okRun, errRun = pcall(function()
-        local thrp0 = target.Character and target.Character:FindFirstChild("HumanoidRootPart")
-        local startPos = thrp0 and thrp0.Position
-        local startedAt = tick()
-        local stopAt = startedAt + 10
+        stopFollow()
         local flung = false
-        local hiVelFrames = 0
-        while flingActive and tick() < stopAt and isAlive(target) and isAlive(me) do
-            local mh = hrp()
-            local th = target.Character and target.Character:FindFirstChild("HumanoidRootPart")
-            local thum = target.Character and target.Character:FindFirstChildOfClass("Humanoid")
-            if mh and th then
+        local okRun, errRun = pcall(function()
+            local th0 = target.Character and target.Character:FindFirstChild("HumanoidRootPart")
+            if not th0 then return end
+            local burstUntil = tick() + 0.16
+            while flingActive and tick() < burstUntil and isAlive(target) and isAlive(me) do
+                local mh = hrp()
+                local th = target.Character and target.Character:FindFirstChild("HumanoidRootPart")
+                local thum = target.Character and target.Character:FindFirstChildOfClass("Humanoid")
+                if not (mh and th) then break end
+                if mh.Position.Y < -25 then break end
+                local hum = me.Character and me.Character:FindFirstChildOfClass("Humanoid")
+                if hum and hum.Health < hum.MaxHealth * 0.35 then break end
                 local lead = flingApproachLead(th, thum)
                 mh.CFrame = th.CFrame + lead
-                mh.Velocity = Vector3.new(99999, 99999, 99999)
-                mh.RotVelocity = Vector3.new(99999, 99999, 99999)
+                mh.Velocity = Vector3.new(12000, 9000, 12000)
+                mh.RotVelocity = Vector3.new(8000, 8000, 8000)
+                if th.Velocity.Magnitude > 450 then flung = true end
+                task.wait()
             end
-            if th and startPos and tick() - startedAt > 2 then
-                local vel = th.Velocity.Magnitude
-                if vel > 600 then hiVelFrames = hiVelFrames + 1
-                else hiVelFrames = 0 end
-                local moved = (th.Position - startPos).Magnitude
-                local state = thum and thum:GetState()
-                local ragdoll = state == Enum.HumanoidStateType.PlatformStanding
-                             or state == Enum.HumanoidStateType.FallingDown
-                             or state == Enum.HumanoidStateType.Physics
-                if hiVelFrames >= 5 or moved > 60 or ragdoll then
-                    flung = true
-                    flingActive = false
-                    local mh = hrp()
-                    if mh then
-                        zeroVel(mh)
-                        mh.Velocity = Vector3.zero
-                        mh.RotVelocity = Vector3.zero
-                        pcall(function() mh.CFrame = SPAWN_CFRAME or mh.CFrame end)
-                    end
-                    break
-                end
-            end
+            snapFlingHome()
             task.wait()
-        end
-        log(flung and "fling success" or "fling done")
+            snapFlingHome()
+        end)
         flingActive = false
+        if not okRun then
+            log("fling error: " .. tostring(errRun))
+        else
+            log(flung and "fling success" or "fling done")
+        end
         if onDoneFn then
             onDoneFn(flung)
         elseif flung then
             whisper("Flung " .. shortName(target))
         end
         recoverAfterFling()
-        end)
-        if not okRun then
-            log("fling error: " .. tostring(errRun))
-        end
         G.MM_ActionEnd()
     end)
 end
@@ -2438,8 +2556,6 @@ local function runFlingLoop(mode, playerQuery, gen, continuousLoop)
     end)
 end
 
---[[ Follow ]]-- (followTarget / stopFollow are under Movement)
-
 --[[ Round ]]--
 local function isRoundActive()
     if G.MM_HasRoundRoles and G.MM_HasRoundRoles() then return true end
@@ -2455,30 +2571,6 @@ local function getAliveExcludingBot()
         end
     end
     return list
-end
-
-local function startFollowLoop()
-    task.spawn(function()
-        while followTarget and session.active do
-            local target = followTarget
-            if target and isAlive(target) and isAlive(me) then
-                local thrp = target.Character:FindFirstChild("HumanoidRootPart")
-                local thum = target.Character:FindFirstChildOfClass("Humanoid")
-                local hum = me.Character:FindFirstChildOfClass("Humanoid")
-                if thrp and hum then
-                    hum:MoveTo(thrp.Position)
-                    if thum then
-                        local st = thum:GetState()
-                        local j = st == Enum.HumanoidStateType.Jumping or st == Enum.HumanoidStateType.Freefall
-                        if j or thrp.Velocity.Y > 10 then
-                            hum.Jump = true
-                        end
-                    end
-                end
-            end
-            task.wait(0.12)
-        end
-    end)
 end
 
 --[[ Commands ]]--
@@ -2877,8 +2969,13 @@ local function handleCommand(p, msg, viaPublic)
     local ownerPlayer = findOwner()
     local ownerIsMurd = ownerMurdererActive(m, ownerPlayer) and not botHasKnife()
     if cmd == "chat" then
-        sendChat(rest)
-        whisper("Chat sent")
+        if rest == "" then
+            whisper("!chat <msg>")
+        elseif sendChat(rest) then
+            whisper("Chat sent")
+        else
+            whisper("Chat failed")
+        end
     elseif cmd == "reveal" then
         local murd = (G.MM_FindRole and G.MM_FindRole("Murderer")) or m
         local sher = (G.MM_FindRole and G.MM_FindRole("Sheriff")) or s
@@ -2897,11 +2994,13 @@ local function handleCommand(p, msg, viaPublic)
     elseif cmd == "tp" then
         local t = findPlayer(args[2]) or findOwner()
         if not t then whisper("Player not found") return end
+        stopFollow()
         tpTo(t)
         whisper("Teleported to " .. commandTargetLabel(t))
     elseif cmd == "tpmurd" then
         local murd = (G.MM_FindRole and G.MM_FindRole("Murderer")) or m
         if not murd then whisper("Murderer not found") return end
+        stopFollow()
         tpTo(murd)
         whisper("Teleported to murderer")
     elseif cmd == "tpsher" then
@@ -2909,6 +3008,7 @@ local function handleCommand(p, msg, viaPublic)
             or (G.MM_FindRole and G.MM_FindRole("Hero"))
             or s
         if not sher then whisper("Sheriff not found") return end
+        stopFollow()
         tpTo(sher)
         whisper("Teleported to sheriff")
     elseif cmd == "stab" then
@@ -2998,11 +3098,11 @@ local function handleCommand(p, msg, viaPublic)
         if not t then whisper("Player not found") return end
         if ownerIsMurd then whisper(OWNER_MURD_GUN_MSG) return end
         if botHasKnife() then whisper("No gun available") return end
-        if not gunAvailableForOwnerMurdStash() then
+        if not botHasGun() and not findDroppedGun() then
             whisper(G.MM_GunWhere and G.MM_GunWhere() or "No gun available")
             return
         end
-        local ok = bringGun(t)
+        local ok = bringGun(t, true)
         whisper(ok and ("Gun delivered to " .. commandTargetLabel(t)) or "Gun missed, try again")
     elseif cmd == "drop" then
         if _G.MM_GunBusy then whisper("Gun busy, try again") return end
@@ -3017,6 +3117,7 @@ local function handleCommand(p, msg, viaPublic)
         _G.MM_GunBusy = false
         whisper(ok and "Gun dropped at spawn" or "No gun available")
     elseif cmd == "spawn" or cmd == "home" then
+        stopFollow()
         tpHome()
         whisper("Teleported to spawn")
     elseif cmd == "reset" then
@@ -3069,18 +3170,18 @@ local function handleCommand(p, msg, viaPublic)
         toggleDrop = not toggleDrop
         whisper("Murderer gun stash: " .. (toggleDrop and "on" or "off"))
     elseif cmd == "follow" then
-        local t = findPlayer(args[2]) or findOwner()
-        if not t then whisper("Player not found") return end
-        local wasActive = followTarget ~= nil
-        local switching = followTarget ~= t
-        followTarget = t
-        if switching then tpTo(t) end
+        local q = restOfChatArgs(args)
+        local t = (q ~= "" and (findOtherPlayer(q) or findPlayer(q))) or findOwner()
+        if not t or t == me then whisper("Player not found") return end
+        G.MM_FollowUserId = t.UserId
+        followSnap(t)
+        startFollowLoop()
         whisper("Following " .. shortName(t))
-        if not wasActive then startFollowLoop() end
     elseif cmd == "unfollow" then
-        if not followTarget then whisper("Not following anyone") return end
-        local name = shortName(followTarget)
-        followTarget = nil
+        if not isFollowing() then whisper("Not following anyone") return end
+        local cur = Players:GetPlayerByUserId(G.MM_FollowUserId)
+        local name = cur and shortName(cur) or "them"
+        stopFollow()
         whisper("Unfollowed " .. name)
     elseif cmd == "help" then
         local tail = restOfChatArgs(args)
@@ -3522,8 +3623,10 @@ local function bridgeChatMessage(text)
     if text == "" then
         return "error", "Message required"
     end
-    sendChat(text)
-    return "ok", "Chat sent"
+    if sendChat(text) then
+        return "ok", "Chat sent"
+    end
+    return "error", "Chat failed"
 end
 
 local function bridgeGunMessage(targetQuery)
@@ -3542,10 +3645,10 @@ local function bridgeGunMessage(targetQuery)
     if not t then return "error", "Player not found" end
     if ownerIsMurd then return "error", OWNER_MURD_GUN_MSG end
     if botHasKnife() then return "error", "No gun available" end
-    if not gunAvailableForOwnerMurdStash() then
+    if not botHasGun() and not findDroppedGun() then
         return "error", (G.MM_GunWhere and G.MM_GunWhere()) or "No gun available"
     end
-    local ok = bringGun(t)
+    local ok = bringGun(t, true)
     return ok and "ok" or "error", ok and ("Gun delivered to " .. bridgeTargetLabel(t)) or "Gun missed, try again"
 end
 
@@ -4296,7 +4399,8 @@ task.spawn(function()
                 local cur = aliveState(own)
                 local prev = alivePrev[own.UserId]
                 if prev == true and (cur == false or cur == nil) then
-                    G.MM_SkipGunUntil = tick() + 5
+                    G.MM_BlockGunGrab = true
+                    G.MM_SkipGunUntil = tick() + 12
                     gunDelivered = true
                     if not toggleResetOnOwnerDeath then
                         log("owner died (reset on death off)")
@@ -4395,26 +4499,39 @@ local function sendRoundRoleCallouts(curM, curS, curBotM, curBotS)
     if not resolveWhisperTarget() then return false end
     local mLabel = curBotM and "Me" or (curM and shortName(curM)) or "?"
     local sLabel = curBotS and "Me" or (curS and shortName(curS)) or "?"
-    if not whisperOk("Murderer: " .. mLabel) then return false end
+    local key = mLabel .. "|" .. sLabel
+    if G.MM_LastRoleCallout == key and (tick() - (tonumber(G.MM_LastRoleCalloutAt) or 0)) < 12 then
+        return true
+    end
+    if not whisperOk("Murderer: " .. mLabel) then
+        whisper("Murderer: " .. mLabel)
+    end
     task.wait(0.35)
-    return whisperOk("Sheriff: " .. sLabel)
+    if not whisperOk("Sheriff: " .. sLabel) then
+        whisper("Sheriff: " .. sLabel)
+    end
+    G.MM_LastRoleCallout = key
+    G.MM_LastRoleCalloutAt = tick()
+    return true
 end
 
 local function waitForRoleCallouts(curM, curS, curBotM, curBotS)
-    for _ = 1, 8 do
-        if sendRoundRoleCallouts(curM, curS, curBotM, curBotS) then
-            return true, curM, curS, curBotM, curBotS
-        end
-        task.wait(0.55)
-        curM, curS, curBotM, curBotS = resolveRoleSnapshot(0.5)
+    local deadline = tick() + 2.2
+    while tick() < deadline do
+        if (curM or curBotM) and (curS or curBotS) then break end
+        task.wait(0.2)
+        curM, curS, curBotM, curBotS = resolveRoleSnapshot(0.2)
     end
-    return false, curM, curS, curBotM, curBotS
+    local ok = sendRoundRoleCallouts(curM, curS, curBotM, curBotS)
+    return ok, curM, curS, curBotM, curBotS
 end
 
 --[[ Main loop ]]--
 local function runMainLoop()
     local lastMurderId, announced
     local lastRoundPulse = 0
+    local lastAnnounceAt = 0
+    local lobbySince = 0
     local ownerMurdStashBusy = false
     local nextAutoGunAt = 0
     local nextAutoShootAt = 0
@@ -4430,32 +4547,38 @@ while session.active and gui.Parent do
     local pulse = tonumber(G.MM_RoundPulse) or 0
     if pulse > 0 and pulse ~= lastRoundPulse then
         lastRoundPulse = pulse
-        announced = false
         homeBurst()
+        if (tick() - lastAnnounceAt) > 10 then
+            announced = false
+            G.MM_BlockGunGrab = false
+        end
     end
     if m then
         if lastMurderId ~= m.UserId then
             lastMurderId = m.UserId
-            announced = false
             pcall(function() img.Image = Players:GetUserThumbnailAsync(m.UserId, Enum.ThumbnailType.HeadShot, Enum.ThumbnailSize.Size150x150) end)
             lbl.Text = m.DisplayName
         end
         f.Visible = true
     else
         f.Visible = false
-        if lastMurderId then
-            lastMurderId = nil
-            announced = false
-        end
+        lastMurderId = nil
     end
     if not liveNow then
-        announced, gunDelivered, shootDone, revealAnnouncePending = false, false, false, false
-        ownerMurdStashBusy = false
-        roleAnnounceUnlockAt = 0
+        if lobbySince == 0 then lobbySince = tick() end
+        if tick() - lobbySince > 1.5 then
+            announced, gunDelivered, shootDone, revealAnnouncePending = false, false, false, false
+            ownerMurdStashBusy = false
+            roleAnnounceUnlockAt = 0
+            G.MM_BlockGunGrab = false
+        end
+    else
+        lobbySince = 0
     end
 
     if (m or botM) and not announced then
         announced = true
+        lastAnnounceAt = tick()
         gunDelivered = false
         shootDone = false
         revealAnnouncePending = true
@@ -4464,14 +4587,8 @@ while session.active and gui.Parent do
         task.spawn(function()
             local curM, curS, curBotM, curBotS = resolveRoleSnapshot(2.5)
             if toggleReveal then
-                local ok
-                ok, curM, curS, curBotM, curBotS = waitForRoleCallouts(curM, curS, curBotM, curBotS)
-                if not ok then
-                    curM, curS, curBotM, curBotS = resolveRoleSnapshot(0.5)
-                    pcall(function()
-                        sendRoundRoleCallouts(curM, curS, curBotM, curBotS)
-                    end)
-                end
+                local _
+                _, curM, curS, curBotM, curBotS = waitForRoleCallouts(curM, curS, curBotM, curBotS)
             else
                 curM, curS, curBotM, curBotS = resolveRoleSnapshot(0.5)
             end

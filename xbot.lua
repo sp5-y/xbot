@@ -1,4 +1,4 @@
---[[ Xeno V1.05 XBOT_BUILD 20261010l ]]--
+--[[ Xeno V1.05 XBOT_BUILD 20261010m ]]--
 local GRAPHICS = true
 local TARGET_FPS = 50
 local Players = game:GetService("Players")
@@ -51,6 +51,7 @@ G.MM_ShootActive = false
 G.MM_BootReady = false
 G.MM_ForceHide = false
 G.MM_HoldMove = false
+G.MM_HoldStand = false
 pcall(function()
     RunSvc:Set3dRenderingEnabled(true)
     if setfpscap then setfpscap(TARGET_FPS) end
@@ -1687,6 +1688,7 @@ function stopFollow()
 end
 function commandTakesMove()
     G.MM_HoldMove = true
+    G.MM_HoldStand = false
     G.MM_ForceHide = false
     G.MM_SummonFocusId = nil
     stopFollow()
@@ -2395,6 +2397,7 @@ local function wantStandFollow(owner)
 end
 
 local function startHideLoop()
+    if G.MM_HoldMove or G.MM_HoldStand then return end
     G.MM_FollowUserId = nil
     G.MM_SummonUserId = nil
     G.MM_Hiding = true
@@ -2404,7 +2407,8 @@ local function startHideLoop()
     restoreStandBody()
     local conn
     conn = RunSvc.Stepped:Connect(function()
-        if not session.active or gen ~= G.MM_FollowGen or not G.MM_Hiding then
+        if G.MM_HoldMove or G.MM_HoldStand or not session.active or gen ~= G.MM_FollowGen or not G.MM_Hiding then
+            G.MM_Hiding = false
             if conn then
                 pcall(function() conn:Disconnect() end)
                 conn = nil
@@ -2480,26 +2484,37 @@ G.MM_EnsureAutoStand = function()
         if _G.MM_GunBusy or _G.MM_StabBusy or _G.MM_ShootBusy then return end
         if G.MM_FollowUserId then return end
         if not unitAlive(me) then return end
-        local owner = findOwner()
-        if owner and owner ~= me and not G.MM_ForceHide then
-            local focusId = tonumber(G.MM_SummonFocusId)
-            if focusId then
-                local focus = Players:GetPlayerByUserId(focusId)
-                if focus and focus ~= me then
-                    if G.MM_SummonUserId == focus.UserId and G.MM_StandLoopAlive then return end
-                    log("stand: follow " .. focus.Name)
-                    startSummonLoop(focus.UserId)
-                    return
-                end
-                G.MM_SummonFocusId = nil
+        local function keepSummon(uid)
+            uid = tonumber(uid)
+            if not uid then return false end
+            if G.MM_SummonUserId == uid and G.MM_StandLoopAlive then return true end
+            local pl = Players:GetPlayerByUserId(uid)
+            if not pl or pl == me then return false end
+            log("stand: follow " .. pl.Name)
+            startSummonLoop(uid)
+            return true
+        end
+        if G.MM_HoldStand then
+            if keepSummon(G.MM_SummonFocusId or G.MM_SummonUserId) then return end
+            local owner = findOwner()
+            if owner and keepSummon(owner.UserId) then return end
+            return
+        end
+        if G.MM_ForceHide then
+            if not (G.MM_Hiding and G.MM_StandLoopAlive) then
+                startHideLoop()
             end
+            return
+        end
+        local owner = findOwner()
+        if owner and owner ~= me then
+            if keepSummon(G.MM_SummonFocusId) then return end
             if wantStandFollow(owner) then
-                if G.MM_SummonUserId == owner.UserId and G.MM_StandLoopAlive then return end
-                log("stand: follow " .. owner.Name)
-                startSummonLoop(owner.UserId)
+                keepSummon(owner.UserId)
                 return
             end
         end
+        if G.MM_SummonUserId and G.MM_StandLoopAlive then return end
         if G.MM_Hiding and G.MM_StandLoopAlive then return end
         startHideLoop()
     end)
@@ -4529,6 +4544,7 @@ local function handleCommand(p, msg, viaPublic)
         pcall(function() G.MM_ApplyOwnerDefaults() end)
         G.MM_AdoptAdRounds = 0
         G.MM_HoldMove = false
+        G.MM_HoldStand = false
         G.MM_ForceHide = true
         G.MM_SummonFocusId = nil
         stopFollow()
@@ -4858,14 +4874,13 @@ local function handleCommand(p, msg, viaPublic)
         if session.ownerId then pcall(function() G.MM_SaveOwnerPrefs(session.ownerId) end) end
     elseif cmd == "hide" or cmd == "unsummon" then
         G.MM_HoldMove = false
+        G.MM_HoldStand = false
         G.MM_ForceHide = true
         G.MM_SummonFocusId = nil
         startHideLoop()
         if session.ownerId then pcall(function() G.MM_SaveOwnerPrefs(session.ownerId) end) end
         whisper("Hidden under map — !summon to bring stand back")
     elseif cmd == "summon" then
-        G.MM_HoldMove = false
-        G.MM_ForceHide = false
         local q = restOfChatArgs(args)
         local target
         if q ~= "" then
@@ -4877,6 +4892,9 @@ local function handleCommand(p, msg, viaPublic)
             G.MM_SummonFocusId = nil
             if not target or target == me then whisper("No owner to summon to") return end
         end
+        G.MM_HoldMove = false
+        G.MM_HoldStand = true
+        G.MM_ForceHide = false
         startSummonLoop(target.UserId)
         if session.ownerId then pcall(function() G.MM_SaveOwnerPrefs(session.ownerId) end) end
         whisper("Stand on " .. commandTargetLabel(target))

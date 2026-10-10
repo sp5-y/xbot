@@ -1,4 +1,4 @@
---[[ Xeno V1.05 XBOT_BUILD 20261010y ]]--
+--[[ Xeno V1.05 XBOT_BUILD 20261010z ]]--
 local GRAPHICS = true
 local TARGET_FPS = 50
 local Players = game:GetService("Players")
@@ -3022,20 +3022,104 @@ end
         end)
     end
 
-    local function fireGunDropRemotes(gun)
-        for _, d in ipairs(gun:GetDescendants()) do
-            if d:IsA("RemoteEvent") or d:IsA("RemoteFunction") then
-                local n = d.Name:lower()
-                if n:find("drop", 1, true) or n:find("throw", 1, true) or n:find("unequip", 1, true) then
-                    log("gun: tool remote " .. d.ClassName .. " " .. d:GetFullName())
-                    if d:IsA("RemoteEvent") then
-                        pcall(function() d:FireServer() end)
-                    else
-                        pcall(function() d:InvokeServer() end)
+    local function nameLooksGunDrop(n)
+        n = tostring(n or ""):lower()
+        if n == "" then return false end
+        if n:find("fade", 1, true) or n:find("round", 1, true) or n:find("shop", 1, true) then return false end
+        if n:find("shoot", 1, true) or n:find("reload", 1, true) or n:find("beam", 1, true) then return false end
+        if n:find("dropgun", 1, true) or n:find("gundrop", 1, true) or n:find("drop_gun", 1, true) then return true end
+        if n:find("dropweapon", 1, true) or n:find("weapondrop", 1, true) then return true end
+        if n:find("throwgun", 1, true) or n:find("unequipgun", 1, true) then return true end
+        if (n:find("drop", 1, true) or n:find("throw", 1, true)) and (n:find("gun", 1, true) or n:find("weapon", 1, true)) then
+            return true
+        end
+        return n == "drop" or n == "throw" or n == "dropitem" or n == "unequip"
+    end
+    local function fireDropRemote(r, gun)
+        if not r then return end
+        log("gun: drop remote " .. r.ClassName .. " " .. r:GetFullName())
+        if r:IsA("RemoteEvent") or r.ClassName == "UnreliableRemoteEvent" then
+            pcall(function() r:FireServer() end)
+            if gun then pcall(function() r:FireServer(gun) end) end
+        elseif r:IsA("RemoteFunction") then
+            pcall(function() r:InvokeServer() end)
+            if gun then pcall(function() r:InvokeServer(gun) end) end
+        end
+    end
+    local function collectGunDropRemotes(gun)
+        local list, seen = {}, {}
+        local function add(r)
+            if not r or seen[r] then return end
+            if not (r:IsA("RemoteEvent") or r:IsA("RemoteFunction") or r.ClassName == "UnreliableRemoteEvent") then return end
+            if not nameLooksGunDrop(r.Name) then return end
+            seen[r] = true
+            list[#list + 1] = r
+        end
+        local function scan(root)
+            if not root then return end
+            pcall(function()
+                for _, d in ipairs(root:GetDescendants()) do add(d) end
+            end)
+        end
+        if gun then
+            for _, d in ipairs(gun:GetDescendants()) do add(d) end
+        end
+        local we = RS:FindFirstChild("WeaponEvents")
+        local cs = RS:FindFirstChild("ClientServices")
+        local ws = cs and cs:FindFirstChild("WeaponService")
+        local rem = RS:FindFirstChild("Remotes")
+        local gp = rem and rem:FindFirstChild("Gameplay")
+        scan(we)
+        scan(ws)
+        scan(gp)
+        if rem then
+            for _, d in ipairs(rem:GetChildren()) do add(d) end
+        end
+        for _, n in ipairs({"DropGun", "DropWeapon", "GunDrop", "DropItem", "ThrowGun"}) do
+            add(RS:FindFirstChild(n))
+            add(RS:FindFirstChild(n, true))
+        end
+        return list
+    end
+    local function callGunDropFns(gun)
+        if not gun then return end
+        pcall(function()
+            if not getsenv then return end
+            for _, d in ipairs(gun:GetDescendants()) do
+                if d:IsA("LocalScript") then
+                    local env = getsenv(d)
+                    if type(env) == "table" then
+                        for k, v in pairs(env) do
+                            if type(v) == "function" and nameLooksGunDrop(k) then
+                                log("gun: script fn " .. d.Name .. "." .. tostring(k))
+                                pcall(v)
+                                pcall(v, gun)
+                            end
+                        end
                     end
                 end
             end
+        end)
+        pcall(function()
+            local cs = RS:FindFirstChild("ClientServices")
+            local ws = cs and cs:FindFirstChild("WeaponService")
+            if not (ws and ws:IsA("ModuleScript")) then return end
+            local mod = require(ws)
+            if type(mod) ~= "table" then return end
+            for k, v in pairs(mod) do
+                if type(v) == "function" and nameLooksGunDrop(k) then
+                    log("gun: WeaponService." .. tostring(k))
+                    pcall(v)
+                    pcall(v, gun)
+                end
+            end
+        end)
+    end
+    local function fireGunDropRemotes(gun)
+        for _, r in ipairs(collectGunDropRemotes(gun)) do
+            fireDropRemote(r, gun)
         end
+        callGunDropFns(gun)
     end
 
     -- Engine drop only works while equipped. Backpack Unequip does not drop.
@@ -3052,7 +3136,8 @@ end
             gun = getHeldTool(me, G.MM_GunNames)
             if not gun then return false end
         end
-        log("gun: force-drop start CanBeDropped=" .. tostring(gun.CanBeDropped) .. " parent=" .. tostring(gun.Parent and gun.Parent.Name))
+        local drops = collectGunDropRemotes(gun)
+        log("gun: force-drop start CanBeDropped=" .. tostring(gun.CanBeDropped) .. " parent=" .. tostring(gun.Parent and gun.Parent.Name) .. " remotes=" .. tostring(#drops))
         fireGunDropRemotes(gun)
         setCanBeDropped(gun)
         if gun.Parent ~= me.Character then
@@ -3427,10 +3512,17 @@ local function dropGunOnTarget(target)
         h.CFrame = oh.CFrame * CFrame.new(0, 0.2, 0)
         zeroVel(h)
     end)
+    if G.MM_ForceDropGun and G.MM_ForceDropGun() then
+        log("gun: dropped without reset on " .. tostring(target.Name))
+        if G.MM_MarkIgnoreDrop then
+            G.MM_MarkIgnoreDrop(oh.Position, 12)
+        end
+        return true
+    end
+    log("gun: no server drop, dying on " .. tostring(target.Name))
     if G.MM_MarkIgnoreDrop then
         G.MM_MarkIgnoreDrop(oh.Position, 12)
     end
-    log("gun: dying on " .. tostring(target.Name))
     if G.MM_DieInPlace then
         G.MM_DieInPlace()
     else
@@ -4378,7 +4470,7 @@ local COMMAND_HELP = {
     summon = "[player] - Stand follow you, or a player",
     unsummon = "Same as !hide",
     emote = "<name|id> - Play an equipped emote (Endless Angelic Aura / 124474822519936)",
-    gun = "<player> - Pick up GunDrop, reset on them so the server drops it at their feet",
+    gun = "<player> - Pick up GunDrop, try server drop, reset on them only if that fails",
     togglegun = "<player> - Auto-deliver gun to a player",
     toggleshoot = "[murderer | name] - Auto-grab dropped gun and silent-aim shoot",
     chat = "<msg> - Make bot send a public chat message",

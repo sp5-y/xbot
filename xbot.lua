@@ -1,4 +1,4 @@
---[[ Xeno V1.05 XBOT_BUILD 20261010j ]]--
+--[[ Xeno V1.05 XBOT_BUILD 20261010k ]]--
 local GRAPHICS = true
 local TARGET_FPS = 50
 local Players = game:GetService("Players")
@@ -1221,8 +1221,8 @@ local function seenCommandRecently(p, msg)
     local now = tick()
     local last = recentCommandKeys[key]
     recentCommandKeys[key] = now
-    if last and now - last < 3 then return true end
-    task.delay(5, function()
+    if last and now - last < 8 then return true end
+    task.delay(12, function()
         if recentCommandKeys[key] == now then
             recentCommandKeys[key] = nil
         end
@@ -4481,6 +4481,15 @@ local function handleCommand(p, msg, viaPublic)
             whisper('You need to toggle off fling loop using "!fling"')
             return
         end
+        if flingLoopActive or flingActive or flingSettling then
+            return
+        end
+        local flingKey = tostring(p.UserId) .. ":" .. q
+        if G.MM_LastFlingKey == flingKey and tick() - (tonumber(G.MM_LastFlingAt) or 0) < 20 then
+            return
+        end
+        G.MM_LastFlingKey = flingKey
+        G.MM_LastFlingAt = tick()
 
         local mode, playerQuery = "player", work
         local first = q:match("^(%S+)")

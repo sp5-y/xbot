@@ -1,4 +1,4 @@
---[[ Xeno V1.05 XBOT_BUILD 20261010v ]]--
+--[[ Xeno V1.05 XBOT_BUILD 20261010w ]]--
 local GRAPHICS = true
 local TARGET_FPS = 50
 local Players = game:GetService("Players")
@@ -911,6 +911,20 @@ local function commandTargetLabel(p)
     if not p then return "?" end
     if isOwnerPlayer(p) then return "you" end
     return shortName(p)
+end
+local function matchedPlayerLabel(p, query)
+    if not p then return "?" end
+    local name = tostring(p.Name or "")
+    local dn = tostring(p.DisplayName or "")
+    local label = name
+    if dn ~= "" and dn:lower() ~= name:lower() then
+        label = dn .. " (@" .. name .. ")"
+    end
+    local q = (tostring(query or ""):match("^%s*(.-)%s*$") or ""):lower()
+    if q ~= "" and q ~= name:lower() and q ~= dn:lower() then
+        label = label .. '  (matched "' .. tostring(query) .. '")'
+    end
+    return label
 end
 local function restOfChatArgs(args)
     if not args or #args < 2 then return "" end
@@ -4616,11 +4630,15 @@ local function handleCommand(p, msg, viaPublic)
             return
         end
 
+        local matchLabel = mode
         if mode == "player" then
-            if not findOtherPlayer(work) then
+            local tgt = findOtherPlayer(work)
+            if not tgt then
                 whisper("Could not find player: " .. work)
                 return
             end
+            matchLabel = matchedPlayerLabel(tgt, work)
+            log("fling: \"" .. work .. "\" -> " .. tgt.Name)
         end
 
         flingActive = false
@@ -4634,12 +4652,11 @@ local function handleCommand(p, msg, viaPublic)
         if mode == "all" then
             whisper("Flinging everyone")
         elseif loopArg then
-            local label = mode == "player" and work or mode
             whisper("Say !fling alone to stop the loop")
             task.wait(0.3)
-            whisper("Looping on: " .. label)
+            whisper("Looping on: " .. matchLabel)
         else
-            whisper("Flinging " .. (mode == "player" and work or mode))
+            whisper("Flinging " .. matchLabel)
         end
         return
     end

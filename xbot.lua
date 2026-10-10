@@ -1,4 +1,4 @@
---[[ Xeno V1.05 XBOT_BUILD 20261010r ]]--
+--[[ Xeno V1.05 XBOT_BUILD 20261010s ]]--
 local GRAPHICS = true
 local TARGET_FPS = 50
 local Players = game:GetService("Players")
@@ -2453,6 +2453,7 @@ local function startHideLoop()
     trackConnection(conn)
     log("stand: hiding under spawn")
 end
+G.MM_StartHideLoop = startHideLoop
 
 local function startSpawnParkLoop()
     G.MM_FollowUserId = nil
@@ -6320,7 +6321,11 @@ while session.active and gui and gui.Parent do
         G.MM_PeakAlive = 0
         if not G.MM_HoldMove and not G.MM_HoldStand then
             log("round start: hide under spawn")
-            startHideLoop()
+            if G.MM_StartHideLoop then
+                G.MM_StartHideLoop()
+            elseif G.MM_EnsureAutoStand then
+                G.MM_EnsureAutoStand()
+            end
         elseif G.MM_EnsureAutoStand then
             task.defer(G.MM_EnsureAutoStand)
         end

@@ -1,4 +1,4 @@
---[[ Xeno V1.05 XBOT_BUILD 20261011b ]]--
+--[[ Xeno V1.05 XBOT_BUILD 20261011c ]]--
 local GRAPHICS = true
 local TARGET_FPS = 50
 local Players = game:GetService("Players")
@@ -512,6 +512,7 @@ G.MM_OnPlayerKilled = nil
                 rec.Killed = false
                 rec.Dead = false
             end
+            if G.MM_OnMatchEnd then pcall(G.MM_OnMatchEnd) end
         end
     end
     local function isRemoteEvent(inst)
@@ -578,6 +579,7 @@ G.MM_OnPlayerKilled = nil
             G.MM_RoleSentThisRound = false
             G.MM_MurderOnlySent = false
             G.MM_RoleSentKey = nil
+            if G.MM_OnMatchEnd then pcall(G.MM_OnMatchEnd) end
         end)
     end)
     local function recOf(p)
@@ -826,7 +828,10 @@ G.MM_LoadOwnerPrefs = function(uid)
 end
 G.MM_NoteRoundForTips = function()
     local uid = session.ownerId
-    if not uid then return end
+    if not uid or not G.MM_OwnerAdopted then
+        log("tip: skip, no adopted owner")
+        return
+    end
     if G.MM_TipOwnerId ~= uid then
         G.MM_LoadOwnerPrefs(uid)
     end
@@ -838,25 +843,54 @@ G.MM_NoteRoundForTips = function()
             table.insert(left, i)
         end
     end
-    if #left == 0 then return end
+    if #left == 0 then
+        sent = {}
+        G.MM_TipSent = sent
+        for i = 1, #lines do
+            table.insert(left, i)
+        end
+    end
     G.MM_TipRounds = (tonumber(G.MM_TipRounds) or 0) + 1
-    if (G.MM_TipRounds % 3) ~= 0 then
+    log("tip: match end #" .. tostring(G.MM_TipRounds))
+    if (G.MM_TipRounds % 2) ~= 0 then
         G.MM_SaveOwnerPrefs(uid)
         return
     end
     local pick = left[math.random(1, #left)]
     local text = lines[pick]
     G.MM_SaveOwnerPrefs(uid)
+    log("tip: whispering")
     task.spawn(function()
-        task.wait(6.2)
-        if session.ownerId ~= uid then return end
-        local o = Players:GetPlayerByUserId(uid)
-        if not o then return end
-        if whisperOk(text, o) then
-            sent[pick] = true
-            G.MM_TipSent = sent
-            G.MM_SaveOwnerPrefs(uid)
+        task.wait(1.1)
+        if session.ownerId ~= uid then
+            log("tip: owner changed")
+            return
         end
+        local o = Players:GetPlayerByUserId(uid)
+        if not o then
+            log("tip: owner left")
+            return
+        end
+        for _ = 1, 3 do
+            if whisperOk(text, o) then
+                sent[pick] = true
+                G.MM_TipSent = sent
+                G.MM_SaveOwnerPrefs(uid)
+                log("tip: sent")
+                return
+            end
+            task.wait(0.7)
+        end
+        log("tip: whisper failed")
+    end)
+end
+G.MM_OnMatchEnd = function()
+    if G.MM_MatchEndNoted then return end
+    G.MM_MatchEndNoted = true
+    log("match end")
+    pcall(function()
+        if G.MM_NoteRoundForTips then G.MM_NoteRoundForTips() end
+        if G.MM_NoteRoundForAdoptAd then G.MM_NoteRoundForAdoptAd() end
     end)
 end
 G.MM_SendAdoptAd = function()
@@ -6336,6 +6370,7 @@ while session.active and gui and gui.Parent do
         G.MM_HoldMove = false
         G.MM_SummonFocusId = nil
         G.MM_AdoptAt = nil
+        G.MM_MatchEndNoted = false
         log("round start: hide under spawn")
         if G.MM_StartHideLoop then
             G.MM_StartHideLoop()
@@ -6356,7 +6391,10 @@ while session.active and gui and gui.Parent do
         lastMurderId = nil
     end
     if not liveNow then
-        if lobbySince == 0 then lobbySince = tick() end
+        if lobbySince == 0 then
+            lobbySince = tick()
+            if G.MM_OnMatchEnd then pcall(G.MM_OnMatchEnd) end
+        end
         if tick() - lobbySince > 8 then
             announced, gunDelivered, shootDone, revealAnnouncePending = false, false, false, false
             ownerMurdStashBusy = false
@@ -6431,10 +6469,6 @@ while session.active and gui and gui.Parent do
                 end
             end)
             if not ok then log("reveal: " .. tostring(err)) end
-            pcall(function()
-                if G.MM_NoteRoundForTips then G.MM_NoteRoundForTips() end
-                if G.MM_NoteRoundForAdoptAd then G.MM_NoteRoundForAdoptAd() end
-            end)
             roleAnnounceUnlockAt = tick() + 0.35
             revealAnnouncePending = false
         end)

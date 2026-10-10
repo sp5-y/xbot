@@ -1,9 +1,9 @@
---[[ Xeno V1.05 XBOT_BUILD 20261010b ]]--
+--[[ Xeno V1.05 XBOT_BUILD 20261010e ]]--
 local GRAPHICS = true
 local TARGET_FPS = 50
 local Players = game:GetService("Players")
 local cref = cloneref or function(x) return x end
-local TCS = cref(game:GetService("TextChatService"))
+local TCS = game:GetService("TextChatService")
 local Tween = game:GetService("TweenService")
 local RunSvc = game:GetService("RunService")
 local RS = cref(game:GetService("ReplicatedStorage"))
@@ -96,6 +96,11 @@ local function cleanupSession()
     _G.MM_GunBusy = false
     _G.MM_ShootBusy = false
     _G.MM_OwnerDiedPendingReset = false
+    G.MM_RoleSentThisRound = false
+    G.MM_RoleSentKey = nil
+    G.MM_MurderOnlySent = false
+    G.MM_RoleQBusy = false
+    G.MM_Resetting = false
     if G.MM_AntiFlingShutdown then pcall(G.MM_AntiFlingShutdown) end
     if gui and gui.Parent then pcall(function() gui:Destroy() end) end
 end
@@ -212,7 +217,13 @@ local function hasItem(parent, names)
     end
 end
 local function playerHas(p, names)
-    return hasItem(p.Character, names) or hasItem(p:FindFirstChildOfClass("Backpack"), names)
+    if not p then return end
+    if hasItem(p.Character, names) or hasItem(p:FindFirstChildOfClass("Backpack"), names) then
+        return true
+    end
+    if p == me then
+        return hasItem(me:FindFirstChild("MM_HiddenTools"), names) == true
+    end
 end
 local function findHolder(names)
     for _, p in ipairs(Players:GetPlayers()) do
@@ -282,6 +293,7 @@ G.MM_PlayerData = {}
 G.MM_HasKilledField = false
 G.MM_RoundLive = false
 G.MM_RoleSentThisRound = false
+G.MM_MurderOnlySent = false
 G.MM_LastRoleCallout = nil
 G.MM_LastRoleCalloutAt = 0
 G.MM_RoleQ = {}
@@ -460,6 +472,7 @@ G.MM_OnPlayerKilled = nil
             G.MM_RoundLive = false
             G.MM_SuppressGunDrop = nil
             G.MM_RoleSentThisRound = false
+            G.MM_MurderOnlySent = false
             G.MM_RoleSentKey = nil
         end)
     end)
@@ -762,17 +775,17 @@ G.MM_NoteRoundForTips = function()
         return
     end
     local pick = left[math.random(1, #left)]
-    sent[pick] = true
-    G.MM_TipSent = sent
-    G.MM_SaveOwnerPrefs(uid)
     local text = lines[pick]
+    G.MM_SaveOwnerPrefs(uid)
     task.spawn(function()
         task.wait(6.2)
         if session.ownerId ~= uid then return end
         local o = Players:GetPlayerByUserId(uid)
         if not o then return end
-        if not whisperOk(text, o, true) then
-            whisper(text, o)
+        if whisperOk(text, o) then
+            sent[pick] = true
+            G.MM_TipSent = sent
+            G.MM_SaveOwnerPrefs(uid)
         end
     end)
 end
@@ -883,12 +896,14 @@ local function channelSend(chan, msg)
     local ok, result = pcall(function()
         return chan:SendAsync(msg)
     end)
-    if not ok or result == false or result == nil then return false end
+    if not ok or result == false then return false end
+    -- Xeno/SendAsync often returns nil/true with no Status object — that still sent.
+    if result == true or result == nil then return true end
     local st
     pcall(function() st = result.Status end)
     if st == nil then return true end
     local t0 = tick()
-    while st == Enum.TextChatMessageStatus.Sending and tick() - t0 < 2 do
+    while st == Enum.TextChatMessageStatus.Sending and tick() - t0 < 1.2 do
         task.wait(0.05)
         pcall(function() st = result.Status end)
     end
@@ -897,16 +912,22 @@ local function channelSend(chan, msg)
         ok, result = pcall(function()
             return chan:SendAsync(msg)
         end)
-        if not ok or not result then return false end
+        if not ok or result == false then return false end
+        if result == true or result == nil then return true end
         st = nil
         pcall(function() st = result.Status end)
         t0 = tick()
-        while st == Enum.TextChatMessageStatus.Sending and tick() - t0 < 2 do
+        while st == Enum.TextChatMessageStatus.Sending and tick() - t0 < 1.2 do
             task.wait(0.05)
             pcall(function() st = result.Status end)
         end
     end
-    return st == Enum.TextChatMessageStatus.Success or st == nil
+    if st == Enum.TextChatMessageStatus.Success then return true end
+    if st == Enum.TextChatMessageStatus.InvalidPrivacySettings then return false end
+    if st == Enum.TextChatMessageStatus.InvalidTextChannelPermissions then return false end
+    if st == Enum.TextChatMessageStatus.MessageTooLong then return false end
+    -- Sending/Unknown after wait: do not claim success or /w fallback never runs.
+    return false
 end
 
 local function sendLegacyPublic(msg)
@@ -989,10 +1010,10 @@ local function whisperTargets(o)
         seen[handle:lower()] = true
         table.insert(targets, handle)
     end
-    add("@" .. o.Name)
     add(o.Name)
+    add("@" .. o.Name)
     local dn = tostring(o.DisplayName or ""):gsub("^@", "")
-    if dn ~= "" then
+    if dn ~= "" and dn:lower() ~= tostring(o.Name):lower() then
         add(dn)
         add("@" .. dn)
     end
@@ -1013,18 +1034,16 @@ local function fireLegacyWhisper(o, m)
     return false
 end
 
-local function sendOnWhisperChannel(chan, m)
-    return channelSend(chan, m)
-end
-
 local function openWhisperChannel(o)
     local ch = findWhisperChannel(o.UserId)
     if ch then return ch end
     local general = getGeneralChannel()
     if not general then return end
     for _, handle in ipairs(whisperTargets(o)) do
-        channelSend(general, "/w " .. handle .. " " .. ".")
-        ch = pollWhisperChannel(o.UserId, 2.5)
+        pcall(function()
+            general:SendAsync("/w " .. handle)
+        end)
+        ch = pollWhisperChannel(o.UserId, 1.2)
         if ch then return ch end
     end
     return findWhisperChannel(o.UserId)
@@ -1034,11 +1053,24 @@ local function deliverWhisper(o, m)
     m = tostring(m or "")
     if m == "" then return false end
     wakeChat()
+    if isLegacy then
+        return fireLegacyWhisper(o, m)
+    end
+    local general = getGeneralChannel()
+    if general then
+        for _, handle in ipairs(whisperTargets(o)) do
+            local sent = pcall(function()
+                general:SendAsync("/w " .. handle .. " " .. m)
+            end)
+            if sent then return true end
+        end
+    end
     local ch = findWhisperChannel(o.UserId)
     if channelSend(ch, m) then return true end
     ch = openWhisperChannel(o)
     if channelSend(ch, m) then return true end
     if fireLegacyWhisper(o, m) then return true end
+    if sendLegacyPublic("/w " .. o.Name .. " " .. m) then return true end
     return false
 end
 
@@ -1063,17 +1095,26 @@ local whisperQ, whisperBusy = {}, false
 local function whisperNow(m, o)
     m = tostring(m or "")
     if m == "" or not o then return false end
-    for _ = 1, 2 do
-        local ok, result = pcall(function()
-            return deliverWhisper(o, m)
-        end)
-        if ok and result == true then
-            log("-> " .. o.DisplayName .. ": " .. m)
-            return true
+    local ok, result = pcall(function()
+        return deliverWhisper(o, m)
+    end)
+    if ok and result == true then
+        for line in string.gmatch(m, "[^\n]+") do
+            log("-> " .. o.DisplayName .. ": " .. line)
         end
-        task.wait(0.9)
+        return true
     end
-    log("whisper failed: " .. m)
+    task.wait(0.45)
+    ok, result = pcall(function()
+        return deliverWhisper(o, m)
+    end)
+    if ok and result == true then
+        for line in string.gmatch(m, "[^\n]+") do
+            log("-> " .. o.DisplayName .. ": " .. line)
+        end
+        return true
+    end
+    log("whisper failed: " .. m:gsub("\n", " / "))
     return false
 end
 local function pumpWhisperQ()
@@ -1085,37 +1126,55 @@ local function pumpWhisperQ()
             if not job then break end
             if job.wait then
                 task.wait(job.wait)
+                job.done = true
             else
-                whisperNow(job.m, job.t)
-                task.wait(1.05)
+                local ok = whisperNow(job.m, job.t)
+                if not ok and type(job.alt) == "table" then
+                    ok = false
+                    for _, line in ipairs(job.alt) do
+                        if whisperNow(line, job.t) then ok = true end
+                        task.wait(0.85)
+                    end
+                else
+                    task.wait(0.85)
+                end
+                job.ok = ok == true
+                job.done = true
             end
         end
         whisperBusy = false
         if whisperQ[1] then pumpWhisperQ() end
     end)
 end
-local function whisper(m, target)
+local function enqueueWhisper(m, target, waitDone)
     local o = resolveWhisperTarget(target)
-    if not o then log("whisper: no target") return end
-    table.insert(whisperQ, { m = tostring(m), t = o })
+    if not o then
+        if not waitDone then log("whisper: no target") end
+        return false
+    end
+    local job = { m = tostring(m), t = o, done = false, ok = false }
+    table.insert(whisperQ, job)
     pumpWhisperQ()
-    return true
+    if not waitDone then return true end
+    local t0 = tick()
+    while session.active and not job.done and tick() - t0 < 10 do
+        task.wait(0.05)
+    end
+    return job.ok == true
+end
+local function whisper(m, target)
+    return enqueueWhisper(m, target, false)
 end
 local function whisperOk(m, target)
-    local o = resolveWhisperTarget(target)
-    if not o then return false end
-    table.insert(whisperQ, { m = tostring(m), t = o })
-    pumpWhisperQ()
-    return true
+    return enqueueWhisper(m, target, true)
 end
 local function sendRoleLines(mLabel, sLabel, usePublic, target)
-    local mLine = "Murderer: " .. tostring(mLabel)
+    local mLine = "Murder: " .. tostring(mLabel)
     local sLine = "Sheriff: " .. tostring(sLabel)
-    log("reveal: " .. mLine .. " | " .. sLine)
     if usePublic then
         task.spawn(function()
             sendChat(mLine)
-            task.wait(2.3)
+            task.wait(0.85)
             sendChat(sLine)
         end)
         return true
@@ -1126,7 +1185,6 @@ local function sendRoleLines(mLabel, sLabel, usePublic, target)
         return false
     end
     table.insert(whisperQ, { m = mLine, t = o })
-    table.insert(whisperQ, { wait = 2.3 })
     table.insert(whisperQ, { m = sLine, t = o })
     pumpWhisperQ()
     return true
@@ -1909,7 +1967,7 @@ local function hideWeaponTree(root)
         hideClientVisual(d)
     end
     pcall(function()
-        if root:IsA("Tool") or root:IsA("Accessory") or root:IsA("Model") then
+        if root:IsA("Accessory") or (root:IsA("Model") and not root:IsA("Tool")) then
             root:Destroy()
         end
     end)
@@ -3035,6 +3093,7 @@ trackConnection(me.CharacterAdded:Connect(function()
     end)
 end))
 local function reset(stay)
+    if G.MM_Resetting then return end
     G.MM_Resetting = true
     G.MM_StandPaused = true
     G.MM_FollowGen = (tonumber(G.MM_FollowGen) or 0) + 1
@@ -3050,10 +3109,10 @@ local function reset(stay)
         G.MM_BlockGunGrab = true
         G.MM_SkipGunUntil = tick() + 12
     end
-    gunDelivered = true
     local function finishReset()
         G.MM_Resetting = false
         G.MM_StandPaused = false
+        gunDelivered = false
         if G.MM_EnsureAutoStand then G.MM_EnsureAutoStand() end
     end
     if stay and G.MM_DieInPlace then
@@ -4038,8 +4097,6 @@ local COMMAND_HELP = {
     hide = "Stay under the map until !summon",
     summon = "[player] - Stand follow you, or a player",
     unsummon = "Same as !hide",
-    tpmurd = "Teleport bot to the murderer",
-    tpsher = "Teleport bot to the sheriff",
     emote = "<name|id> - Play an equipped emote (Endless Angelic Aura / 124474822519936)",
     gun = "<player> - Give GunDrop via touch if dropped; else die-in-place (no GiveGun remote)",
     togglegun = "<player> - Auto-deliver gun to a player",
@@ -4162,21 +4219,16 @@ local function ownerAnnouncementText(owner)
     return msg:gsub("%.%.%.", username)
 end
 
--- One line at a time; retry whisperOk, then one best-effort whisper() if all acks fail.
 local function deliverOwnerLine(userId, msg, attempts, step)
-    attempts = attempts or 14
-    step = step or 0.42
+    attempts = attempts or 3
+    step = step or 0.55
     for _ = 1, attempts do
         if session.ownerId ~= userId then return false end
         local o = resolveOwnerPlayer(userId)
-        if o and whisperOk(msg, o, true) then return true end
+        if o and whisperOk(msg, o) then return true end
         task.wait(step)
     end
-    local o = resolveOwnerPlayer(userId)
-    if not o then return false end
-    whisper(msg, o, true)
-    task.wait(0.35)
-    return whisperOk(msg, o, true) or session.ownerId == userId
+    return false
 end
 
 local function sendFullHelpToOwner(userId, gapBetween)
@@ -5036,16 +5088,16 @@ local function bridgeToggleRevealMessage(mode)
     mode = bridgeTrim(mode):lower()
     if mode == "enable" then
         if toggleReveal then
-            return "ok", "In-game whispers are already enabled"
+            return "ok", "Role callouts are already enabled"
         end
         toggleReveal = true
-        return "ok", "In-game whispers enabled"
+        return "ok", "Role callouts enabled"
     elseif mode == "disable" then
         if not toggleReveal then
-            return "error", "In-game whispers are not enabled"
+            return "error", "Role callouts are not enabled"
         end
         toggleReveal = false
-        return "ok", "In-game whispers disabled"
+        return "ok", "Role callouts disabled"
     end
     return "error", "Use Enable or Disable"
 end
@@ -5057,16 +5109,16 @@ local function bridgeToggleAlertsMessage(mode)
     mode = bridgeTrim(mode):lower()
     if mode == "enable" then
         if toggleAlerts then
-            return "ok", "In-game whispers are already enabled"
+            return "ok", "Kill alerts are already enabled"
         end
         toggleAlerts = true
-        return "ok", "In-game whispers enabled"
+        return "ok", "Kill alerts enabled"
     elseif mode == "disable" then
         if not toggleAlerts then
-            return "error", "In-game whispers are not enabled"
+            return "error", "Kill alerts are not enabled"
         end
         toggleAlerts = false
-        return "ok", "In-game whispers disabled"
+        return "ok", "Kill alerts disabled"
     end
     return "error", "Use Enable or Disable"
 end
@@ -5207,10 +5259,10 @@ local function bridgeRunFlingOnce(mode, playerQuery, gen)
 
     local tgt
     if mode == "sheriff" then
-        tgt = findHolder(G.MM_GunNames)
+        tgt = (G.MM_FindRole and (G.MM_FindRole("Sheriff") or G.MM_FindRole("Hero"))) or findHolder(G.MM_GunNames)
         if not tgt or tgt == me then return "error", "Sheriff not found" end
     elseif mode == "murder" then
-        tgt = findHolder({"Knife"})
+        tgt = (G.MM_FindRole and G.MM_FindRole("Murderer")) or findHolder({"Knife"})
         if not tgt or tgt == me then return "error", "Murderer not found" end
     else
         tgt = findOtherPlayer(playerQuery)
@@ -5244,7 +5296,7 @@ local function bridgeStabMessage(targetQuery)
     if stabAll then
         picked = nil
     elseif first == "sheriff" or first == "sher" or first == "sherif" then
-        picked = findHolder(G.MM_GunNames)
+        picked = (G.MM_FindRole and (G.MM_FindRole("Sheriff") or G.MM_FindRole("Hero"))) or findHolder(G.MM_GunNames)
         if not picked or picked == me then return "error", "Sheriff not found" end
     else
         picked = findOtherPlayer(q)
@@ -5419,6 +5471,7 @@ local function bridgeTpMessage(targetQuery)
     if not t then
         return "error", "Player not found"
     end
+    stopFollow()
     tpTo(t)
     return "ok", "Teleported to " .. bridgeTargetLabel(t)
 end
@@ -5936,7 +5989,6 @@ task.spawn(function()
                         G.MM_BlockGunGrab = true
                         G.MM_SkipGunUntil = tick() + 12
                     end
-                    gunDelivered = true
                     if not toggleResetOnOwnerDeath then
                         log("owner died (reset on death off)")
                     elseif G.MM_Resetting then
@@ -6050,13 +6102,23 @@ local function sendRoundRoleCallouts(curM, curS, curBotM, curBotS, force)
             sLabel = sLabel .. " (hero)"
         end
     end
-    local key = mLabel .. "|" .. sLabel
     if not force and G.MM_RoleSentThisRound then return true end
+    if mLabel == "?" then return false end
+    if G.MM_MurderOnlySent then
+        if sLabel == "?" then return false end
+        local o = resolveWhisperTarget()
+        if o then whisper("Sheriff: " .. sLabel, o) end
+        G.MM_RoleSentThisRound = true
+        G.MM_MurderOnlySent = false
+        return true
+    end
     sendRoleLines(mLabel, sLabel)
-    G.MM_RoleSentThisRound = true
-    G.MM_LastRoleCallout = key
-    G.MM_LastRoleCalloutAt = tick()
-    G.MM_RoleSentKey = key
+    if sLabel ~= "?" then
+        G.MM_RoleSentThisRound = true
+        G.MM_MurderOnlySent = false
+    else
+        G.MM_MurderOnlySent = true
+    end
     return true
 end
 
@@ -6097,6 +6159,7 @@ while session.active and gui and gui.Parent do
     if pulse > 0 and pulse ~= lastRoundPulse then
         lastRoundPulse = pulse
         G.MM_RoleSentThisRound = false
+        G.MM_MurderOnlySent = false
         announced = false
         if G.MM_EnsureAutoStand then
             task.defer(G.MM_EnsureAutoStand)
@@ -6122,6 +6185,7 @@ while session.active and gui and gui.Parent do
             roleAnnounceUnlockAt = 0
             G.MM_BlockGunGrab = false
             G.MM_RoleSentThisRound = false
+            G.MM_MurderOnlySent = false
             G.MM_RoleSentKey = nil
         end
     else
@@ -6161,6 +6225,15 @@ while session.active and gui and gui.Parent do
                 if G.MM_NoteRoundForAdoptAd then G.MM_NoteRoundForAdoptAd() end
             end)
             roleAnnounceUnlockAt = tick() + 0.35
+            revealAnnouncePending = false
+        end)
+    elseif toggleReveal and (m or botM) and not G.MM_RoleSentThisRound and not revealAnnouncePending then
+        revealAnnouncePending = true
+        task.spawn(function()
+            pcall(function()
+                local curM, curS, curBotM, curBotS = resolveRoleSnapshot(2.0)
+                waitForRoleCallouts(curM, curS, curBotM, curBotS)
+            end)
             revealAnnouncePending = false
         end)
     end

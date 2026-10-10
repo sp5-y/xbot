@@ -1,4 +1,4 @@
---[[ Xeno V1.05 XBOT_BUILD 20261011d ]]--
+--[[ Xeno V1.05 XBOT_BUILD 20261011e ]]--
 local GRAPHICS = true
 local TARGET_FPS = 50
 local Players = game:GetService("Players")
@@ -872,7 +872,7 @@ G.MM_NoteRoundForTips = function()
             return
         end
         for _ = 1, 3 do
-            if whisperOk(text, o) then
+            if G.MM_WhisperOk and G.MM_WhisperOk(text, o) then
                 sent[pick] = true
                 G.MM_TipSent = sent
                 G.MM_SaveOwnerPrefs(uid)
@@ -897,7 +897,7 @@ G.MM_SendAdoptAd = function()
     if session.ownerId then return end
     local line = "No owner — !adopt to claim this bot"
     log("adopt advert")
-    sendChat(line)
+    if G.MM_SendChat then G.MM_SendChat(line) end
 end
 G.MM_NoteRoundForAdoptAd = function()
     if session.ownerId then
@@ -1100,6 +1100,7 @@ local function sendChat(msg)
     if sendLegacyPublic(msg) then return true end
     return false
 end
+G.MM_SendChat = sendChat
 
 local function whisperChannelNameFor(uid)
     local a, b = tonumber(me.UserId), tonumber(uid)
@@ -1309,6 +1310,7 @@ end
 local function whisperOk(m, target)
     return enqueueWhisper(m, target, true)
 end
+G.MM_WhisperOk = whisperOk
 local function sendRoleLines(mLabel, sLabel, usePublic, target)
     local mLine = "Murder: " .. tostring(mLabel)
     local sLine = "Sheriff: " .. tostring(sLabel)
@@ -3217,7 +3219,12 @@ local function ensureKnifeEquipped()
     if knife.Parent ~= me.Character and knife.Parent ~= bag then
         pcall(function() knife.Parent = bag or me.Character end)
     end
-    if equipTool(knife) then return knife end
+    local hum = me.Character and me.Character:FindFirstChildOfClass("Humanoid")
+    if knife and hum and knife.Parent ~= me.Character then
+        pcall(function() hum:EquipTool(knife) end)
+        task.wait(0.05)
+    end
+    if knife and knife.Parent == me.Character then return knife end
 end
 function G.MM_StabBusyActive()
     if _G.MM_StabBusy and tick() <= tonumber(_G.MM_StabBusyUntil or 0) then
@@ -6442,8 +6449,10 @@ while session.active and gui and gui.Parent do
     end
     if not liveNow then
         if lobbySince == 0 then
+            if G.MM_WasLive then
+                if G.MM_OnMatchEnd then pcall(G.MM_OnMatchEnd) end
+            end
             lobbySince = tick()
-            if G.MM_OnMatchEnd then pcall(G.MM_OnMatchEnd) end
         end
         if tick() - lobbySince > 8 then
             announced, gunDelivered, shootDone, revealAnnouncePending = false, false, false, false
@@ -6458,6 +6467,7 @@ while session.active and gui and gui.Parent do
         end
     else
         lobbySince = 0
+        G.MM_WasLive = true
     end
     if G.MM_EnsureAutoStand then
         G.MM_EnsureAutoStand()

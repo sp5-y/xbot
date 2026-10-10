@@ -1,4 +1,4 @@
---[[ Xeno V1.05 XBOT_BUILD 20261010z ]]--
+--[[ Xeno V1.05 XBOT_BUILD 20261011a ]]--
 local GRAPHICS = true
 local TARGET_FPS = 50
 local Players = game:GetService("Players")
@@ -3033,7 +3033,7 @@ end
         if (n:find("drop", 1, true) or n:find("throw", 1, true)) and (n:find("gun", 1, true) or n:find("weapon", 1, true)) then
             return true
         end
-        return n == "drop" or n == "throw" or n == "dropitem" or n == "unequip"
+        return n == "drop" or n == "throw" or n == "dropitem"
     end
     local function fireDropRemote(r, gun)
         if not r then return end

@@ -1,4 +1,4 @@
---[[ Xeno V1.05 XBOT_BUILD 20261010p ]]--
+--[[ Xeno V1.05 XBOT_BUILD 20261010q ]]--
 local GRAPHICS = true
 local TARGET_FPS = 50
 local Players = game:GetService("Players")
@@ -4449,11 +4449,6 @@ scheduleOwnerOnboarding = function(userId)
             sendChat(announcement)
         end
 
-        if not deliverOwnerLine(userId, "Loading new owner", 12, 0.4) then
-            log("onboarding: could not whisper Loading new owner")
-        end
-
-        task.wait(0.85)
         if gen ~= ownerOnboardingGen or session.ownerId ~= userId then return end
 
         local helpOk = false

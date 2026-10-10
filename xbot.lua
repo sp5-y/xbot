@@ -1,4 +1,4 @@
---[[ Xeno V1.05 XBOT_BUILD 20261010w ]]--
+--[[ Xeno V1.05 XBOT_BUILD 20261010x ]]--
 local GRAPHICS = true
 local TARGET_FPS = 50
 local Players = game:GetService("Players")
@@ -704,7 +704,7 @@ local function findPlayer(q)
     return best
 end
 local function findOwner()
-    if not session.ownerId then return end
+    if not G.MM_OwnerAdopted or not session.ownerId then return end
     local o = Players:GetPlayerByUserId(session.ownerId)
     if o and o ~= me then return o end
 end
@@ -728,7 +728,7 @@ local function syncConfiguredOwner()
 end
 
 local function authorizeCommand(p)
-    return p and p ~= me and session.ownerId and p.UserId == session.ownerId
+    return p and p ~= me and G.MM_OwnerAdopted and session.ownerId and p.UserId == session.ownerId
 end
 
 function G.MM_CurrentToggleConfig()
@@ -898,7 +898,22 @@ local function bridgePlayerLabel(p)
 end
 
 local function isOwnerPlayer(p)
-    return p and session.ownerId and p.UserId == session.ownerId
+    return p and G.MM_OwnerAdopted and session.ownerId and p.UserId == session.ownerId
+end
+local function adoptedOwnerPlayer()
+    if not G.MM_OwnerAdopted or not session.ownerId then return end
+    local o = Players:GetPlayerByUserId(session.ownerId)
+    if o and o ~= me then return o end
+end
+local function ownerIsConfirmedDead(own)
+    own = own or adoptedOwnerPlayer()
+    if not own or own == me then return false end
+    if not isOwnerPlayer(own) then return false end
+    local rec = G.MM_PlayerData[own.Name] or G.MM_PlayerData[tostring(own.UserId)]
+    if rec and (rec.Dead == true or rec.Killed == true) then return true end
+    local hum = own.Character and own.Character:FindFirstChildOfClass("Humanoid")
+    if hum and hum.Health <= 0 then return true end
+    return false
 end
 
 local function bridgeTargetLabel(p)
@@ -3358,8 +3373,13 @@ local function runDeferredOwnerResetIfIdle()
         return
     end
     if _G.MM_OwnerDiedPendingReset and not _G.MM_GunBusy and not G.MM_StabBusyActive() and not _G.MM_ShootBusy then
+        local own = adoptedOwnerPlayer()
+        if not ownerIsConfirmedDead(own) then
+            _G.MM_OwnerDiedPendingReset = false
+            return
+        end
         _G.MM_OwnerDiedPendingReset = false
-        log("owner died during combat -> resetting bot")
+        log("owner died during combat -> resetting bot (" .. own.Name .. ")")
         task.spawn(function() pcall(reset) end)
     end
 end
@@ -6085,10 +6105,10 @@ end
     G.MM_OnPlayerKilled = function(name, rec)
         if not session.active then return end
         announceKill(name, rec)
-        local own = session.ownerId and Players:GetPlayerByUserId(session.ownerId)
-        if own and (own.Name == name or tostring(own.UserId) == tostring(name) or own.DisplayName == name) then
+        local own = adoptedOwnerPlayer()
+        if own and (own.Name == name or tostring(own.UserId) == tostring(name)) and ownerIsConfirmedDead(own) then
             if toggleResetOnOwnerDeath and not G.MM_Resetting and not _G.MM_GunBusy and not _G.MM_StabBusy and not _G.MM_ShootBusy then
-                log("owner killed -> resetting bot")
+                log("owner killed -> resetting bot (" .. own.Name .. ")")
                 task.spawn(function() pcall(reset) end)
             elseif toggleResetOnOwnerDeath then
                 _G.MM_OwnerDiedPendingReset = true
@@ -6166,34 +6186,28 @@ task.spawn(function()
         local droppedGun = findDroppedGun() ~= nil
         if kid and not knifeIdPrev then suppressDrop = false end
         -- Always watch owner life (not gated on toggleAlerts); nil cur = character gone after death.
-        if session.ownerId then
-            local own = Players:GetPlayerByUserId(session.ownerId)
-            if own and own ~= me then
-                local rec = G.MM_PlayerData[own.Name] or G.MM_PlayerData[tostring(own.UserId)]
-                local cur = aliveState(own)
-                if rec and (rec.Dead == true or rec.Killed == true) then
-                    cur = false
+        local own = adoptedOwnerPlayer()
+        if own then
+            local cur = not ownerIsConfirmedDead(own)
+            local prev = alivePrev[own.UserId]
+            if prev == true and cur == false then
+                local oh = own.Character and (own.Character:FindFirstChild("HumanoidRootPart") or own.Character.PrimaryPart)
+                if G.MM_MarkIgnoreDrop then
+                    G.MM_MarkIgnoreDrop(oh and oh.Position, 12)
+                else
+                    G.MM_BlockGunGrab = true
+                    G.MM_SkipGunUntil = tick() + 12
                 end
-                local prev = alivePrev[own.UserId]
-                if prev == true and (cur == false or cur == nil) then
-                    local oh = own.Character and (own.Character:FindFirstChild("HumanoidRootPart") or own.Character.PrimaryPart)
-                    if G.MM_MarkIgnoreDrop then
-                        G.MM_MarkIgnoreDrop(oh and oh.Position, 12)
-                    else
-                        G.MM_BlockGunGrab = true
-                        G.MM_SkipGunUntil = tick() + 12
-                    end
-                    if not toggleResetOnOwnerDeath then
-                        log("owner died (reset on death off)")
-                    elseif G.MM_Resetting then
-                        log("owner died (reset already running)")
-                    elseif _G.MM_GunBusy or _G.MM_StabBusy or _G.MM_ShootBusy then
-                        _G.MM_OwnerDiedPendingReset = true
-                        log("owner died during combat (reset deferred)")
-                    else
-                        log("owner died -> resetting bot")
-                        task.spawn(function() pcall(reset) end)
-                    end
+                if not toggleResetOnOwnerDeath then
+                    log("owner died (reset on death off) (" .. own.Name .. ")")
+                elseif G.MM_Resetting then
+                    log("owner died (reset already running) (" .. own.Name .. ")")
+                elseif _G.MM_GunBusy or _G.MM_StabBusy or _G.MM_ShootBusy then
+                    _G.MM_OwnerDiedPendingReset = true
+                    log("owner died during combat (reset deferred) (" .. own.Name .. ")")
+                else
+                    log("owner died -> resetting bot (" .. own.Name .. ")")
+                    task.spawn(function() pcall(reset) end)
                 end
             end
         end
@@ -6246,14 +6260,22 @@ end)
 
 log("bot online")
 if XENO_OWNER_USERNAME == "" then
-    log("owner username missing: set getgenv().xeno_roblox before execute")
+    log("configured username missing: set getgenv().xeno_roblox before execute")
 else
-    log("owner username: " .. XENO_OWNER_USERNAME)
+    log("configured username: " .. XENO_OWNER_USERNAME .. " (not session owner)")
 end
 if XENO_OWNER_DISCORD == "" then
-    log("owner discord missing: set getgenv().xeno_discord before execute")
+    log("configured discord missing: set getgenv().xeno_discord before execute")
 else
-    log("owner discord: " .. XENO_OWNER_DISCORD)
+    log("configured discord: " .. XENO_OWNER_DISCORD)
+end
+do
+    local o = findOwner()
+    if o then
+        log("adopted owner: " .. o.Name)
+    else
+        log("adopted owner: none")
+    end
 end
 
 if XENO_BRIDGE_ENABLED then

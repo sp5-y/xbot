@@ -1,4 +1,4 @@
---[[ Xeno V1.05 XBOT_BUILD 20261010o ]]--
+--[[ Xeno V1.05 XBOT_BUILD 20261010p ]]--
 local GRAPHICS = true
 local TARGET_FPS = 50
 local Players = game:GetService("Players")
@@ -114,9 +114,11 @@ G.MM_Cleanup = cleanupSession
 _G.MM_Session = session
 _G.MM_Cleanup = cleanupSession
 do
-    if G.MM_OwnerReleased then
+    if G.MM_OwnerReleased or not G.MM_OwnerAdopted then
         session.ownerId = nil
-        G.MM_PendingOwnerId = nil
+        if G.MM_OwnerReleased then
+            G.MM_PendingOwnerId = nil
+        end
     else
         local pending = tonumber(G.MM_PendingOwnerId)
         if pending and pending > 0 then
@@ -722,50 +724,11 @@ local function findConfiguredOwner()
     return nil
 end
 local function syncConfiguredOwner()
-    if G.MM_OwnerReleased then return nil end
-    if G.MM_OwnerAdopted then return findOwner() end
-    local p = findConfiguredOwner()
-    if p then
-        if session.ownerId ~= p.UserId then
-            if session.ownerId then
-                pcall(function() G.MM_SaveOwnerPrefs(session.ownerId) end)
-            end
-            session.ownerId = p.UserId
-            G.MM_PendingOwnerId = p.UserId
-            _G.MM_OwnerDiedPendingReset = false
-            pcall(function() G.MM_LoadOwnerPrefs(p.UserId) end)
-            if bridgeOwnerConnected then
-                scheduleOwnerOnboarding(p.UserId)
-            end
-            log("configured owner found: " .. p.Name)
-            task.defer(function()
-                if G.MM_EnsureAutoStand then G.MM_EnsureAutoStand() end
-            end)
-        end
-        return p
-    end
-    if session.ownerId then
-        local current = Players:GetPlayerByUserId(session.ownerId)
-        if not current then
-            session.ownerId = nil
-            G.MM_PendingOwnerId = nil
-        elseif ACTIVE_OWNER_USERNAME ~= "" and not configuredOwnerMatches(current) then
-            session.ownerId = nil
-            G.MM_PendingOwnerId = nil
-        end
-    end
-    return nil
+    return findOwner()
 end
 
 local function authorizeCommand(p)
-    if not p or p == me then return false end
-    if G.MM_OwnerReleased then
-        return session.ownerId and p.UserId == session.ownerId
-    end
-    if ACTIVE_OWNER_USERNAME ~= "" and configuredOwnerMatches(p) then
-        syncConfiguredOwner()
-    end
-    return session.ownerId and p.UserId == session.ownerId
+    return p and p ~= me and session.ownerId and p.UserId == session.ownerId
 end
 
 function G.MM_CurrentToggleConfig()
@@ -1175,9 +1138,15 @@ local function resolveWhisperTarget(target)
 end
 
 local whisperQ, whisperBusy = {}, false
-local function whisperNow(m, o)
+local function whisperNow(m, o, ownerOnly)
     m = tostring(m or "")
     if m == "" or not o or o == me then return false end
+    if ownerOnly then
+        local cur = findOwner()
+        if not cur or cur.UserId ~= o.UserId then
+            return false
+        end
+    end
     local ok, result = pcall(function()
         return deliverWhisper(o, m)
     end)
@@ -1211,11 +1180,11 @@ local function pumpWhisperQ()
                 task.wait(job.wait)
                 job.done = true
             else
-                local ok = whisperNow(job.m, job.t)
+                local ok = whisperNow(job.m, job.t, job.ownerOnly)
                 if not ok and type(job.alt) == "table" then
                     ok = false
                     for _, line in ipairs(job.alt) do
-                        if whisperNow(line, job.t) then ok = true end
+                        if whisperNow(line, job.t, job.ownerOnly) then ok = true end
                         task.wait(0.85)
                     end
                 else
@@ -1230,12 +1199,18 @@ local function pumpWhisperQ()
     end)
 end
 local function enqueueWhisper(m, target, waitDone)
+    local explicit = false
+    if typeof then
+        explicit = typeof(target) == "Instance" and target:IsA("Player")
+    elseif type(target) == "userdata" then
+        explicit = pcall(function() return target:IsA("Player") end) and target:IsA("Player")
+    end
     local o = resolveWhisperTarget(target)
     if not o or o == me then
         if not waitDone then log("whisper: no owner") end
         return false
     end
-    local job = { m = tostring(m), t = o, done = false, ok = false }
+    local job = { m = tostring(m), t = o, done = false, ok = false, ownerOnly = not explicit }
     table.insert(whisperQ, job)
     pumpWhisperQ()
     if not waitDone then return true end
@@ -1287,8 +1262,9 @@ local function sendRoleLines(mLabel, sLabel, usePublic, target)
         log("reveal: no owner")
         return false
     end
-    table.insert(whisperQ, { m = mLine, t = o })
-    table.insert(whisperQ, { m = sLine, t = o })
+    local ownerOnly = target == nil
+    table.insert(whisperQ, { m = mLine, t = o, ownerOnly = ownerOnly })
+    table.insert(whisperQ, { m = sLine, t = o, ownerOnly = ownerOnly })
     pumpWhisperQ()
     return true
 end
@@ -1440,6 +1416,8 @@ local function queueOwnerPersistOnTeleport(ownerId)
 pcall(function()
     local g = getgenv and getgenv() or _G
     g.MM_PendingOwnerId = %d
+    g.MM_OwnerAdopted = true
+    g.MM_OwnerReleased = false
 end)
 ]]):format(math.floor(ownerId)))
     end)
@@ -1546,7 +1524,7 @@ function hopServer(reason, continuePingSearch, targetServerId)
         hopState.pingSearchActive = true
         queuePingSearchOnTeleport()
     else
-        if session.ownerId then
+        if session.ownerId and G.MM_OwnerAdopted then
             G.MM_PendingOwnerId = session.ownerId
             queueOwnerPersistOnTeleport(session.ownerId)
         end
@@ -4496,18 +4474,11 @@ scheduleOwnerOnboarding = function(userId)
 end
 
 task.spawn(function()
-    if not G.MM_OwnerReleased then
-        for _ = 1, 30 do
-            if not session.active then return end
-            local p = findConfiguredOwner()
-            if p then
-                syncConfiguredOwner()
-                if session.ownerId then
-                    log("startup: owner " .. p.Name)
-                end
-                break
-            end
-            task.wait(0.5)
+    if session.active and session.ownerId then
+        local o = findOwner()
+        if o then
+            log("startup: owner " .. o.Name)
+            return
         end
     end
     if session.active and not session.ownerId and G.MM_SendAdoptAd then
@@ -4566,12 +4537,12 @@ local function handleCommand(p, msg, viaPublic)
         return
     elseif cmd == "adopt" then
         local cur = findOwner()
-        if cur and cur.UserId == p.UserId then
-            whisper("Already adopted")
-            return
-        end
-        if cur and not configuredOwnerMatches(p) then
-            whisper("Already adopted by " .. ownerLabel(cur))
+        if cur then
+            if cur.UserId == p.UserId then
+                whisper("Already adopted")
+            else
+                whisper("Already adopted by " .. ownerLabel(cur))
+            end
             return
         end
         setAdoptedOwner(p)
@@ -5112,6 +5083,7 @@ pcall(function()
             task.defer(function()
                 if hopBusy then return end
                 if session.ownerId ~= leftId then return end
+                ownerOnboardingGen = ownerOnboardingGen + 1
                 clearAdoptedOwner("owner left")
                 if G.MM_SendAdoptAd then G.MM_SendAdoptAd() end
                 if G.MM_EnsureAutoStand then G.MM_EnsureAutoStand() end
@@ -5176,6 +5148,10 @@ end
 
 local function fulfillBridgeClaim(claimId, username)
     if not claimId or not username then return false end
+    if G.MM_OwnerReleased then
+        log("bridge: ignore claim — in-game owner was released")
+        return false
+    end
     if bridgeFulfilledClaimId == claimId then return true end
     local pl = findPlayerInServerByName(username)
     if not pl then return false end
@@ -5744,6 +5720,8 @@ local function bridgeOwnerMessage(targetQuery)
     bridgeOwnerConnected = true
     session.ownerId = newOwner.UserId
     G.MM_PendingOwnerId = newOwner.UserId
+    G.MM_OwnerAdopted = true
+    G.MM_OwnerReleased = false
     _G.MM_OwnerDiedPendingReset = false
     scheduleOwnerOnboarding(newOwner.UserId)
     log("bridge: owner changed — " .. newOwner.Name)
@@ -5803,21 +5781,6 @@ local function processBridgeClaim(claim)
     local st = claim.status
     if st == "in_use" or st == "fulfilled" then
         bridgeOwnerConnected = true
-        if not G.MM_OwnerReleased then
-            syncConfiguredOwner()
-            local oid = tonumber(claim.owner_id)
-            if oid and oid > 0 and session.ownerId ~= oid then
-                session.ownerId = oid
-                G.MM_PendingOwnerId = oid
-                log("bridge: restored owner " .. tostring(oid))
-            end
-        end
-        if claim.roblox_username and claim.id then
-            bridgeClaimId = claim.id
-            if bridgeFulfilledClaimId ~= claim.id then
-                fulfillBridgeClaim(claim.id, claim.roblox_username)
-            end
-        end
         return
     end
     if st == "awaiting_join" and claim.roblox_username and claim.id then
@@ -5828,17 +5791,11 @@ local function processBridgeClaim(claim)
         if claim.age_group then
             G.MM_OwnerAgeGroup = claim.age_group
         end
-        if bridgeFulfilledClaimId ~= claim.id then
+        if not G.MM_OwnerReleased and bridgeFulfilledClaimId ~= claim.id then
             fulfillBridgeClaim(claim.id, claim.roblox_username)
         end
     elseif st == "available" or not claim.roblox_username then
         bridgeOwnerConnected = false
-        if not findConfiguredOwner() then
-            session.ownerId = nil
-            G.MM_PendingOwnerId = nil
-        else
-            syncConfiguredOwner()
-        end
         if bridgeAwaitingName and os.time() >= bridgeClaimExpiresAt then
             clearBridgeReservation("expired")
         elseif not bridgeAwaitingName then
@@ -5916,10 +5873,7 @@ end
 
 bridgePollOnce = function()
     if not session.active then return false end
-    local configuredOwner = findConfiguredOwner()
-    if bridgeOwnerConnected or configuredOwner then
-        configuredOwner = syncConfiguredOwner() or configuredOwner
-    end
+    local configuredOwner = findOwner()
     local playerNames = {}
     for _, pl in ipairs(Players:GetPlayers()) do
         if pl ~= me then
@@ -5970,9 +5924,6 @@ end
 
 trackConnection(Players.PlayerAdded:Connect(function(pl)
     if not session.active or not XENO_BRIDGE_ENABLED or pl == me then return end
-    if configuredOwnerMatches(pl) then
-        task.defer(syncConfiguredOwner)
-    end
     if bridgeAwaitingName and nameMatchesPlayer(pl, bridgeAwaitingName) and bridgeClaimId then
         task.defer(function()
             fulfillBridgeClaim(bridgeClaimId, bridgeAwaitingName)

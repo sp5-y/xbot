@@ -1,4 +1,4 @@
---[[ Xeno V1.05 XBOT_BUILD 20261010f ]]--
+--[[ Xeno V1.05 XBOT_BUILD 20261010g ]]--
 local GRAPHICS = true
 local TARGET_FPS = 50
 local Players = game:GetService("Players")
@@ -50,6 +50,7 @@ G.MM_UnderSpawn = SPAWN_CFRAME * CFrame.new(0, -34, 0)
 G.MM_ShootActive = false
 G.MM_BootReady = false
 G.MM_ForceHide = false
+G.MM_HoldMove = false
 pcall(function()
     RunSvc:Set3dRenderingEnabled(true)
     if setfpscap then setfpscap(TARGET_FPS) end
@@ -980,17 +981,30 @@ local function whisperChannelNameFor(uid)
     return ("RBXWhisper:%d_%d"):format(a, b)
 end
 
+local function textChannelFolders()
+    local seen, out = {}, {}
+    for _, tcs in ipairs({ rawTCS(), TCS }) do
+        local folder = tcs and (tcs:FindFirstChild("TextChannels") or tcs:FindFirstChild("TextChannels", true))
+        if folder and not seen[folder] then
+            seen[folder] = true
+            table.insert(out, folder)
+        end
+    end
+    return out
+end
+
 local function findWhisperChannel(uid)
     uid = tostring(uid)
-    local channels = TCS:FindFirstChild("TextChannels")
-    if channels then
-        local exact = channels:FindFirstChild(whisperChannelNameFor(uid) or "")
-        if exact and exact:IsA("TextChannel") then return exact end
+    local want = whisperChannelNameFor(uid)
+    for _, channels in ipairs(textChannelFolders()) do
+        if want then
+            local exact = channels:FindFirstChild(want)
+            if exact and exact:IsA("TextChannel") then return exact end
+        end
         for _, ch in ipairs(channels:GetChildren()) do
-            if ch:IsA("TextChannel") and ch.Name:match("RBXWhisper") then
-                if tostring(ch.Name):find(uid, 1, true) then
-                    return ch
-                end
+            if ch:IsA("TextChannel") and tostring(ch.Name):find("RBXWhisper", 1, true)
+               and tostring(ch.Name):find(uid, 1, true) then
+                return ch
             end
         end
     end
@@ -1006,36 +1020,13 @@ local function pollWhisperChannel(uid, duration)
     return findWhisperChannel(uid)
 end
 
-local function whisperTargets(o)
-    local targets, seen = {}, {}
-    local function add(handle)
-        handle = tostring(handle or ""):gsub("^%s*(.-)%s*$", "%1")
-        if handle == "" or seen[handle:lower()] then return end
-        seen[handle:lower()] = true
-        table.insert(targets, handle)
-    end
-    add(o.Name)
-    add("@" .. o.Name)
-    local dn = tostring(o.DisplayName or ""):gsub("^@", "")
-    if dn ~= "" and dn:lower() ~= tostring(o.Name):lower() then
-        add(dn)
-        add("@" .. dn)
-    end
-    return targets
-end
-
 local function fireLegacyWhisper(o, m)
     local events = RS:FindFirstChild("DefaultChatSystemChatEvents")
-    if not events then return false end
-    local say = events:FindFirstChild("SayMessageRequest")
+    local say = events and events:FindFirstChild("SayMessageRequest")
     if not say then return false end
-    for _, handle in ipairs(whisperTargets(o)) do
-        local ok = pcall(function()
-            say:FireServer("/w " .. handle .. " " .. m, "All")
-        end)
-        if ok then return true end
-    end
-    return false
+    return pcall(function()
+        say:FireServer("/w " .. o.Name .. " " .. m, "All")
+    end)
 end
 
 local function openWhisperChannel(o)
@@ -1043,14 +1034,11 @@ local function openWhisperChannel(o)
     if ch then return ch end
     local general = getGeneralChannel()
     if not general then return end
-    for _, handle in ipairs(whisperTargets(o)) do
-        pcall(function()
-            general:SendAsync("/w " .. handle)
-        end)
-        ch = pollWhisperChannel(o.UserId, 1.2)
-        if ch then return ch end
-    end
-    return findWhisperChannel(o.UserId)
+    -- Username only. DisplayName /w is what prints "User ... doesn't exist".
+    pcall(function()
+        general:SendAsync("/w " .. o.Name)
+    end)
+    return pollWhisperChannel(o.UserId, 2.2)
 end
 
 local function deliverWhisper(o, m)
@@ -1060,22 +1048,14 @@ local function deliverWhisper(o, m)
     if isLegacy then
         return fireLegacyWhisper(o, m)
     end
-    local general = getGeneralChannel()
-    if general then
-        for _, handle in ipairs(whisperTargets(o)) do
-            local sent = pcall(function()
-                general:SendAsync("/w " .. handle .. " " .. m)
-            end)
-            if sent then return true end
-        end
+    local ch = findWhisperChannel(o.UserId) or openWhisperChannel(o)
+    if ch then
+        local ok = pcall(function()
+            ch:SendAsync(m)
+        end)
+        if ok then return true end
     end
-    local ch = findWhisperChannel(o.UserId)
-    if channelSend(ch, m) then return true end
-    ch = openWhisperChannel(o)
-    if channelSend(ch, m) then return true end
-    if fireLegacyWhisper(o, m) then return true end
-    if sendLegacyPublic("/w " .. o.Name .. " " .. m) then return true end
-    return false
+    return fireLegacyWhisper(o, m)
 end
 
 local function resolveWhisperTarget(target)
@@ -1481,7 +1461,7 @@ end
 end
 
 --[[ Movement ]]--
-local hrp, restoreStandBody, stopFollow, isFollowing, isSummoned, startFollowLoop, startSummonLoop, playBotEmote
+local hrp, restoreStandBody, stopFollow, isFollowing, isSummoned, startFollowLoop, startSummonLoop, playBotEmote, commandTakesMove
 do
 local function unitAlive(p)
     local h = p and p.Character and p.Character:FindFirstChildOfClass("Humanoid")
@@ -1614,6 +1594,12 @@ function stopFollow()
     G.MM_StandLoopAlive = false
     G.MM_FollowGen = (tonumber(G.MM_FollowGen) or 0) + 1
     if wasSummon then restoreStandBody() end
+end
+function commandTakesMove()
+    G.MM_HoldMove = true
+    G.MM_ForceHide = false
+    G.MM_SummonFocusId = nil
+    stopFollow()
 end
 function isFollowing()
     return G.MM_FollowUserId ~= nil or G.MM_SummonUserId ~= nil or G.MM_Hiding == true
@@ -2399,38 +2385,30 @@ end
 G.MM_EnsureAutoStand = function()
     if not G.MM_BootReady or not session.active or G.MM_Resetting then return end
     pcall(function()
+        if G.MM_HoldMove then return end
         if G.MM_StandPaused or G.MM_FlingBusy then return end
         if _G.MM_GunBusy or _G.MM_StabBusy or _G.MM_ShootBusy then return end
         if G.MM_FollowUserId then return end
-        local owner = findOwner()
-        if not owner or owner == me then
-            if G.MM_Parking and G.MM_StandLoopAlive then return end
-            startSpawnParkLoop()
-            return
-        end
-        G.MM_Parking = false
         if not unitAlive(me) then return end
-        if G.MM_ForceHide then
-            if G.MM_Hiding and G.MM_StandLoopAlive then return end
-            startHideLoop()
-            return
-        end
-        local focusId = tonumber(G.MM_SummonFocusId)
-        if focusId then
-            local focus = Players:GetPlayerByUserId(focusId)
-            if focus and focus ~= me then
-                if G.MM_SummonUserId == focus.UserId and G.MM_StandLoopAlive then return end
-                log("stand: follow " .. focus.Name)
-                startSummonLoop(focus.UserId)
+        local owner = findOwner()
+        if owner and owner ~= me and not G.MM_ForceHide then
+            local focusId = tonumber(G.MM_SummonFocusId)
+            if focusId then
+                local focus = Players:GetPlayerByUserId(focusId)
+                if focus and focus ~= me then
+                    if G.MM_SummonUserId == focus.UserId and G.MM_StandLoopAlive then return end
+                    log("stand: follow " .. focus.Name)
+                    startSummonLoop(focus.UserId)
+                    return
+                end
+                G.MM_SummonFocusId = nil
+            end
+            if wantStandFollow(owner) then
+                if G.MM_SummonUserId == owner.UserId and G.MM_StandLoopAlive then return end
+                log("stand: follow " .. owner.Name)
+                startSummonLoop(owner.UserId)
                 return
             end
-            G.MM_SummonFocusId = nil
-        end
-        if wantStandFollow(owner) then
-            if G.MM_SummonUserId == owner.UserId and G.MM_StandLoopAlive then return end
-            log("stand: follow " .. owner.Name)
-            startSummonLoop(owner.UserId)
-            return
         end
         if G.MM_Hiding and G.MM_StandLoopAlive then return end
         startHideLoop()
@@ -4464,7 +4442,8 @@ local function handleCommand(p, msg, viaPublic)
         gunTargetId, gunDelivered = nil, false
         pcall(function() G.MM_ApplyOwnerDefaults() end)
         G.MM_AdoptAdRounds = 0
-        G.MM_ForceHide = false
+        G.MM_HoldMove = false
+        G.MM_ForceHide = true
         G.MM_SummonFocusId = nil
         stopFollow()
         whisper("Unadopted — !adopt to claim")
@@ -4595,13 +4574,13 @@ local function handleCommand(p, msg, viaPublic)
     elseif cmd == "tp" then
         local t = findPlayer(args[2]) or findOwner()
         if not t then whisper("Player not found") return end
-        stopFollow()
+        commandTakesMove()
         tpTo(t)
         whisper("Teleported to " .. commandTargetLabel(t))
     elseif cmd == "tpmurd" then
         local murd = (G.MM_FindRole and G.MM_FindRole("Murderer")) or m
         if not murd then whisper("Murderer not found") return end
-        stopFollow()
+        commandTakesMove()
         tpTo(murd)
         whisper("Teleported to murderer")
     elseif cmd == "tpsher" then
@@ -4609,7 +4588,7 @@ local function handleCommand(p, msg, viaPublic)
             or (G.MM_FindRole and G.MM_FindRole("Hero"))
             or s
         if not sher then whisper("Sheriff not found") return end
-        stopFollow()
+        commandTakesMove()
         tpTo(sher)
         whisper("Teleported to sheriff")
     elseif cmd == "stab" then
@@ -4722,7 +4701,7 @@ local function handleCommand(p, msg, viaPublic)
         _G.MM_GunBusy = false
         whisper(ok and "Gun dropped at spawn" or "No gun available")
     elseif cmd == "spawn" or cmd == "home" then
-        stopFollow()
+        commandTakesMove()
         tpHome()
         whisper("Teleported to spawn")
     elseif cmd == "reset" then
@@ -4784,12 +4763,14 @@ local function handleCommand(p, msg, viaPublic)
         whisper("Murderer gun stash: " .. (toggleDrop and "on" or "off"))
         if session.ownerId then pcall(function() G.MM_SaveOwnerPrefs(session.ownerId) end) end
     elseif cmd == "hide" or cmd == "unsummon" then
+        G.MM_HoldMove = false
         G.MM_ForceHide = true
         G.MM_SummonFocusId = nil
         startHideLoop()
         if session.ownerId then pcall(function() G.MM_SaveOwnerPrefs(session.ownerId) end) end
         whisper("Hidden under map — !summon to bring stand back")
     elseif cmd == "summon" then
+        G.MM_HoldMove = false
         G.MM_ForceHide = false
         local q = restOfChatArgs(args)
         local target
@@ -5551,7 +5532,7 @@ local function bridgeTpMessage(targetQuery)
     if not t then
         return "error", "Player not found"
     end
-    stopFollow()
+    commandTakesMove()
     tpTo(t)
     return "ok", "Teleported to " .. bridgeTargetLabel(t)
 end

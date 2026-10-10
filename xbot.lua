@@ -1,4 +1,4 @@
---[[ Xeno V1.05 XBOT_BUILD 20261010s ]]--
+--[[ Xeno V1.05 XBOT_BUILD 20261010t ]]--
 local GRAPHICS = true
 local TARGET_FPS = 50
 local Players = game:GetService("Players")
@@ -2517,9 +2517,14 @@ G.MM_EnsureAutoStand = function()
             if owner and keepSummon(owner.UserId) then return end
             return
         end
+        local justAdopted = G.MM_AdoptAt and (tick() - tonumber(G.MM_AdoptAt) < 12)
+        if justAdopted then
+            local owner = findOwner()
+            if owner and keepSummon(owner.UserId) then return end
+        end
         local roundOn = G.MM_RoundLive == true
             or (G.MM_HasRoundRoles and G.MM_HasRoundRoles() == true)
-        if G.MM_ForceHide or roundOn then
+        if G.MM_ForceHide or (roundOn and not justAdopted) then
             if not (G.MM_Hiding and G.MM_StandLoopAlive) then
                 startHideLoop()
             end
@@ -4400,7 +4405,7 @@ local function sendFullHelpToOwner(userId, gapBetween)
     gapBetween = gapBetween or 0.75
     if session.ownerId ~= userId then return false end
 
-    if not deliverOwnerLine(userId, "Use !help <command> for what a command does", 16, 0.45) then
+    if not deliverOwnerLine(userId, "Use !help <command> for what a command does", 3, 0.55) then
         return false
     end
     task.wait(gapBetween)
@@ -4408,7 +4413,7 @@ local function sendFullHelpToOwner(userId, gapBetween)
     local keys = helpKeysForOwner()
     local line = "cmds: " .. table.concat(keys, "  ")
     if #line <= 200 then
-        return deliverOwnerLine(userId, line, 16, 0.45)
+        return deliverOwnerLine(userId, line, 3, 0.55)
     end
 
     local mid = math.ceil(#keys / 2)
@@ -4416,9 +4421,9 @@ local function sendFullHelpToOwner(userId, gapBetween)
     for i, key in ipairs(keys) do
         if i <= mid then table.insert(a, key) else table.insert(b, key) end
     end
-    if not deliverOwnerLine(userId, "cmds: " .. table.concat(a, "  "), 16, 0.45) then return false end
+    if not deliverOwnerLine(userId, "cmds: " .. table.concat(a, "  "), 3, 0.55) then return false end
     task.wait(gapBetween)
-    return deliverOwnerLine(userId, "cmds: " .. table.concat(b, "  "), 16, 0.45)
+    return deliverOwnerLine(userId, "cmds: " .. table.concat(b, "  "), 3, 0.55)
 end
 
 local function syncOwnerPremiumFromClaim(claim)
@@ -4450,18 +4455,8 @@ scheduleOwnerOnboarding = function(userId)
 
         if gen ~= ownerOnboardingGen or session.ownerId ~= userId then return end
 
-        local helpOk = false
-        for attempt = 1, 4 do
-            if gen ~= ownerOnboardingGen or session.ownerId ~= userId then return end
-            if sendFullHelpToOwner(userId, 0.75) then
-                helpOk = true
-                break
-            end
-            log("onboarding: help send attempt " .. attempt .. " failed, retrying")
-            task.wait(0.5 + attempt * 0.35)
-        end
-        if not helpOk then
-            log("onboarding: help whispers failed after retries")
+        if not sendFullHelpToOwner(userId, 0.75) then
+            log("onboarding: help whisper failed")
         end
 
     end)
@@ -4501,7 +4496,13 @@ local function setAdoptedOwner(pl)
     _G.MM_OwnerDiedPendingReset = false
     pcall(function() G.MM_LoadOwnerPrefs(pl.UserId) end)
     G.MM_AdoptAdRounds = 0
+    G.MM_ForceHide = false
+    G.MM_HoldMove = false
+    G.MM_AdoptAt = tick()
     scheduleOwnerOnboarding(pl.UserId)
+    if G.MM_EnsureAutoStand then
+        task.defer(G.MM_EnsureAutoStand)
+    end
 end
 
 local function handleCommand(p, msg, viaPublic)

@@ -1,4 +1,4 @@
---[[ Xeno V1.05 XBOT_BUILD 20261010u ]]--
+--[[ Xeno V1.05 XBOT_BUILD 20261010v ]]--
 local GRAPHICS = true
 local TARGET_FPS = 50
 local Players = game:GetService("Players")
@@ -6320,15 +6320,15 @@ while session.active and gui and gui.Parent do
         lastRoundPulse = pulse
         G.MM_LastMurdReset = false
         G.MM_PeakAlive = 0
-        if not G.MM_HoldMove and not G.MM_HoldStand then
-            log("round start: hide under spawn")
-            if G.MM_StartHideLoop then
-                G.MM_StartHideLoop()
-            elseif G.MM_EnsureAutoStand then
-                G.MM_EnsureAutoStand()
-            end
+        G.MM_HoldStand = false
+        G.MM_HoldMove = false
+        G.MM_SummonFocusId = nil
+        G.MM_AdoptAt = nil
+        log("round start: hide under spawn")
+        if G.MM_StartHideLoop then
+            G.MM_StartHideLoop()
         elseif G.MM_EnsureAutoStand then
-            task.defer(G.MM_EnsureAutoStand)
+            G.MM_EnsureAutoStand()
         end
         G.MM_BlockGunGrab = false
     end

@@ -1,4 +1,4 @@
---[[ Xeno V1.05 XBOT_BUILD 20261010h ]]--
+--[[ Xeno V1.05 XBOT_BUILD 20261010i ]]--
 local GRAPHICS = true
 local TARGET_FPS = 50
 local Players = game:GetService("Players")
@@ -1205,14 +1205,12 @@ local function extractCommandText(msg)
     msg = msg:gsub("^/w%s+%S+%s+", "")
     msg = msg:gsub("^/whisper%s+%S+%s+", "")
     msg = msg:gsub("^To%s+[^:]+:%s*", "")
-    local bang = msg:find("!", 1, true)
-    if bang and bang > 1 then
-        local tail = msg:sub(bang)
-        if tail:match("^!%S+") then
-            msg = tail
-        end
-    end
+    msg = msg:match("^%s*(.-)%s*$") or msg
+    if msg:sub(1, 1) ~= "!" then return "" end
     return msg
+end
+local function isSelfPlayer(p)
+    return p == me or (p and me and p.UserId == me.UserId)
 end
 local function seenCommandRecently(p, msg)
     msg = cleanChatText(msg):lower()
@@ -4453,7 +4451,6 @@ local function handleCommand(p, msg, viaPublic)
         return
     end
     if not authorizeCommand(p) then
-        whisper("Not owner — !adopt to claim")
         return
     end
     if flingLoopContinuous and cmd ~= "fling" then
@@ -4814,15 +4811,13 @@ local function handleCommand(p, msg, viaPublic)
     end
 end
 local function routeCommand(p, msg, viaPublic)
-    if not session.active then return end
+    if not session.active or not p or isSelfPlayer(p) then return end
     msg = extractCommandText(msg)
     if msg == "" or seenCommandRecently(p, msg) then return end
     if ACTIVE_OWNER_USERNAME ~= "" and configuredOwnerMatches(p) then
         syncConfiguredOwner()
     end
-    if msg:sub(1, 1) == "!" then
-        log("cmd " .. p.Name .. ": " .. msg)
-    end
+    log("cmd " .. p.Name .. ": " .. msg)
     handleCommand(p, msg, viaPublic == true)
 end
 local function watchHiddenChat(p, msg)
@@ -4850,7 +4845,7 @@ local function watchHiddenChat(p, msg)
     end)
 end
 local function hookSpeaker(p)
-    if not p then return end
+    if not p or isSelfPlayer(p) then return end
     pcall(function()
         local chatted = p.Chatted
         if not chatted then return end
@@ -4878,7 +4873,7 @@ local function hookIncomingChatChannels()
                 local text = packet.Message
                 if type(text) ~= "string" or text == "" or not uid then return end
                 local speaker = Players:GetPlayerByUserId(uid)
-                if not speaker or speaker == me then return end
+                if not speaker or isSelfPlayer(speaker) then return end
                 if channelLooksPrivate(channel) then
                     routeCommand(speaker, text, false)
                     return
@@ -4892,8 +4887,9 @@ local function hookIncomingChatChannels()
         if not session.active or not message then return end
         local src = message.TextSource
         if not src then return end
+        if src.UserId == me.UserId then return end
         local speaker = Players:GetPlayerByUserId(src.UserId)
-        if not speaker or speaker == me then return end
+        if not speaker or isSelfPlayer(speaker) then return end
         local ch = message.TextChannel
         local name = channelName or (ch and ch.Name)
         if ch and (channelLooksPrivate(name) or (name and name ~= "RBXGeneral" and not tostring(name):find("General", 1, true))) then

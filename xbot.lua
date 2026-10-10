@@ -1,9 +1,12 @@
---[[ Xeno V1.05 XBOT_BUILD 20261010e ]]--
+--[[ Xeno V1.05 XBOT_BUILD 20261010f ]]--
 local GRAPHICS = true
 local TARGET_FPS = 50
 local Players = game:GetService("Players")
 local cref = cloneref or function(x) return x end
-local TCS = game:GetService("TextChatService")
+local TCS = cref(game:GetService("TextChatService"))
+local function rawTCS()
+    return game:GetService("TextChatService")
+end
 local Tween = game:GetService("TweenService")
 local RunSvc = game:GetService("RunService")
 local RS = cref(game:GetService("ReplicatedStorage"))
@@ -940,7 +943,8 @@ local function sendLegacyPublic(msg)
 end
 
 local function getGeneralChannel()
-    local channels = TCS:FindFirstChild("TextChannels") or TCS:WaitForChild("TextChannels", 8)
+    local tcs = rawTCS()
+    local channels = tcs:FindFirstChild("TextChannels") or tcs:WaitForChild("TextChannels", 8)
     if not channels then return end
     return channels:FindFirstChild("RBXGeneral") or channels:WaitForChild("RBXGeneral", 8)
 end
@@ -1213,6 +1217,21 @@ task.spawn(getHiddenChatEvent)
 local recentCommandKeys = {}
 local function cleanChatText(msg)
     return tostring(msg or ""):gsub("[\n\r]", ""):gsub("\t", " "):gsub("[ ]+", " ")
+end
+local function extractCommandText(msg)
+    msg = cleanChatText(msg)
+    if msg == "" then return "" end
+    msg = msg:gsub("^/w%s+%S+%s+", "")
+    msg = msg:gsub("^/whisper%s+%S+%s+", "")
+    msg = msg:gsub("^To%s+[^:]+:%s*", "")
+    local bang = msg:find("!", 1, true)
+    if bang and bang > 1 then
+        local tail = msg:sub(bang)
+        if tail:match("^!%S+") then
+            msg = tail
+        end
+    end
+    return msg
 end
 local function seenCommandRecently(p, msg)
     msg = cleanChatText(msg):lower()
@@ -1587,10 +1606,11 @@ function restoreStandBody()
 end
 
 function stopFollow()
-    local wasSummon = G.MM_SummonUserId ~= nil or G.MM_Hiding == true
+    local wasSummon = G.MM_SummonUserId ~= nil or G.MM_Hiding == true or G.MM_Parking == true
     G.MM_FollowUserId = nil
     G.MM_SummonUserId = nil
     G.MM_Hiding = false
+    G.MM_Parking = false
     G.MM_StandLoopAlive = false
     G.MM_FollowGen = (tonumber(G.MM_FollowGen) or 0) + 1
     if wasSummon then restoreStandBody() end
@@ -2336,14 +2356,59 @@ local function startHideLoop()
     log("stand: hiding under spawn")
 end
 
+local function startSpawnParkLoop()
+    G.MM_FollowUserId = nil
+    G.MM_SummonUserId = nil
+    G.MM_Hiding = false
+    G.MM_Parking = true
+    G.MM_StandLoopAlive = true
+    G.MM_FollowGen = (tonumber(G.MM_FollowGen) or 0) + 1
+    local gen = G.MM_FollowGen
+    restoreStandBody()
+    local lastEmote = 0
+    local conn
+    conn = RunSvc.Stepped:Connect(function()
+        if not session.active or gen ~= G.MM_FollowGen or not G.MM_Parking or session.ownerId then
+            if conn then
+                pcall(function() conn:Disconnect() end)
+                conn = nil
+            end
+            if gen == G.MM_FollowGen then G.MM_StandLoopAlive = false end
+            return
+        end
+        local h = hrp()
+        if not (h and SPAWN_CFRAME) then return end
+        pcall(function()
+            h.Anchored = false
+            h.CFrame = SPAWN_CFRAME
+            h.AssemblyLinearVelocity = Vector3.zero
+            h.AssemblyAngularVelocity = Vector3.zero
+        end)
+        if playBotEmote and tick() - lastEmote > 8 then
+            lastEmote = tick()
+            pcall(function() playBotEmote("124474822519936") end)
+        end
+    end)
+    trackConnection(conn)
+    task.defer(function()
+        if playBotEmote then pcall(function() playBotEmote("124474822519936") end) end
+    end)
+    log("stand: parking at spawn")
+end
+
 G.MM_EnsureAutoStand = function()
     if not G.MM_BootReady or not session.active or G.MM_Resetting then return end
     pcall(function()
         if G.MM_StandPaused or G.MM_FlingBusy then return end
         if _G.MM_GunBusy or _G.MM_StabBusy or _G.MM_ShootBusy then return end
         if G.MM_FollowUserId then return end
-        local owner = findOwner() or findConfiguredOwner()
-        if not owner or owner == me then return end
+        local owner = findOwner()
+        if not owner or owner == me then
+            if G.MM_Parking and G.MM_StandLoopAlive then return end
+            startSpawnParkLoop()
+            return
+        end
+        G.MM_Parking = false
         if not unitAlive(me) then return end
         if G.MM_ForceHide then
             if G.MM_Hiding and G.MM_StandLoopAlive then return end
@@ -4399,11 +4464,18 @@ local function handleCommand(p, msg, viaPublic)
         gunTargetId, gunDelivered = nil, false
         pcall(function() G.MM_ApplyOwnerDefaults() end)
         G.MM_AdoptAdRounds = 0
+        G.MM_ForceHide = false
+        G.MM_SummonFocusId = nil
+        stopFollow()
         whisper("Unadopted — !adopt to claim")
         if G.MM_SendAdoptAd then G.MM_SendAdoptAd() end
+        if G.MM_EnsureAutoStand then G.MM_EnsureAutoStand() end
         return
     end
-    if not authorizeCommand(p) then return end
+    if not authorizeCommand(p) then
+        whisper("Not owner — !adopt to claim")
+        return
+    end
     if flingLoopContinuous and cmd ~= "fling" then
         whisper('You need to toggle off fling loop using "!fling"')
         return
@@ -4493,31 +4565,33 @@ local function handleCommand(p, msg, viaPublic)
             revealTo = findOtherPlayer(q) or findPlayer(q)
             if not revealTo then whisper("Player not found") return end
         end
-        local murd = (G.MM_FindRole and G.MM_FindRole("Murderer")) or m
-        local sher = (G.MM_FindRole and G.MM_FindRole("Sheriff")) or s
-        local hero = G.MM_FindRole and G.MM_FindRole("Hero")
-        if not sher then
-            for _ = 1, 8 do
+        local pub = viaPublic == true and not revealTo
+        task.spawn(function()
+            local murd = (G.MM_FindRole and G.MM_FindRole("Murderer")) or m
+            local sher = (G.MM_FindRole and G.MM_FindRole("Sheriff")) or s
+            local hero = G.MM_FindRole and G.MM_FindRole("Hero")
+            for _ = 1, 6 do
+                if (murd or botHasKnife()) and (sher or hero or botHasGun()) then break end
                 task.wait(0.2)
-                sher = (G.MM_FindRole and G.MM_FindRole("Sheriff")) or findHolder(G.MM_GunNames)
+                murd = murd or (G.MM_FindRole and G.MM_FindRole("Murderer")) or findHolder({"Knife"})
+                sher = sher or (G.MM_FindRole and G.MM_FindRole("Sheriff")) or findHolder(G.MM_GunNames)
                 hero = hero or (G.MM_FindRole and G.MM_FindRole("Hero"))
-                if sher or hero then break end
             end
-        end
-        local useMe = not revealTo
-        if not murd and botHasKnife() then murd = me end
-        if not sher and not hero and botHasGun() then sher = me end
-        local mL = (murd == me) and (useMe and "Me" or shortName(me)) or (murd and shortName(murd)) or "?"
-        local sL
-        if hero then
-            sL = (hero == me) and (useMe and "Me (hero)" or (shortName(me) .. " (hero)")) or (shortName(hero) .. " (hero)")
-        else
-            sL = (sher == me) and (useMe and "Me" or shortName(me)) or (sher and shortName(sher)) or "?"
-        end
-        sendRoleLines(mL, sL, false, revealTo)
-        if revealTo then
-            whisper("Revealed to " .. commandTargetLabel(revealTo))
-        end
+            local useMe = not revealTo
+            if not murd and botHasKnife() then murd = me end
+            if not sher and not hero and botHasGun() then sher = me end
+            local mL = (murd == me) and (useMe and "Me" or shortName(me)) or (murd and shortName(murd)) or "?"
+            local sL
+            if hero then
+                sL = (hero == me) and (useMe and "Me (hero)" or (shortName(me) .. " (hero)")) or (shortName(hero) .. " (hero)")
+            else
+                sL = (sher == me) and (useMe and "Me" or shortName(me)) or (sher and shortName(sher)) or "?"
+            end
+            sendRoleLines(mL, sL, pub, revealTo)
+            if revealTo then
+                whisper("Revealed to " .. commandTargetLabel(revealTo))
+            end
+        end)
     elseif cmd == "tp" then
         local t = findPlayer(args[2]) or findOwner()
         if not t then whisper("Player not found") return end
@@ -4759,7 +4833,7 @@ local function handleCommand(p, msg, viaPublic)
 end
 local function routeCommand(p, msg, viaPublic)
     if not session.active then return end
-    msg = cleanChatText(msg)
+    msg = extractCommandText(msg)
     if msg == "" or seenCommandRecently(p, msg) then return end
     if ACTIVE_OWNER_USERNAME ~= "" and configuredOwnerMatches(p) then
         syncConfiguredOwner()
@@ -4798,11 +4872,9 @@ local function hookSpeaker(p)
         trackConnection(chatted:Connect(function(msg)
             if not session.active then return end
             watchHiddenChat(p, msg)
-            if isLegacy then
-                task.delay(0.45, function()
-                    if session.active then routeCommand(p, msg, false) end
-                end)
-            end
+            task.delay(0.2, function()
+                if session.active then routeCommand(p, msg, false) end
+            end)
         end))
     end)
 end
@@ -4850,6 +4922,14 @@ local function hookIncomingChatChannels()
         trackConnection(TCS.MessageReceived:Connect(function(message)
             onTextMessage(message, message.TextChannel and message.TextChannel.Name)
         end))
+    end)
+    pcall(function()
+        local raw = rawTCS()
+        if raw and raw ~= TCS then
+            trackConnection(raw.MessageReceived:Connect(function(message)
+                onTextMessage(message, message.TextChannel and message.TextChannel.Name)
+            end))
+        end
     end)
     task.spawn(function()
         local channels = TCS:FindFirstChild("TextChannels") or TCS:WaitForChild("TextChannels", 10)
@@ -6160,6 +6240,8 @@ while session.active and gui and gui.Parent do
         lastRoundPulse = pulse
         G.MM_RoleSentThisRound = false
         G.MM_MurderOnlySent = false
+        G.MM_LastMurdReset = false
+        G.MM_PeakAlive = 0
         announced = false
         if G.MM_EnsureAutoStand then
             task.defer(G.MM_EnsureAutoStand)
@@ -6186,6 +6268,8 @@ while session.active and gui and gui.Parent do
             G.MM_BlockGunGrab = false
             G.MM_RoleSentThisRound = false
             G.MM_MurderOnlySent = false
+            G.MM_LastMurdReset = false
+            G.MM_PeakAlive = 0
             G.MM_RoleSentKey = nil
         end
     else
@@ -6193,6 +6277,29 @@ while session.active and gui and gui.Parent do
     end
     if G.MM_EnsureAutoStand then
         G.MM_EnsureAutoStand()
+    end
+
+    if liveNow then
+        local living = {}
+        for _, pl in ipairs(Players:GetPlayers()) do
+            if pl ~= me then
+                local rec = G.MM_PlayerData[pl.Name] or G.MM_PlayerData[tostring(pl.UserId)]
+                local down = rec and (rec.Dead == true or rec.Killed == true)
+                if isAlive(pl) and not down then
+                    table.insert(living, pl)
+                end
+            end
+        end
+        G.MM_PeakAlive = math.max(tonumber(G.MM_PeakAlive) or 0, #living)
+        if announced and not G.MM_LastMurdReset and (tonumber(G.MM_PeakAlive) or 0) >= 2
+           and #living == 1 and m and living[1] == m and not G.MM_Resetting then
+            G.MM_LastMurdReset = true
+            log("only murderer left -> reset")
+            task.spawn(function() pcall(reset) end)
+        end
+    else
+        G.MM_PeakAlive = 0
+        G.MM_LastMurdReset = false
     end
 
     if (m or botM) and not announced then

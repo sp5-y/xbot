@@ -1,4 +1,4 @@
---[[ Xeno V1.05 XBOT_BUILD 20261010g ]]--
+--[[ Xeno V1.05 XBOT_BUILD 20261010h ]]--
 local GRAPHICS = true
 local TARGET_FPS = 50
 local Players = game:GetService("Players")
@@ -981,13 +981,29 @@ local function whisperChannelNameFor(uid)
     return ("RBXWhisper:%d_%d"):format(a, b)
 end
 
+G.MM_WhisperChan = G.MM_WhisperChan or {}
+
+local function rememberWhisperChannel(uid, ch)
+    uid = tonumber(uid)
+    if not uid or not ch then return end
+    local ok = pcall(function()
+        return ch:IsA("TextChannel")
+    end)
+    if ok and ch.Parent then
+        G.MM_WhisperChan[tostring(uid)] = ch
+    end
+end
+
 local function textChannelFolders()
     local seen, out = {}, {}
-    for _, tcs in ipairs({ rawTCS(), TCS }) do
-        local folder = tcs and (tcs:FindFirstChild("TextChannels") or tcs:FindFirstChild("TextChannels", true))
-        if folder and not seen[folder] then
-            seen[folder] = true
-            table.insert(out, folder)
+    local raw = rawTCS()
+    for _, tcs in ipairs({ raw, TCS }) do
+        if tcs then
+            local folder = tcs:FindFirstChild("TextChannels")
+            if folder and not seen[folder] then
+                seen[folder] = true
+                table.insert(out, folder)
+            end
         end
     end
     return out
@@ -995,67 +1011,52 @@ end
 
 local function findWhisperChannel(uid)
     uid = tostring(uid)
+    local cached = G.MM_WhisperChan[uid]
+    if cached and cached.Parent then return cached end
     local want = whisperChannelNameFor(uid)
     for _, channels in ipairs(textChannelFolders()) do
         if want then
             local exact = channels:FindFirstChild(want)
-            if exact and exact:IsA("TextChannel") then return exact end
+            if exact and exact:IsA("TextChannel") then
+                G.MM_WhisperChan[uid] = exact
+                return exact
+            end
         end
         for _, ch in ipairs(channels:GetChildren()) do
             if ch:IsA("TextChannel") and tostring(ch.Name):find("RBXWhisper", 1, true)
                and tostring(ch.Name):find(uid, 1, true) then
+                G.MM_WhisperChan[uid] = ch
                 return ch
             end
         end
     end
 end
 
-local function pollWhisperChannel(uid, duration)
-    local t0 = tick()
-    while tick() - t0 < duration do
-        local ch = findWhisperChannel(uid)
-        if ch then return ch end
-        task.wait(0.08)
-    end
-    return findWhisperChannel(uid)
-end
-
-local function fireLegacyWhisper(o, m)
-    local events = RS:FindFirstChild("DefaultChatSystemChatEvents")
-    local say = events and events:FindFirstChild("SayMessageRequest")
-    if not say then return false end
-    return pcall(function()
-        say:FireServer("/w " .. o.Name .. " " .. m, "All")
+local function sendOnWhisperChannel(ch, m)
+    if not ch then return false end
+    local ok = pcall(function()
+        ch:SendAsync(m)
     end)
-end
-
-local function openWhisperChannel(o)
-    local ch = findWhisperChannel(o.UserId)
-    if ch then return ch end
-    local general = getGeneralChannel()
-    if not general then return end
-    -- Username only. DisplayName /w is what prints "User ... doesn't exist".
-    pcall(function()
-        general:SendAsync("/w " .. o.Name)
-    end)
-    return pollWhisperChannel(o.UserId, 2.2)
+    return ok == true
 end
 
 local function deliverWhisper(o, m)
     m = tostring(m or "")
     if m == "" then return false end
     wakeChat()
+    local ch = findWhisperChannel(o.UserId)
+    if sendOnWhisperChannel(ch, m) then return true end
+    -- Do not /w DisplayName or /w on general. That prints "User ... doesn't exist".
     if isLegacy then
-        return fireLegacyWhisper(o, m)
+        local events = RS:FindFirstChild("DefaultChatSystemChatEvents")
+        local say = events and events:FindFirstChild("SayMessageRequest")
+        if say then
+            return pcall(function()
+                say:FireServer("/w " .. o.Name .. " " .. m, "All")
+            end)
+        end
     end
-    local ch = findWhisperChannel(o.UserId) or openWhisperChannel(o)
-    if ch then
-        local ok = pcall(function()
-            ch:SendAsync(m)
-        end)
-        if ok then return true end
-    end
-    return fireLegacyWhisper(o, m)
+    return false
 end
 
 local function resolveWhisperTarget(target)
@@ -4819,6 +4820,9 @@ local function routeCommand(p, msg, viaPublic)
     if ACTIVE_OWNER_USERNAME ~= "" and configuredOwnerMatches(p) then
         syncConfiguredOwner()
     end
+    if msg:sub(1, 1) == "!" then
+        log("cmd " .. p.Name .. ": " .. msg)
+    end
     handleCommand(p, msg, viaPublic == true)
 end
 local function watchHiddenChat(p, msg)
@@ -4890,7 +4894,11 @@ local function hookIncomingChatChannels()
         if not src then return end
         local speaker = Players:GetPlayerByUserId(src.UserId)
         if not speaker or speaker == me then return end
-        local name = channelName or (message.TextChannel and message.TextChannel.Name)
+        local ch = message.TextChannel
+        local name = channelName or (ch and ch.Name)
+        if ch and (channelLooksPrivate(name) or (name and name ~= "RBXGeneral" and not tostring(name):find("General", 1, true))) then
+            rememberWhisperChannel(speaker.UserId, ch)
+        end
         routeCommand(speaker, message.Text, not channelLooksPrivate(name))
     end
     local function bindTextChannel(ch)
@@ -4899,6 +4907,13 @@ local function hookIncomingChatChannels()
             onTextMessage(message, ch.Name)
         end))
     end
+    local function bindFolder(folder)
+        if not folder then return end
+        for _, ch in ipairs(folder:GetChildren()) do
+            bindTextChannel(ch)
+        end
+        trackConnection(folder.ChildAdded:Connect(bindTextChannel))
+    end
     pcall(function()
         trackConnection(TCS.MessageReceived:Connect(function(message)
             onTextMessage(message, message.TextChannel and message.TextChannel.Name)
@@ -4906,19 +4921,19 @@ local function hookIncomingChatChannels()
     end)
     pcall(function()
         local raw = rawTCS()
-        if raw and raw ~= TCS then
+        if raw then
             trackConnection(raw.MessageReceived:Connect(function(message)
                 onTextMessage(message, message.TextChannel and message.TextChannel.Name)
             end))
         end
     end)
     task.spawn(function()
-        local channels = TCS:FindFirstChild("TextChannels") or TCS:WaitForChild("TextChannels", 10)
-        if not channels then return end
-        for _, ch in ipairs(channels:GetChildren()) do
-            bindTextChannel(ch)
+        for _, tcs in ipairs({ rawTCS(), TCS }) do
+            if tcs then
+                local folder = tcs:FindFirstChild("TextChannels") or tcs:WaitForChild("TextChannels", 8)
+                bindFolder(folder)
+            end
         end
-        trackConnection(channels.ChildAdded:Connect(bindTextChannel))
     end)
 end
 hookIncomingChatChannels()

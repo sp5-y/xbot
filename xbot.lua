@@ -1,4 +1,4 @@
---[[ Xeno V1.05 XBOT_BUILD 20261010n ]]--
+--[[ Xeno V1.05 XBOT_BUILD 20261010o ]]--
 local GRAPHICS = true
 local TARGET_FPS = 50
 local Players = game:GetService("Players")
@@ -114,9 +114,14 @@ G.MM_Cleanup = cleanupSession
 _G.MM_Session = session
 _G.MM_Cleanup = cleanupSession
 do
-    local pending = tonumber(G.MM_PendingOwnerId)
-    if pending and pending > 0 then
-        session.ownerId = pending
+    if G.MM_OwnerReleased then
+        session.ownerId = nil
+        G.MM_PendingOwnerId = nil
+    else
+        local pending = tonumber(G.MM_PendingOwnerId)
+        if pending and pending > 0 then
+            session.ownerId = pending
+        end
     end
 end
 pcall(function()
@@ -698,7 +703,8 @@ local function findPlayer(q)
 end
 local function findOwner()
     if not session.ownerId then return end
-    return Players:GetPlayerByUserId(session.ownerId)
+    local o = Players:GetPlayerByUserId(session.ownerId)
+    if o and o ~= me then return o end
 end
 local scheduleOwnerOnboarding
 local function configuredOwnerMatches(p)
@@ -752,6 +758,10 @@ local function syncConfiguredOwner()
 end
 
 local function authorizeCommand(p)
+    if not p or p == me then return false end
+    if G.MM_OwnerReleased then
+        return session.ownerId and p.UserId == session.ownerId
+    end
     if ACTIVE_OWNER_USERNAME ~= "" and configuredOwnerMatches(p) then
         syncConfiguredOwner()
     end
@@ -890,9 +900,7 @@ G.MM_SendAdoptAd = function()
     if session.ownerId then return end
     local line = "No owner — !adopt to claim this bot"
     log("adopt advert")
-    if not sendChat(line) then
-        whisper(line)
-    end
+    sendChat(line)
 end
 G.MM_NoteRoundForAdoptAd = function()
     if session.ownerId then
@@ -1135,7 +1143,7 @@ end
 
 local function deliverWhisper(o, m)
     m = tostring(m or "")
-    if m == "" then return false end
+    if m == "" or not o or o == me then return false end
     wakeChat()
     local ch = findWhisperChannel(o.UserId)
     if sendOnWhisperChannel(ch, m) then return true end
@@ -1160,25 +1168,22 @@ local function resolveWhisperTarget(target)
         isInst = pcall(function() return target:IsA("Player") end)
     end
     if isInst and target:IsA("Player") then
+        if target == me then return nil end
         return target
     end
-    local o = findOwner() or findConfiguredOwner()
-    if not o and session.ownerId then
-        o = Players:GetPlayerByUserId(session.ownerId)
-    end
-    return o
+    return findOwner()
 end
 
 local whisperQ, whisperBusy = {}, false
 local function whisperNow(m, o)
     m = tostring(m or "")
-    if m == "" or not o then return false end
+    if m == "" or not o or o == me then return false end
     local ok, result = pcall(function()
         return deliverWhisper(o, m)
     end)
     if ok and result == true then
         for line in string.gmatch(m, "[^\n]+") do
-            log("-> " .. o.DisplayName .. ": " .. line)
+            log("-> " .. o.Name .. ": " .. line)
         end
         return true
     end
@@ -1188,7 +1193,7 @@ local function whisperNow(m, o)
     end)
     if ok and result == true then
         for line in string.gmatch(m, "[^\n]+") do
-            log("-> " .. o.DisplayName .. ": " .. line)
+            log("-> " .. o.Name .. ": " .. line)
         end
         return true
     end
@@ -1226,8 +1231,8 @@ local function pumpWhisperQ()
 end
 local function enqueueWhisper(m, target, waitDone)
     local o = resolveWhisperTarget(target)
-    if not o then
-        if not waitDone then log("whisper: no target") end
+    if not o or o == me then
+        if not waitDone then log("whisper: no owner") end
         return false
     end
     local job = { m = tostring(m), t = o, done = false, ok = false }
@@ -1239,6 +1244,26 @@ local function enqueueWhisper(m, target, waitDone)
         task.wait(0.05)
     end
     return job.ok == true
+end
+local function flushWhisperQueue()
+    for i = #whisperQ, 1, -1 do
+        whisperQ[i] = nil
+    end
+end
+local function clearAdoptedOwner(reason)
+    if session.ownerId then
+        pcall(function() G.MM_SaveOwnerPrefs(session.ownerId) end)
+    end
+    session.ownerId = nil
+    G.MM_PendingOwnerId = nil
+    G.MM_OwnerAdopted = false
+    G.MM_OwnerReleased = true
+    gunTargetId, gunDelivered = nil, false
+    _G.MM_OwnerDiedPendingReset = false
+    pcall(function() G.MM_ApplyOwnerDefaults() end)
+    G.MM_AdoptAdRounds = 0
+    flushWhisperQueue()
+    if reason then log("owner cleared: " .. tostring(reason)) end
 end
 local function whisper(m, target)
     return enqueueWhisper(m, target, false)
@@ -1258,8 +1283,8 @@ local function sendRoleLines(mLabel, sLabel, usePublic, target)
         return true
     end
     local o = resolveWhisperTarget(target)
-    if not o then
-        log("reveal: no whisper target")
+    if not o or o == me then
+        log("reveal: no owner")
         return false
     end
     table.insert(whisperQ, { m = mLine, t = o })
@@ -3223,7 +3248,7 @@ local function goSpawnWhenReady()
             else
                 if G.MM_EnsureAutoStand then G.MM_EnsureAutoStand() end
                 if isFollowing() then return end
-                local owner = findOwner() or findConfiguredOwner()
+                local owner = findOwner()
                 if owner and owner ~= me then
                     task.wait(0.12)
                 else
@@ -3240,7 +3265,7 @@ local function homeBurst()
             if not session.active then return end
             if isFollowing() then return end
             if G.MM_StandPaused or G.MM_FlingBusy then return end
-            local owner = findOwner() or findConfiguredOwner()
+            local owner = findOwner()
             if owner and owner ~= me then
                 if G.MM_EnsureAutoStand then G.MM_EnsureAutoStand() end
                 return
@@ -4471,15 +4496,19 @@ scheduleOwnerOnboarding = function(userId)
 end
 
 task.spawn(function()
-    for _ = 1, 30 do
-        if not session.active then return end
-        local p = findConfiguredOwner()
-        if p then
-            syncConfiguredOwner()
-            log("startup: owner " .. p.Name)
-            break
+    if not G.MM_OwnerReleased then
+        for _ = 1, 30 do
+            if not session.active then return end
+            local p = findConfiguredOwner()
+            if p then
+                syncConfiguredOwner()
+                if session.ownerId then
+                    log("startup: owner " .. p.Name)
+                end
+                break
+            end
+            task.wait(0.5)
         end
-        task.wait(0.5)
     end
     if session.active and not session.ownerId and G.MM_SendAdoptAd then
         G.MM_AdoptAdRounds = 0
@@ -4554,14 +4583,7 @@ local function handleCommand(p, msg, viaPublic)
             return
         end
         ownerOnboardingGen = ownerOnboardingGen + 1
-        pcall(function() G.MM_SaveOwnerPrefs(session.ownerId) end)
-        session.ownerId = nil
-        G.MM_PendingOwnerId = nil
-        G.MM_OwnerAdopted = false
-        G.MM_OwnerReleased = true
-        gunTargetId, gunDelivered = nil, false
-        pcall(function() G.MM_ApplyOwnerDefaults() end)
-        G.MM_AdoptAdRounds = 0
+        clearAdoptedOwner("unadopt")
         G.MM_HoldMove = false
         G.MM_HoldStand = false
         G.MM_ForceHide = true
@@ -4907,7 +4929,7 @@ local function handleCommand(p, msg, viaPublic)
             if not target or target == me then whisper("Player not found") return end
             G.MM_SummonFocusId = target.UserId
         else
-            target = findOwner() or findConfiguredOwner()
+            target = findOwner()
             G.MM_SummonFocusId = nil
             if not target or target == me then whisper("No owner to summon to") return end
         end
@@ -4953,9 +4975,6 @@ local function routeCommand(p, msg, viaPublic)
         if bangs > 1 then return end
     end
     if seenCommandRecently(p, msg) then return end
-    if ACTIVE_OWNER_USERNAME ~= "" and configuredOwnerMatches(p) then
-        syncConfiguredOwner()
-    end
     log("cmd " .. p.Name .. ": " .. msg)
     handleCommand(p, msg, viaPublic == true)
 end
@@ -5093,13 +5112,9 @@ pcall(function()
             task.defer(function()
                 if hopBusy then return end
                 if session.ownerId ~= leftId then return end
-                session.ownerId = nil
-                G.MM_PendingOwnerId = nil
-                G.MM_OwnerAdopted = false
-                gunTargetId, gunDelivered = nil, false
-                pcall(function() G.MM_ApplyOwnerDefaults() end)
-                G.MM_AdoptAdRounds = 0
+                clearAdoptedOwner("owner left")
                 if G.MM_SendAdoptAd then G.MM_SendAdoptAd() end
+                if G.MM_EnsureAutoStand then G.MM_EnsureAutoStand() end
             end)
         end
     end))
@@ -5166,6 +5181,9 @@ local function fulfillBridgeClaim(claimId, username)
     if not pl then return false end
     local prevId = session.ownerId
     session.ownerId = pl.UserId
+    G.MM_PendingOwnerId = pl.UserId
+    G.MM_OwnerAdopted = true
+    G.MM_OwnerReleased = false
     bridgeFulfilledClaimId = claimId
     bridgeAwaitingName = nil
     log("bridge: owner joined — " .. pl.Name)
@@ -5785,12 +5803,14 @@ local function processBridgeClaim(claim)
     local st = claim.status
     if st == "in_use" or st == "fulfilled" then
         bridgeOwnerConnected = true
-        syncConfiguredOwner()
-        local oid = tonumber(claim.owner_id)
-        if oid and oid > 0 and session.ownerId ~= oid then
-            session.ownerId = oid
-            G.MM_PendingOwnerId = oid
-            log("bridge: restored owner " .. tostring(oid))
+        if not G.MM_OwnerReleased then
+            syncConfiguredOwner()
+            local oid = tonumber(claim.owner_id)
+            if oid and oid > 0 and session.ownerId ~= oid then
+                session.ownerId = oid
+                G.MM_PendingOwnerId = oid
+                log("bridge: restored owner " .. tostring(oid))
+            end
         end
         if claim.roblox_username and claim.id then
             bridgeClaimId = claim.id
@@ -6420,7 +6440,7 @@ while session.active and gui and gui.Parent do
         shootDone = false
         revealAnnouncePending = true
         if G.MM_EnsureAutoStand then G.MM_EnsureAutoStand() end
-        local owner = findOwner() or findConfiguredOwner()
+        local owner = findOwner()
         task.spawn(function()
             local ok, err = pcall(function()
                 local curM, curS, curBotM, curBotS
@@ -6549,7 +6569,7 @@ while session.active and gui and gui.Parent do
         end)
     end
 
-    local spec = findOwner() or findConfiguredOwner()
+    local spec = findOwner()
     local subject = (spec and spec.Character and spec.Character:FindFirstChildOfClass("Humanoid"))
                   or (me and me.Character and me.Character:FindFirstChildOfClass("Humanoid"))
     pcall(function()

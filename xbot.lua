@@ -1,4 +1,4 @@
---[[ Xeno V1.05 XBOT_BUILD 20261010q ]]--
+--[[ Xeno V1.05 XBOT_BUILD 20261010r ]]--
 local GRAPHICS = true
 local TARGET_FPS = 50
 local Players = game:GetService("Players")
@@ -2516,21 +2516,19 @@ G.MM_EnsureAutoStand = function()
             if owner and keepSummon(owner.UserId) then return end
             return
         end
-        if G.MM_ForceHide then
+        local roundOn = G.MM_RoundLive == true
+            or (G.MM_HasRoundRoles and G.MM_HasRoundRoles() == true)
+        if G.MM_ForceHide or roundOn then
             if not (G.MM_Hiding and G.MM_StandLoopAlive) then
                 startHideLoop()
             end
             return
         end
         local owner = findOwner()
-        if owner and owner ~= me then
-            if keepSummon(G.MM_SummonFocusId) then return end
-            if wantStandFollow(owner) then
-                keepSummon(owner.UserId)
-                return
-            end
+        if owner and owner ~= me and wantStandFollow(owner) then
+            keepSummon(owner.UserId)
+            return
         end
-        if G.MM_SummonUserId and G.MM_StandLoopAlive then return end
         if G.MM_Hiding and G.MM_StandLoopAlive then return end
         startHideLoop()
     end)
@@ -6320,7 +6318,10 @@ while session.active and gui and gui.Parent do
         lastRoundPulse = pulse
         G.MM_LastMurdReset = false
         G.MM_PeakAlive = 0
-        if G.MM_EnsureAutoStand then
+        if not G.MM_HoldMove and not G.MM_HoldStand then
+            log("round start: hide under spawn")
+            startHideLoop()
+        elseif G.MM_EnsureAutoStand then
             task.defer(G.MM_EnsureAutoStand)
         end
         G.MM_BlockGunGrab = false

@@ -1,4 +1,4 @@
---[[ Xeno V1.05 XBOT_BUILD 20261011c ]]--
+--[[ Xeno V1.05 XBOT_BUILD 20261011d ]]--
 local GRAPHICS = true
 local TARGET_FPS = 50
 local Players = game:GetService("Players")
@@ -2189,6 +2189,7 @@ local function applyStandGod(char)
 end
 
 local function hideBackWeapons(char, first)
+    if _G.MM_StabBusy or _G.MM_GunBusy or _G.MM_ShootBusy then return end
     if not char then return end
     local stash = me:FindFirstChild("MM_HiddenTools")
     if not stash then
@@ -3173,6 +3174,51 @@ local function stowKnife()
         pcall(function() knife.Parent = me.Backpack end)
     end
 end
+local function restoreKnifeVisual(knife)
+    if not knife then return end
+    pcall(function()
+        for _, d in ipairs(knife:GetDescendants()) do
+            if d:IsA("BasePart") then
+                d.LocalTransparencyModifier = 0
+                if d.Transparency >= 1 then d.Transparency = 0 end
+                d.CanTouch = true
+                d.CanQuery = true
+            elseif d:IsA("Decal") or d:IsA("Texture") then
+                d.Transparency = 0
+            end
+        end
+    end)
+end
+local function findKnife()
+    local k = getHeldTool(me, G.MM_KnifeNames)
+    if k then return k end
+    for _, folder in ipairs({ me:FindFirstChild("MM_HiddenTools"), me }) do
+        for _, c in ipairs(folder and folder:GetChildren() or {}) do
+            if c:IsA("Tool") and table.find(G.MM_KnifeNames, c.Name) then
+                return c
+            end
+        end
+    end
+end
+local function ensureKnifeEquipped()
+    local bag = me:FindFirstChildOfClass("Backpack")
+    local stash = me:FindFirstChild("MM_HiddenTools")
+    if stash then
+        for _, t in ipairs(stash:GetChildren()) do
+            if t:IsA("Tool") then
+                restoreKnifeVisual(t)
+                pcall(function() t.Parent = bag or me.Character end)
+            end
+        end
+    end
+    local knife = findKnife()
+    if not knife then return end
+    restoreKnifeVisual(knife)
+    if knife.Parent ~= me.Character and knife.Parent ~= bag then
+        pcall(function() knife.Parent = bag or me.Character end)
+    end
+    if equipTool(knife) then return knife end
+end
 function G.MM_StabBusyActive()
     if _G.MM_StabBusy and tick() <= tonumber(_G.MM_StabBusyUntil or 0) then
         return true
@@ -3182,14 +3228,18 @@ function G.MM_StabBusyActive()
     return false
 end
 function G.MM_BeginStabBusy(seconds)
-    G.MM_ActionBegin()
     _G.MM_StabBusy = true
     _G.MM_StabBusyUntil = tick() + (seconds or 53)
+    if G.MM_PauseStand then G.MM_PauseStand() end
+    G.MM_ActionBegin()
+    ensureKnifeEquipped()
 end
 function G.MM_EndStabBusy()
+    stowKnife()
     _G.MM_StabBusy = false
     _G.MM_StabBusyUntil = 0
     G.MM_ActionEnd()
+    if G.MM_ResumeStand then G.MM_ResumeStand() end
 end
 local function tpTo(p)
     if not _G.MM_StabBusy and me.Character and me.Character:FindFirstChild("Knife") then
@@ -3844,8 +3894,8 @@ end
 local function stabPass(target, lastPos, lastT)
     if not isAlive(target) or not isAlive(me) then return false end
     if not botHasKnife() then return false end
-    local knife = getHeldTool(me, {"Knife"})
-    if not knife or not equipTool(knife) then return false end
+    local knife = ensureKnifeEquipped()
+    if not knife then return false end
     stopFollow()
     local cf, curPos = getStabCFrame(target, lastPos, lastT)
     local mh = hrp()
@@ -3856,10 +3906,12 @@ local function stabPass(target, lastPos, lastT)
     task.wait(STAB_SETTLE_SEC)
     if not isAlive(target) then return true, curPos end
     holdStabAt(target, mh, STAB_HOLD_SEC)
+    knife = ensureKnifeEquipped() or knife
     slashKnife(knife, target)
     pcall(function() knife:Activate() end)
     if isAlive(target) then
         holdStabAt(target, mh, STAB_POST_STAB_SEC)
+        knife = ensureKnifeEquipped() or knife
         if isAlive(target) then slashKnife(knife, target) end
     end
     local fresh = target.Character and target.Character:FindFirstChild("HumanoidRootPart")
@@ -3881,7 +3933,6 @@ function stabTargetLoop(target)
         local ok, curPos = stabPass(target, lastPos, lastT)
         if not isAlive(target) then
             tpHome()
-            stowKnife()
             return true, "Killed " .. shortName(target)
         end
         if not ok then
@@ -3901,7 +3952,6 @@ function stabTargetLoop(target)
         return false, "Bot died"
     end
     if not isAlive(target) then
-        stowKnife()
         return true, "Killed " .. shortName(target)
     end
     if (tick() - started) >= STAB_TIMEOUT_SEC then

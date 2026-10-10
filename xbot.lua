@@ -1,4 +1,4 @@
---[[ Xeno V1.05 XBOT_BUILD 20261010t ]]--
+--[[ Xeno V1.05 XBOT_BUILD 20261010u ]]--
 local GRAPHICS = true
 local TARGET_FPS = 50
 local Players = game:GetService("Players")
@@ -6375,10 +6375,18 @@ while session.active and gui and gui.Parent do
             end
         end
         G.MM_PeakAlive = math.max(tonumber(G.MM_PeakAlive) or 0, #living)
+        local owner = findOwner()
+        local ownerAlive = false
+        if owner and owner ~= me then
+            local orec = G.MM_PlayerData[owner.Name] or G.MM_PlayerData[tostring(owner.UserId)]
+            local ownerDown = orec and (orec.Dead == true or orec.Killed == true)
+            ownerAlive = isAlive(owner) and not ownerDown
+        end
         if announced and not G.MM_LastMurdReset and (tonumber(G.MM_PeakAlive) or 0) >= 2
-           and #living == 1 and m and living[1] == m and not G.MM_Resetting then
+           and #living == 1 and m and living[1] == m and m ~= me and m ~= owner
+           and not ownerAlive and not botM and not G.MM_Resetting then
             G.MM_LastMurdReset = true
-            log("only murderer left -> reset")
+            log("only murderer & bot left -> reset")
             task.spawn(function() pcall(reset) end)
         end
     else

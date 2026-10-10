@@ -1,4 +1,4 @@
---[[ Xeno V1.05 XBOT_BUILD 20261010m ]]--
+--[[ Xeno V1.05 XBOT_BUILD 20261010n ]]--
 local GRAPHICS = true
 local TARGET_FPS = 50
 local Players = game:GetService("Players")
@@ -1693,6 +1693,21 @@ function commandTakesMove()
     G.MM_SummonFocusId = nil
     stopFollow()
 end
+G.MM_PauseStand = function()
+    G.MM_StandPaused = true
+    G.MM_Hiding = false
+    G.MM_Parking = false
+    G.MM_StandLoopAlive = false
+    G.MM_FollowGen = (tonumber(G.MM_FollowGen) or 0) + 1
+    pcall(restoreStandBody)
+end
+G.MM_ResumeStand = function()
+    G.MM_StandPaused = false
+    if G.MM_EnsureAutoStand then task.defer(G.MM_EnsureAutoStand) end
+end
+local function standBusy()
+    return G.MM_StandPaused or G.MM_FlingBusy or _G.MM_GunBusy or _G.MM_ShootBusy or _G.MM_StabBusy
+end
 function isFollowing()
     return G.MM_FollowUserId ~= nil or G.MM_SummonUserId ~= nil or G.MM_Hiding == true
 end
@@ -2397,7 +2412,7 @@ local function wantStandFollow(owner)
 end
 
 local function startHideLoop()
-    if G.MM_HoldMove or G.MM_HoldStand then return end
+    if G.MM_HoldMove or G.MM_HoldStand or standBusy() then return end
     G.MM_FollowUserId = nil
     G.MM_SummonUserId = nil
     G.MM_Hiding = true
@@ -2407,7 +2422,7 @@ local function startHideLoop()
     restoreStandBody()
     local conn
     conn = RunSvc.Stepped:Connect(function()
-        if G.MM_HoldMove or G.MM_HoldStand or not session.active or gen ~= G.MM_FollowGen or not G.MM_Hiding then
+        if G.MM_HoldMove or G.MM_HoldStand or standBusy() or not session.active or gen ~= G.MM_FollowGen or not G.MM_Hiding then
             G.MM_Hiding = false
             if conn then
                 pcall(function() conn:Disconnect() end)
@@ -2479,9 +2494,7 @@ end
 G.MM_EnsureAutoStand = function()
     if not G.MM_BootReady or not session.active or G.MM_Resetting then return end
     pcall(function()
-        if G.MM_HoldMove then return end
-        if G.MM_StandPaused or G.MM_FlingBusy then return end
-        if _G.MM_GunBusy or _G.MM_StabBusy or _G.MM_ShootBusy then return end
+        if G.MM_HoldMove or standBusy() then return end
         if G.MM_FollowUserId then return end
         if not unitAlive(me) then return end
         local function keepSummon(uid)
@@ -2819,6 +2832,10 @@ end
         if botHasGun() then return true end
         if not force and G.MM_BlockGunGrab then return false end
         timeout = timeout or 3.2
+        G.MM_Hiding = false
+        G.MM_FollowGen = (tonumber(G.MM_FollowGen) or 0) + 1
+        G.MM_StandLoopAlive = false
+        pcall(restoreStandBody)
         local h = hrp()
         if not (h and isAlive(me)) then return false end
         local t0 = tick()
@@ -2890,7 +2907,7 @@ end
     end
 
     G.MM_DeliverDrop = function(target, timeout)
-        timeout = timeout or 1.35
+        timeout = timeout or 2.6
         if not isAlive(target) then return false end
         local t0 = tick()
         while session.active and tick() - t0 < timeout do
@@ -2898,6 +2915,13 @@ end
             if botHasGun() then return false end
             local drop = findDroppedGun()
             if not drop then return playerHas(target, G.MM_GunNames) end
+            local th = target.Character and (target.Character:FindFirstChild("HumanoidRootPart") or target.Character.PrimaryPart)
+            if th then
+                pcall(function()
+                    drop.CFrame = th.CFrame * CFrame.new(0, 1.4, 0)
+                    drop.AssemblyLinearVelocity = Vector3.zero
+                end)
+            end
             touchCharacter(target.Character, drop)
             task.wait(0.05)
         end
@@ -3383,17 +3407,18 @@ function G.MM_WaitForGunPickup(target, timeout)
 end
 local function bringGun(target, force)
     if _G.MM_StabBusy then return false end
+    local heldBusy = _G.MM_GunBusy == true
+    _G.MM_GunBusy = true
+    if G.MM_PauseStand then G.MM_PauseStand() end
     G.MM_ActionBegin()
     local function finish(ok)
+        if not heldBusy then _G.MM_GunBusy = false end
         G.MM_ActionEnd()
+        if G.MM_ResumeStand then G.MM_ResumeStand() end
         return ok
     end
     target = target or findOwner()
     if not isAlive(target) or not isAlive(me) then return finish(false) end
-    if isSummoned() or isFollowing() then
-        stopFollow()
-        task.wait(0.05)
-    end
     local root = hrp()
     if root then
         pcall(function() root.Anchored = false end)
@@ -3405,32 +3430,30 @@ local function bringGun(target, force)
         if tick() < (tonumber(G.MM_SkipGunUntil) or 0) then return finish(false) end
     end
 
-    -- 1) GunDrop already on the map: touch it to the target. Bot stays alive.
+    -- GunDrop on the map: touch it onto the target. Never pick it up / die.
     if drop and not botHasGun() then
         log("gun: delivering drop to " .. tostring(target.Name))
-        if G.MM_DeliverDrop and G.MM_DeliverDrop(target, 0.7) then
+        if G.MM_DeliverDrop and G.MM_DeliverDrop(target, 2.6) then
             log("gun: delivered GunDrop without reset")
             return finish(true)
         end
         if G.MM_TargetHasGun(target) then return finish(true) end
+        log("gun: drop still on map, staying alive")
+        return finish(false)
     end
 
-    -- 2) Bot must hold it (sheriff/hero or we just picked up). No GiveGun remote.
-    if not botHasGun() then
-        if not (G.MM_GrabDroppedGun and G.MM_GrabDroppedGun(2.8, true)) then
-            return finish(false)
-        end
-    end
+    -- Bot already holding the gun (sheriff/hero). Death is the only server drop.
     if not botHasGun() or not isAlive(target) or not isAlive(me) then return finish(false) end
-
     if not standOnTarget(target) then return finish(false) end
     if G.MM_DieInPlace then G.MM_DieInPlace() else reset(true) end
     return finish(G.MM_WaitForGunPickup(target, 2.1))
 end
 local function stashGunAtSpawn()
     G.MM_ActionBegin()
+    if G.MM_PauseStand then G.MM_PauseStand() end
     local function finish(ok)
         G.MM_ActionEnd()
+        if G.MM_ResumeStand then G.MM_ResumeStand() end
         return ok
     end
     if _G.MM_StabBusy then return finish(false) end
@@ -3600,57 +3623,53 @@ do
     end
     local function shootTargetLoop(target)
         G.MM_ShootActive = true
-        if target == me then
+        if G.MM_PauseStand then G.MM_PauseStand() end
+        local function done(ok, msg)
             G.MM_ShootActive = false
-            return false, "Can't shoot the bot"
+            if G.MM_ResumeStand then G.MM_ResumeStand() end
+            return ok, msg
+        end
+        if target == me then
+            return done(false, "Can't shoot the bot")
         end
         if botHasKnife() then
-            G.MM_ShootActive = false
-            return false, "Bot is murderer — no gun"
+            return done(false, "Bot is murderer — no gun")
         end
         local name = shortName(target)
         local deadline = tick() + 28
         while G.MM_ShootActive and tick() < deadline do
             if not Players:GetPlayerByUserId(target.UserId) then
-                G.MM_ShootActive = false
-                return false, name .. " left"
+                return done(false, name .. " left")
             end
             if not isAlive(target) then
-                G.MM_ShootActive = false
-                return true, "Shot " .. name
+                return done(true, "Shot " .. name)
             end
             if botHasKnife() or not isAlive(me) then
-                G.MM_ShootActive = false
-                return false, botHasKnife() and "Bot is murderer — no gun" or "Bot died"
+                return done(false, botHasKnife() and "Bot is murderer — no gun" or "Bot died")
             end
             if not botHasGun() then
                 if G.MM_BlockGunGrab or not (G.MM_GrabDroppedGun and G.MM_GrabDroppedGun(2.5)) then
-                    G.MM_ShootActive = false
-                    return false, "No gun available"
+                    return done(false, "No gun available")
                 end
             end
             local gun = getHeldTool(me, G.MM_GunNames)
             if not gun or not equipTool(gun) then
-                G.MM_ShootActive = false
-                return false, "No gun available"
+                return done(false, "No gun available")
             end
             pcall(function() shootOnce(target, gun) end)
             if not isAlive(target) then
-                G.MM_ShootActive = false
-                return true, "Shot " .. name
+                return done(true, "Shot " .. name)
             end
             local waitUntil = tick() + 2.15
             while G.MM_ShootActive and tick() < waitUntil do
                 if not isAlive(target) then
-                    G.MM_ShootActive = false
-                    return true, "Shot " .. name
+                    return done(true, "Shot " .. name)
                 end
                 task.wait(0.08)
             end
         end
-        G.MM_ShootActive = false
-        if not isAlive(target) then return true, "Shot " .. name end
-        return false, "Shoot timed out"
+        if not isAlive(target) then return done(true, "Shot " .. name) end
+        return done(false, "Shoot timed out")
     end
     function G.MM_CombatBusy()
         return G.MM_StabBusyActive() or _G.MM_GunBusy or _G.MM_ShootBusy

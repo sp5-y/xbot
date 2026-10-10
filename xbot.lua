@@ -1,4 +1,4 @@
---[[ Xeno V1.05 XBOT_BUILD 20261010i ]]--
+--[[ Xeno V1.05 XBOT_BUILD 20261010j ]]--
 local GRAPHICS = true
 local TARGET_FPS = 50
 local Players = game:GetService("Players")
@@ -6143,65 +6143,48 @@ end
 
 local runMainLoop
 do
-local function resolveRoleSnapshot(timeout)
-    local deadline = tick() + (timeout or 0)
-    local curM, curS, curBotM, curBotS
-    repeat
-        curM = (G.MM_FindRole and G.MM_FindRole("Murderer")) or findHolder({"Knife"})
-        curS = (G.MM_FindRole and G.MM_FindRole("Sheriff"))
-            or (G.MM_FindRole and G.MM_FindRole("Hero"))
-            or findHolder(G.MM_GunNames)
-        if not curM and botHasKnife() then curM = me end
-        if not curS and botHasGun() then curS = me end
-        curBotM = curM == me
-        curBotS = curS == me
-        if (curBotM or curM) and (curBotS or curS) then
-            break
+local function playerWithAssignedRole(want)
+    want = tostring(want or ""):lower()
+    for _, p in ipairs(Players:GetPlayers()) do
+        local rec = G.MM_PlayerData[p.Name] or G.MM_PlayerData[tostring(p.UserId)]
+        if rec and type(rec.Role) == "string" and rec.Role:lower() == want then
+            return p
         end
+    end
+end
+
+local function resolveAssignedRoles(timeout)
+    local deadline = tick() + (timeout or 0)
+    local curM, curS
+    repeat
+        curM = playerWithAssignedRole("Murderer")
+        curS = playerWithAssignedRole("Sheriff") or playerWithAssignedRole("Hero")
+        if curM and curS then break end
         if tick() >= deadline then break end
         task.wait(0.15)
     until false
-    return curM, curS, curBotM, curBotS
+    return curM, curS, curM == me, curS == me
 end
 
-local function sendRoundRoleCallouts(curM, curS, curBotM, curBotS, force)
+local function sendRoundRoleCallouts(curM, curS)
+    if G.MM_RoleSentThisRound then return true end
     if not resolveWhisperTarget() then return false end
-    local mLabel = (curM == me) and "Me" or (curM and shortName(curM)) or "?"
-    local sLabel = (curS == me) and "Me" or (curS and shortName(curS)) or "?"
-    if curS then
-        local rec = G.MM_PlayerData[curS.Name]
-        if rec and tostring(rec.Role or ""):lower() == "hero" then
-            sLabel = sLabel .. " (hero)"
-        end
-    end
-    if not force and G.MM_RoleSentThisRound then return true end
-    if mLabel == "?" then return false end
-    if G.MM_MurderOnlySent then
-        if sLabel == "?" then return false end
-        local o = resolveWhisperTarget()
-        if o then whisper("Sheriff: " .. sLabel, o) end
-        G.MM_RoleSentThisRound = true
-        G.MM_MurderOnlySent = false
-        return true
+    if not curM or not curS then return false end
+    local mLabel = (curM == me) and "Me" or shortName(curM)
+    local sLabel = (curS == me) and "Me" or shortName(curS)
+    local rec = G.MM_PlayerData[curS.Name]
+    if rec and tostring(rec.Role or ""):lower() == "hero" then
+        sLabel = sLabel .. " (hero)"
     end
     sendRoleLines(mLabel, sLabel)
-    if sLabel ~= "?" then
-        G.MM_RoleSentThisRound = true
-        G.MM_MurderOnlySent = false
-    else
-        G.MM_MurderOnlySent = true
-    end
+    G.MM_RoleSentThisRound = true
+    G.MM_MurderOnlySent = false
     return true
 end
 
-local function waitForRoleCallouts(curM, curS, curBotM, curBotS)
-    local deadline = tick() + 4.2
-    while tick() < deadline do
-        if (curM or curBotM) and (curS or curBotS) then break end
-        task.wait(0.2)
-        curM, curS, curBotM, curBotS = resolveRoleSnapshot(0.2)
-    end
-    local ok = sendRoundRoleCallouts(curM, curS, curBotM, curBotS)
+local function waitForRoleCallouts()
+    local curM, curS, curBotM, curBotS = resolveAssignedRoles(6)
+    local ok = sendRoundRoleCallouts(curM, curS)
     return ok, curM, curS, curBotM, curBotS
 end
 
@@ -6230,11 +6213,8 @@ while session.active and gui and gui.Parent do
     local pulse = tonumber(G.MM_RoundPulse) or 0
     if pulse > 0 and pulse ~= lastRoundPulse then
         lastRoundPulse = pulse
-        G.MM_RoleSentThisRound = false
-        G.MM_MurderOnlySent = false
         G.MM_LastMurdReset = false
         G.MM_PeakAlive = 0
-        announced = false
         if G.MM_EnsureAutoStand then
             task.defer(G.MM_EnsureAutoStand)
         end
@@ -6304,12 +6284,12 @@ while session.active and gui and gui.Parent do
         local owner = findOwner() or findConfiguredOwner()
         task.spawn(function()
             local ok, err = pcall(function()
-                local curM, curS, curBotM, curBotS = resolveRoleSnapshot(3.2)
+                local curM, curS, curBotM, curBotS
                 if toggleReveal then
                     local _
-                    _, curM, curS, curBotM, curBotS = waitForRoleCallouts(curM, curS, curBotM, curBotS)
+                    _, curM, curS, curBotM, curBotS = waitForRoleCallouts()
                 else
-                    curM, curS, curBotM, curBotS = resolveRoleSnapshot(0.5)
+                    curM, curS, curBotM, curBotS = resolveAssignedRoles(0.5)
                 end
 
                 if curBotM and owner and curS and owner.UserId == curS.UserId then
@@ -6324,15 +6304,6 @@ while session.active and gui and gui.Parent do
                 if G.MM_NoteRoundForAdoptAd then G.MM_NoteRoundForAdoptAd() end
             end)
             roleAnnounceUnlockAt = tick() + 0.35
-            revealAnnouncePending = false
-        end)
-    elseif toggleReveal and (m or botM) and not G.MM_RoleSentThisRound and not revealAnnouncePending then
-        revealAnnouncePending = true
-        task.spawn(function()
-            pcall(function()
-                local curM, curS, curBotM, curBotS = resolveRoleSnapshot(2.0)
-                waitForRoleCallouts(curM, curS, curBotM, curBotS)
-            end)
             revealAnnouncePending = false
         end)
     end

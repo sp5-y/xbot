@@ -1,4 +1,4 @@
---[[ Xeno V1.05 XBOT_BUILD 20261010k ]]--
+--[[ Xeno V1.05 XBOT_BUILD 20261010l ]]--
 local GRAPHICS = true
 local TARGET_FPS = 50
 local Players = game:GetService("Players")
@@ -171,43 +171,135 @@ lbl.Size, lbl.Position, lbl.BackgroundTransparency = UDim2.new(1, -10, 0, 28), U
 lbl.TextColor3, lbl.Font, lbl.TextScaled = Color3.new(1, 0, 0), Enum.Font.GothamBold, true
 
 --[[ Log GUI ]]--
-local logFrame = Instance.new("Frame", gui)
-logFrame.Size = UDim2.new(0, 260, 0, 130)
-logFrame.Position = UDim2.new(1, -270, 1, -140)
-logFrame.BackgroundColor3 = Color3.fromRGB(15, 15, 15)
-logFrame.BackgroundTransparency = 0.3
-logFrame.BorderSizePixel = 0
-Instance.new("UICorner", logFrame).CornerRadius = UDim.new(0, 6)
-local logList = Instance.new("UIListLayout", logFrame)
-logList.SortOrder = Enum.SortOrder.LayoutOrder
-logList.Padding = UDim.new(0, 1)
-local logPad = Instance.new("UIPadding", logFrame)
-logPad.PaddingLeft, logPad.PaddingRight = UDim.new(0, 6), UDim.new(0, 6)
-logPad.PaddingTop, logPad.PaddingBottom = UDim.new(0, 4), UDim.new(0, 4)
-local logCounter = 0
-local function log(msg)
-    logCounter = logCounter + 1
-    local order = logCounter
-    local t = Instance.new("TextLabel", logFrame)
-    t.Size = UDim2.new(1, 0, 0, 14)
-    t.BackgroundTransparency = 1
-    t.Font = Enum.Font.Code
-    t.TextSize = 12
-    t.TextXAlignment = Enum.TextXAlignment.Left
-    t.TextColor3 = Color3.fromRGB(180, 230, 180)
-    t.Text = "[" .. os.date("%X") .. "] " .. tostring(msg)
-    t.LayoutOrder = order
-    t.TextTruncate = Enum.TextTruncate.AtEnd
-    local kids = logFrame:GetChildren()
-    local labels = {}
-    for _, c in ipairs(kids) do
-        if c:IsA("TextLabel") then table.insert(labels, c) end
+local log
+do
+    local TextService = game:GetService("TextService")
+    local expanded = false
+    local rows = {}
+    local root = Instance.new("Frame", gui)
+    root.Name = "MMLog"
+    root.BackgroundColor3 = Color3.fromRGB(10, 12, 10)
+    root.BackgroundTransparency = 0.12
+    root.BorderSizePixel = 0
+    root.ZIndex = 80
+    root.Active = true
+    Instance.new("UICorner", root).CornerRadius = UDim.new(0, 8)
+    local stroke = Instance.new("UIStroke", root)
+    stroke.Color = Color3.fromRGB(70, 110, 70)
+    stroke.Thickness = 1
+    stroke.Transparency = 0.35
+    local header = Instance.new("TextButton", root)
+    header.BackgroundColor3 = Color3.fromRGB(20, 28, 20)
+    header.BackgroundTransparency = 0.05
+    header.BorderSizePixel = 0
+    header.Font = Enum.Font.GothamBold
+    header.TextSize = 13
+    header.TextColor3 = Color3.fromRGB(190, 235, 190)
+    header.TextXAlignment = Enum.TextXAlignment.Left
+    header.AutoButtonColor = true
+    header.ZIndex = 81
+    Instance.new("UICorner", header).CornerRadius = UDim.new(0, 8)
+    local minBtn = Instance.new("TextButton", root)
+    minBtn.BackgroundColor3 = Color3.fromRGB(28, 40, 28)
+    minBtn.BackgroundTransparency = 0.05
+    minBtn.BorderSizePixel = 0
+    minBtn.Font = Enum.Font.GothamBold
+    minBtn.TextSize = 12
+    minBtn.TextColor3 = Color3.fromRGB(210, 235, 210)
+    minBtn.AutoButtonColor = true
+    minBtn.ZIndex = 82
+    Instance.new("UICorner", minBtn).CornerRadius = UDim.new(0, 8)
+    local scroll = Instance.new("ScrollingFrame", root)
+    scroll.BackgroundTransparency = 1
+    scroll.BorderSizePixel = 0
+    scroll.ScrollBarThickness = 8
+    scroll.ScrollBarImageColor3 = Color3.fromRGB(130, 190, 130)
+    scroll.ScrollingDirection = Enum.ScrollingDirection.Y
+    scroll.CanvasSize = UDim2.new(0, 0, 0, 0)
+    scroll.ZIndex = 81
+    scroll.Active = true
+    local pad = Instance.new("UIPadding", scroll)
+    pad.PaddingLeft, pad.PaddingRight = UDim.new(0, 8), UDim.new(0, 12)
+    pad.PaddingTop, pad.PaddingBottom = UDim.new(0, 4), UDim.new(0, 8)
+    local list = Instance.new("UIListLayout", scroll)
+    list.SortOrder = Enum.SortOrder.LayoutOrder
+    list.Padding = UDim.new(0, 3)
+    local function applyLayout()
+        if expanded then
+            root.Size = UDim2.new(0.86, 0, 0.86, 0)
+            root.Position = UDim2.new(0.07, 0, 0.07, 0)
+            header.Size = UDim2.new(1, -72, 0, 28)
+            header.Position = UDim2.new(0, 0, 0, 0)
+            header.Text = "  logs"
+            minBtn.Size = UDim2.new(0, 68, 0, 28)
+            minBtn.Position = UDim2.new(1, -68, 0, 0)
+            minBtn.Text = "min"
+            minBtn.Visible = true
+            scroll.Position = UDim2.new(0, 0, 0, 30)
+            scroll.Size = UDim2.new(1, 0, 1, -30)
+        else
+            root.Size = UDim2.new(0, 360, 0, 176)
+            root.Position = UDim2.new(0, 10, 1, -186)
+            header.Size = UDim2.new(1, 0, 0, 24)
+            header.Position = UDim2.new(0, 0, 0, 0)
+            header.Text = "  logs  (click to expand)"
+            minBtn.Visible = false
+            scroll.Position = UDim2.new(0, 0, 0, 24)
+            scroll.Size = UDim2.new(1, 0, 1, -24)
+        end
     end
-    table.sort(labels, function(a, b) return a.LayoutOrder < b.LayoutOrder end)
-    while #labels > 8 do
-        labels[1]:Destroy()
-        table.remove(labels, 1)
+    local function relayoutLabels()
+        local width = math.max(80, scroll.AbsoluteSize.X - 22)
+        for _, row in ipairs(rows) do
+            local ok, sz = pcall(function()
+                return TextService:GetTextSize(row.Text, 14, Enum.Font.Code, Vector2.new(width, 20000))
+            end)
+            local h = 18
+            if ok and sz then h = math.max(18, math.ceil(sz.Y) + 4) end
+            row.Size = UDim2.new(1, -4, 0, h)
+        end
+        local y = list.AbsoluteContentSize.Y + 10
+        scroll.CanvasSize = UDim2.new(0, 0, 0, y)
+        scroll.CanvasPosition = Vector2.new(0, math.max(0, y - scroll.AbsoluteSize.Y))
     end
+    applyLayout()
+    header.MouseButton1Click:Connect(function()
+        expanded = not expanded
+        applyLayout()
+        task.defer(relayoutLabels)
+    end)
+    minBtn.MouseButton1Click:Connect(function()
+        expanded = false
+        applyLayout()
+        task.defer(relayoutLabels)
+    end)
+    log = function(msg)
+        local t = Instance.new("TextLabel")
+        t.BackgroundTransparency = 1
+        t.Font = Enum.Font.Code
+        t.TextSize = 14
+        t.TextXAlignment = Enum.TextXAlignment.Left
+        t.TextYAlignment = Enum.TextYAlignment.Top
+        t.TextColor3 = Color3.fromRGB(180, 230, 180)
+        t.TextWrapped = true
+        t.TextTruncate = Enum.TextTruncate.None
+        t.Text = "[" .. os.date("%X") .. "] " .. tostring(msg)
+        t.LayoutOrder = #rows + 1
+        t.ZIndex = 82
+        t.Parent = scroll
+        table.insert(rows, t)
+        while #rows > 200 do
+            local old = table.remove(rows, 1)
+            if old then old:Destroy() end
+        end
+        task.defer(relayoutLabels)
+    end
+    scroll:GetPropertyChangedSignal("AbsoluteSize"):Connect(function()
+        task.defer(relayoutLabels)
+    end)
+    list:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(function()
+        scroll.CanvasSize = UDim2.new(0, 0, 0, list.AbsoluteContentSize.Y + 10)
+    end)
 end
 
 --[[ Finders ]]--
@@ -1216,13 +1308,12 @@ local function seenCommandRecently(p, msg)
     msg = cleanChatText(msg):lower()
     if msg == "" then return true end
     if msg:sub(1, 1) ~= "!" then return false end
-    local stem = msg:match("^(!%S+)") or msg
-    local key = tostring(p.UserId) .. "\0" .. stem
+    local key = tostring(p.UserId) .. "\0" .. msg
     local now = tick()
     local last = recentCommandKeys[key]
     recentCommandKeys[key] = now
-    if last and now - last < 8 then return true end
-    task.delay(12, function()
+    if last and now - last < 15 then return true end
+    task.delay(20, function()
         if recentCommandKeys[key] == now then
             recentCommandKeys[key] = nil
         end
@@ -4215,11 +4306,7 @@ local function sendFullHelp(target, gapBetween, replyFn)
     end
     if not o then return end
     local keys = helpKeysForOwner()
-    local parts = {}
-    for _, key in ipairs(keys) do
-        table.insert(parts, "!" .. key)
-    end
-    local line = table.concat(parts, " ")
+    local line = "cmds: " .. table.concat(keys, "  ")
     if #line <= 200 then
         replyFn(line, o)
         return
@@ -4227,9 +4314,9 @@ local function sendFullHelp(target, gapBetween, replyFn)
     local mid = math.ceil(#keys / 2)
     local a, b = {}, {}
     for i, key in ipairs(keys) do
-        if i <= mid then table.insert(a, "!" .. key) else table.insert(b, "!" .. key) end
+        if i <= mid then table.insert(a, key) else table.insert(b, key) end
     end
-    replyFn(table.concat(a, " "), o)
+    replyFn("cmds: " .. table.concat(a, "  "), o)
     if gapBetween > 0 then task.wait(gapBetween) end
     o = resolve()
     if not o then
@@ -4239,7 +4326,7 @@ local function sendFullHelp(target, gapBetween, replyFn)
             if o then break end
         end
     end
-    if o then replyFn(table.concat(b, " "), o) end
+    if o then replyFn("cmds: " .. table.concat(b, "  "), o) end
 end
 
 local ownerOnboardingGen = 0
@@ -4283,11 +4370,7 @@ local function sendFullHelpToOwner(userId, gapBetween)
     task.wait(gapBetween)
 
     local keys = helpKeysForOwner()
-    local parts = {}
-    for _, key in ipairs(keys) do
-        table.insert(parts, "!" .. key)
-    end
-    local line = table.concat(parts, " ")
+    local line = "cmds: " .. table.concat(keys, "  ")
     if #line <= 200 then
         return deliverOwnerLine(userId, line, 16, 0.45)
     end
@@ -4295,11 +4378,11 @@ local function sendFullHelpToOwner(userId, gapBetween)
     local mid = math.ceil(#keys / 2)
     local a, b = {}, {}
     for i, key in ipairs(keys) do
-        if i <= mid then table.insert(a, "!" .. key) else table.insert(b, "!" .. key) end
+        if i <= mid then table.insert(a, key) else table.insert(b, key) end
     end
-    if not deliverOwnerLine(userId, table.concat(a, " "), 16, 0.45) then return false end
+    if not deliverOwnerLine(userId, "cmds: " .. table.concat(a, "  "), 16, 0.45) then return false end
     task.wait(gapBetween)
-    return deliverOwnerLine(userId, table.concat(b, " "), 16, 0.45)
+    return deliverOwnerLine(userId, "cmds: " .. table.concat(b, "  "), 16, 0.45)
 end
 
 local function syncOwnerPremiumFromClaim(claim)
@@ -4396,7 +4479,11 @@ end
 local function handleCommand(p, msg, viaPublic)
     if msg:sub(1, 1) ~= "!" then return end
     local args = splitChatArgs(msg)
+    if not args[1] or args[1]:sub(1, 1) ~= "!" then return end
     local cmd, rest = args[1]:sub(2):lower(), msg:sub(#args[1] + 2)
+    if cmd == "" or (cmd ~= "dethrone" and not COMMAND_HELP[cmd]) then
+        return
+    end
     local privateWhisper = whisper
     local function whisper(m, target)
         if viaPublic then
@@ -4822,7 +4909,13 @@ end
 local function routeCommand(p, msg, viaPublic)
     if not session.active or not p or isSelfPlayer(p) then return end
     msg = extractCommandText(msg)
-    if msg == "" or seenCommandRecently(p, msg) then return end
+    if msg == "" then return end
+    local bangs = 0
+    for _ in msg:gmatch("!%w+") do
+        bangs = bangs + 1
+        if bangs > 1 then return end
+    end
+    if seenCommandRecently(p, msg) then return end
     if ACTIVE_OWNER_USERNAME ~= "" and configuredOwnerMatches(p) then
         syncConfiguredOwner()
     end

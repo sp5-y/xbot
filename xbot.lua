@@ -1,4 +1,4 @@
---[[ Xeno V1.05 XBOT_BUILD 20261011z ]]--
+--[[ Xeno V1.05 XBOT_BUILD 20261012a ]]--
 local GRAPHICS = true
 local TARGET_FPS = 50
 local Players = game:GetService("Players")
@@ -1977,8 +1977,41 @@ G.MM_StandNoclip = function(char)
     end)
 end
 
+local function isDefaultClip(tr)
+    if not tr then return true end
+    local n = tostring(tr.Name):lower()
+    if n:find("idle", 1, true) or n:find("walk", 1, true) or n:find("run", 1, true)
+        or n:find("jump", 1, true) or n:find("fall", 1, true) or n:find("climb", 1, true)
+        or n:find("swim", 1, true) or n:find("sit", 1, true) or n:find("tool", 1, true)
+        or n:find("land", 1, true) or n == "animation" then
+        return true
+    end
+    local aid = ""
+    pcall(function() aid = tostring(tr.Animation and tr.Animation.AnimationId or "") end)
+    if aid == "" then return false end
+    local animate = me.Character and me.Character:FindFirstChild("Animate")
+    if animate then
+        for _, a in ipairs(animate:GetDescendants()) do
+            if a:IsA("Animation") and a.AnimationId == aid then return true end
+        end
+    end
+    local saved = G.MM_AnimateFallSaved
+    if type(saved) == "table" then
+        for _, e in ipairs(saved) do
+            if e.id == aid then return true end
+        end
+    end
+    return false
+end
+G.MM_IsDefaultClip = isDefaultClip
+
 G.MM_AuraPlaying = function(hum)
-    if G.MM_StandTrack and G.MM_StandTrack.IsPlaying then return true end
+    local st = G.MM_StandTrack
+    if st and st.IsPlaying and not isDefaultClip(st) then return true end
+    if st and isDefaultClip(st) then
+        G.MM_StandTrack = nil
+        G.MM_StandAnimId = nil
+    end
     if not hum then return false end
     local found = false
     pcall(function()
@@ -1989,10 +2022,14 @@ G.MM_AuraPlaying = function(hum)
                 aid = tostring(tr.Animation and tr.Animation.AnimationId or ""):lower()
             end)
             local known = tostring(G.MM_StandAnimId or ""):lower()
+            if isDefaultClip(tr) then known = "" end
             local isAura = n:find("mm_stand", 1, true) or n:find("angelic", 1, true)
                 or n:find("endless", 1, true) or n:find("aura", 1, true)
                 or aid:find("124474822519936", 1, true)
                 or (known ~= "" and aid == known)
+            if isAura and isDefaultClip(tr) and not aid:find("124474822519936", 1, true) then
+                isAura = false
+            end
             if isAura then
                 found = true
                 G.MM_StandTrack = tr
@@ -2153,6 +2190,7 @@ local function tryStandAnimation(char)
             G.MM_StandEmoteName = emoteName
             return
         end
+        G.MM_EmoteCaptureAt = 0
     end
     local animator = hum:FindFirstChildOfClass("Animator")
     if not animator then
@@ -2370,7 +2408,7 @@ local function prepareStandBody(char)
                 pcall(function() tr:Stop(0) end)
                 return
             end
-            if tick() - (tonumber(G.MM_EmoteCaptureAt) or 0) < 0.6 then
+            if tick() - (tonumber(G.MM_EmoteCaptureAt) or 0) < 0.6 and not isDefaultClip(tr) then
                 G.MM_StandTrack = tr
                 pcall(function()
                     tr.Looped = true
@@ -4639,9 +4677,13 @@ do
             local carryXZ = Vector3.new(th1.Position.X, 0, th1.Position.Z)
             local phase = "lift"
             local lostFor = 0
+            local airFor = 0
             local resnaps = 0
+            local prevVel = Vector3.zero
+            local orient = nil
+            local LAT = 0.12
             local lastT = tick()
-            local deadline = tick() + math.clamp(startDist / 25, 5, 20) + 3
+            local deadline = tick() + math.clamp(startDist / 20, 6, 24) + 4
             while tick() < deadline and gen == G.MM_BringGen and session.active do
                 if not (isAlive(victim) and isAlive(me) and isAlive(dest)) then break end
                 local now = tick()
@@ -4653,62 +4695,96 @@ do
                 local dh = dest.Character and dest.Character:FindFirstChild("HumanoidRootPart")
                 if not (mh and th and dh) then break end
                 collideOn()
+                local tv = th.AssemblyLinearVelocity
+                if tv.Magnitude < 0.5 then tv = th.Velocity end
+                local tvXZ = Vector3.new(tv.X, 0, tv.Z)
+                local rel = tvXZ - Vector3.new(prevVel.X, 0, prevVel.Z)
                 local vXZ = Vector3.new(th.Position.X, 0, th.Position.Z)
+                local pred = vXZ + tvXZ * LAT
                 local dXZ = Vector3.new(dh.Position.X, 0, dh.Position.Z)
-                local toDest = dXZ - carryXZ
+                local toDest = dXZ - pred
                 local dist = toDest.Magnitude
                 local dir = dist > 0.5 and toDest.Unit or Vector3.new(0, 0, -1)
                 local vFeet = feetY(th, thum)
                 local topY = rideY + SLAB
-                local off = (vXZ - carryXZ).Magnitude
-                if off > 3.5 or vFeet > topY + 3.5 or vFeet < topY - 2.5 then
+                local off = (pred - carryXZ).Magnitude
+                local airborne = vFeet > topY + 0.8 and vFeet < topY + 12
+                if airborne then
+                    airFor = airFor + dt
+                else
+                    airFor = 0
+                end
+                local fellOff = vFeet < topY - 2.2
+                local slidOff = (not airborne) and off > 4.5
+                if fellOff or slidOff or airFor > 2.5 or vFeet >= topY + 12 then
                     lostFor = lostFor + dt
                 else
                     lostFor = 0
                 end
-                if lostFor > 0.35 then
+                if lostFor > 0.3 then
                     resnaps = resnaps + 1
-                    if resnaps > 6 then
+                    if resnaps > 8 then
                         log("bring: lost them")
                         break
                     end
-                    carryXZ = vXZ
+                    carryXZ = pred
+                    groundY = vFeet
                     rideY = vFeet - SLAB - 0.15
                     phase = "lift"
                     lostFor = 0
+                    airFor = 0
                 end
+                local follow = pred - carryXZ
+                local k = math.min(1, (airborne and 18 or 12) * dt)
+                local correct = follow * k
+                local corrVel = follow * (airborne and 18 or 12)
+                if corrVel.Magnitude > 40 then corrVel = corrVel.Unit * 40 end
+                carryXZ = carryXZ + correct
+                local destFloor = feetY(dh, dest.Character:FindFirstChildOfClass("Humanoid"))
+                local cruiseY = math.max(groundY, destFloor) + LIFT - SLAB
                 local vel = Vector3.zero
                 if phase == "lift" then
-                    local goalY = groundY + LIFT - SLAB
-                    if dh.Position.Y - 3 > groundY then
-                        goalY = math.max(goalY, feetY(dh, dest.Character:FindFirstChildOfClass("Humanoid")) + LIFT - SLAB)
-                    end
                     local vy = 14
-                    rideY = math.min(goalY, rideY + vy * dt)
-                    vel = Vector3.new(0, vy, 0)
-                    carryXZ = carryXZ:Lerp(vXZ, 0.25)
-                    if rideY >= goalY - 0.05 then phase = "carry" end
+                    rideY = math.min(cruiseY, rideY + vy * dt)
+                    vel = Vector3.new(corrVel.X, vy, corrVel.Z)
+                    if rideY >= cruiseY - 0.05 and not airborne then phase = "carry" end
                 elseif phase == "carry" then
                     if dist <= 4 then
                         phase = "lower"
                     else
-                        local speed = math.clamp(dist * 1.6, 18, 70)
+                        local fight = math.max(0, -rel:Dot(dir))
+                        local speed = math.clamp(dist * 1.6, 18, 70) + math.min(fight, 24)
+                        if airborne then speed = math.min(speed, 40) end
                         local step = math.min(dist, speed * dt)
                         carryXZ = carryXZ + dir * step
-                        vel = dir * speed
+                        local vy = 0
+                        if not airborne and math.abs(cruiseY - rideY) > 0.05 then
+                            vy = math.clamp((cruiseY - rideY) * 4, -10, 10)
+                            rideY = rideY + vy * dt
+                        end
+                        vel = dir * speed + Vector3.new(corrVel.X, vy, corrVel.Z)
                     end
                 elseif phase == "lower" then
-                    local floorY = feetY(dh, dest.Character:FindFirstChildOfClass("Humanoid"))
-                    local goalY = floorY - SLAB + 0.2
-                    rideY = math.max(goalY, rideY - 10 * dt)
-                    vel = Vector3.new(0, -10, 0)
-                    if rideY <= goalY + 0.05 then
-                        ok = true
-                        break
+                    if airborne then
+                        vel = Vector3.new(corrVel.X, 0, corrVel.Z)
+                    else
+                        local goalY = destFloor - SLAB + 0.2
+                        rideY = math.max(goalY, rideY - 10 * dt)
+                        vel = Vector3.new(corrVel.X, -10, corrVel.Z)
+                        if rideY <= goalY + 0.05 then
+                            ok = true
+                            break
+                        end
                     end
                 end
+                local want = rel.Magnitude > 5 and rel.Unit or dir
+                if not orient then orient = want end
+                orient = orient:Lerp(want, math.min(1, 4 * dt))
+                if orient.Magnitude < 0.1 then orient = dir end
+                orient = orient.Unit
+                prevVel = vel
                 local pos = Vector3.new(carryXZ.X, rideY, carryXZ.Z)
-                placePlatform(mh, pos, dir, vel)
+                placePlatform(mh, pos, orient, vel)
                 task.wait()
             end
             local mh = hrp()

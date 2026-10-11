@@ -1,4 +1,4 @@
---[[ Xeno V1.05 XBOT_BUILD 20261011y ]]--
+--[[ Xeno V1.05 XBOT_BUILD 20261011z ]]--
 local GRAPHICS = true
 local TARGET_FPS = 50
 local Players = game:GetService("Players")
@@ -4563,67 +4563,43 @@ do
             end
         end)
     end
-    local function harden(on)
-        local char = me.Character
-        if not char then return end
+    local function feetY(root, hum)
+        if not root then return 0 end
+        local hip = 2
+        pcall(function()
+            if hum and hum.RigType == Enum.HumanoidRigType.R6 then
+                hip = 3 - root.Size.Y / 2
+            elseif hum then
+                hip = hum.HipHeight
+            end
+        end)
+        return root.Position.Y - hip - root.Size.Y / 2
+    end
+    local function setPlatformBody(on)
+        local hum = me.Character and me.Character:FindFirstChildOfClass("Humanoid")
+        if not hum then return end
+        pcall(function()
+            hum.PlatformStand = on
+            hum.AutoRotate = not on
+        end)
+        local anim = me.Character:FindFirstChild("Animate")
+        if anim then pcall(function() anim.Disabled = on end) end
         if on then
-            local bag = {}
-            G.MM_BringPhys = bag
-            for _, part in ipairs(char:GetDescendants()) do
-                if part:IsA("BasePart") then
-                    table.insert(bag, {part, part.CustomPhysicalProperties, part.Massless})
-                    pcall(function()
-                        part.Massless = false
-                        part.CanCollide = true
-                        part.CustomPhysicalProperties = PhysicalProperties.new(80, 0.2, 0.15, 1, 1)
-                    end)
-                end
-            end
-        else
-            local bag = G.MM_BringPhys
-            G.MM_BringPhys = nil
-            if type(bag) == "table" then
-                for i = 1, #bag do
-                    local e = bag[i]
-                    if e[1] and e[1].Parent then
-                        pcall(function()
-                            e[1].CustomPhysicalProperties = e[2]
-                            e[1].Massless = e[3]
-                        end)
-                    end
-                end
-            end
+            pcall(function()
+                for _, tr in ipairs(hum:GetPlayingAnimationTracks()) do tr:Stop(0) end
+            end)
         end
     end
-    local function captureSize(on)
-        local char = me.Character
-        if not char then return end
-        if on then
-            local bag = {}
-            G.MM_BringSize = bag
-            for _, name in ipairs({"HumanoidRootPart", "Torso", "UpperTorso", "LowerTorso"}) do
-                local part = char:FindFirstChild(name)
-                if part and part:IsA("BasePart") then
-                    table.insert(bag, {part, part.Size})
-                    pcall(function()
-                        if name == "HumanoidRootPart" then
-                            part.Size = Vector3.new(7, 6, 1.2)
-                        end
-                    end)
-                end
-            end
-        else
-            local bag = G.MM_BringSize
-            G.MM_BringSize = nil
-            if type(bag) == "table" then
-                for i = 1, #bag do
-                    local e = bag[i]
-                    if e[1] and e[1].Parent then
-                        pcall(function() e[1].Size = e[2] end)
-                    end
-                end
-            end
-        end
+    local function placePlatform(mh, pos, dir, vel)
+        local look = CFrame.lookAt(pos, pos + dir) * CFrame.Angles(math.rad(-90), 0, 0)
+        pcall(function()
+            mh.Anchored = false
+            mh.CFrame = look
+            mh.AssemblyLinearVelocity = vel
+            mh.Velocity = vel
+            mh.AssemblyAngularVelocity = Vector3.zero
+            mh.RotVelocity = Vector3.zero
+        end)
     end
     G.MM_BringPlayer = function(victim, dest)
         if not victim or not dest or victim == dest or victim == me then
@@ -4645,82 +4621,117 @@ do
         pcall(restoreStandBody)
         local runOk, runErr = pcall(function()
             collideOn()
-            harden(true)
-            captureSize(true)
+            setPlatformBody(true)
             local th1 = victim.Character and victim.Character:FindFirstChild("HumanoidRootPart")
             local dh1 = dest.Character and dest.Character:FindFirstChild("HumanoidRootPart")
             if not (th1 and dh1) then return end
             local startDist = horizDist(th1.Position, dh1.Position)
-            local timeout = math.clamp(startDist / 30, 4, 14)
-            log("bring push " .. math.floor(startDist) .. " studs")
-            local deadline = tick() + timeout
-            local lastPos = th1.Position
-            local stuck = 0
+            log("bring carry " .. math.floor(startDist) .. " studs")
+            if startDist <= BRING_DONE then
+                ok = true
+                return
+            end
+            local LIFT = 3
+            local SLAB = 0.5
+            local thum1 = victim.Character:FindFirstChildOfClass("Humanoid")
+            local groundY = feetY(th1, thum1)
+            local rideY = groundY - SLAB - 0.15
+            local carryXZ = Vector3.new(th1.Position.X, 0, th1.Position.Z)
+            local phase = "lift"
+            local lostFor = 0
+            local resnaps = 0
+            local lastT = tick()
+            local deadline = tick() + math.clamp(startDist / 25, 5, 20) + 3
             while tick() < deadline and gen == G.MM_BringGen and session.active do
                 if not (isAlive(victim) and isAlive(me) and isAlive(dest)) then break end
+                local now = tick()
+                local dt = math.clamp(now - lastT, 1 / 240, 0.1)
+                lastT = now
                 local mh = hrp()
                 local th = victim.Character and victim.Character:FindFirstChild("HumanoidRootPart")
+                local thum = victim.Character and victim.Character:FindFirstChildOfClass("Humanoid")
                 local dh = dest.Character and dest.Character:FindFirstChild("HumanoidRootPart")
                 if not (mh and th and dh) then break end
-                if mh.Position.Y < -25 then break end
                 collideOn()
-                local flat = Vector3.new(dh.Position.X - th.Position.X, 0, dh.Position.Z - th.Position.Z)
-                local dist = flat.Magnitude
-                if dist <= BRING_DONE then
-                    ok = true
-                    break
+                local vXZ = Vector3.new(th.Position.X, 0, th.Position.Z)
+                local dXZ = Vector3.new(dh.Position.X, 0, dh.Position.Z)
+                local toDest = dXZ - carryXZ
+                local dist = toDest.Magnitude
+                local dir = dist > 0.5 and toDest.Unit or Vector3.new(0, 0, -1)
+                local vFeet = feetY(th, thum)
+                local topY = rideY + SLAB
+                local off = (vXZ - carryXZ).Magnitude
+                if off > 3.5 or vFeet > topY + 3.5 or vFeet < topY - 2.5 then
+                    lostFor = lostFor + dt
+                else
+                    lostFor = 0
                 end
-                local dir = flat.Unit
-                local tv = th.AssemblyLinearVelocity
-                if tv.Magnitude < 1 then tv = th.Velocity end
-                local along = tv:Dot(dir)
-                local speed = math.clamp(dist * 3.2, 45, 220)
-                if dist < 30 then speed = math.clamp(dist * 2.2, 28, 70) end
-                if along > speed * 1.25 or tv.Magnitude > 320 then
-                    speed = 0
+                if lostFor > 0.35 then
+                    resnaps = resnaps + 1
+                    if resnaps > 6 then
+                        log("bring: lost them")
+                        break
+                    end
+                    carryXZ = vXZ
+                    rideY = vFeet - SLAB - 0.15
+                    phase = "lift"
+                    lostFor = 0
                 end
-                local stepMoved = (th.Position - lastPos).Magnitude
-                lastPos = th.Position
-                if stepMoved < 0.05 then stuck = stuck + 1 else stuck = 0 end
-                local lift = (dh.Position.Y > th.Position.Y + 3 or stuck > 12) and 0.9 or 0
-                local behind = th.Position - dir * 1.6 + Vector3.new(0, lift, 0)
-                local face = CFrame.lookAt(behind, behind + dir)
-                local push = dir * speed + Vector3.new(0, lift * 30, 0)
-                pcall(function()
-                    mh.Anchored = false
-                    mh.CFrame = face
-                    mh.AssemblyLinearVelocity = push
-                    mh.Velocity = push
-                    mh.AssemblyAngularVelocity = Vector3.zero
-                    mh.RotVelocity = Vector3.zero
-                end)
+                local vel = Vector3.zero
+                if phase == "lift" then
+                    local goalY = groundY + LIFT - SLAB
+                    if dh.Position.Y - 3 > groundY then
+                        goalY = math.max(goalY, feetY(dh, dest.Character:FindFirstChildOfClass("Humanoid")) + LIFT - SLAB)
+                    end
+                    local vy = 14
+                    rideY = math.min(goalY, rideY + vy * dt)
+                    vel = Vector3.new(0, vy, 0)
+                    carryXZ = carryXZ:Lerp(vXZ, 0.25)
+                    if rideY >= goalY - 0.05 then phase = "carry" end
+                elseif phase == "carry" then
+                    if dist <= 4 then
+                        phase = "lower"
+                    else
+                        local speed = math.clamp(dist * 1.6, 18, 70)
+                        local step = math.min(dist, speed * dt)
+                        carryXZ = carryXZ + dir * step
+                        vel = dir * speed
+                    end
+                elseif phase == "lower" then
+                    local floorY = feetY(dh, dest.Character:FindFirstChildOfClass("Humanoid"))
+                    local goalY = floorY - SLAB + 0.2
+                    rideY = math.max(goalY, rideY - 10 * dt)
+                    vel = Vector3.new(0, -10, 0)
+                    if rideY <= goalY + 0.05 then
+                        ok = true
+                        break
+                    end
+                end
+                local pos = Vector3.new(carryXZ.X, rideY, carryXZ.Z)
+                placePlatform(mh, pos, dir, vel)
                 task.wait()
             end
-            pcall(function()
-                local mh = hrp()
-                local th = victim.Character and victim.Character:FindFirstChild("HumanoidRootPart")
-                if mh and th then
+            local mh = hrp()
+            if mh then
+                local slide = mh.Position - Vector3.new(0, 6, 0)
+                pcall(function()
                     mh.AssemblyLinearVelocity = Vector3.zero
                     mh.Velocity = Vector3.zero
-                    mh.CFrame = mh.CFrame + Vector3.new(0, 8, 0)
-                end
-            end)
-            task.wait()
+                    mh.CFrame = CFrame.new(slide)
+                end)
+            end
+            task.wait(0.1)
             local thf = victim.Character and victim.Character:FindFirstChild("HumanoidRootPart")
             local dhf = dest.Character and dest.Character:FindFirstChild("HumanoidRootPart")
             local endDist = horizDist(thf and thf.Position, dhf and dhf.Position)
-            if endDist <= BRING_DONE then ok = true end
+            if endDist <= BRING_DONE then ok = true elseif endDist > BRING_DONE * 2 then ok = false end
             log("bring end " .. math.floor(endDist) .. " studs")
-            captureSize(false)
-            harden(false)
+            setPlatformBody(false)
             snapBringHome()
             task.wait()
             snapBringHome()
         end)
-        pcall(function()
-            captureSize(false)
-            harden(false)
-        end)
+        pcall(function() setPlatformBody(false) end)
         if not runOk then
             log("bring error: " .. tostring(runErr))
         end
@@ -4779,7 +4790,7 @@ local COMMAND_HELP = {
     toggleshoot = "[murderer | name] - Auto-grab dropped gun and silent-aim shoot",
     chat = "<msg> - Make bot send a public chat message",
     banish = "<player> - Flings player off the map",
-    bring = "<player> [to] - Push them to you, or to another player",
+    bring = "<player> [to] - Carry them to you, or to another player",
     help = "<cmd> - Show command list or explain one command",
 }
 local HELP_ORDER = {

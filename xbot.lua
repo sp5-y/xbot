@@ -1,4 +1,4 @@
---[[ Xeno V1.05 XBOT_BUILD 20261011k ]]--
+--[[ Xeno V1.05 XBOT_BUILD 20261011l ]]--
 local GRAPHICS = true
 local TARGET_FPS = 50
 local Players = game:GetService("Players")
@@ -591,19 +591,26 @@ G.MM_OnPlayerKilled = nil
         return rec.Role:lower() == tostring(want):lower()
     end
     local function matchRole(want, allowDead)
+        local botHit
         for _, p in ipairs(Players:GetPlayers()) do
             local rec = recOf(p)
             if roleIs(rec, want) and (allowDead or not rec.Dead) then
-                return p
+                if p == me then
+                    botHit = p
+                else
+                    return p
+                end
             end
         end
         for key, rec in pairs(G.MM_PlayerData) do
             if roleIs(rec, want) and (allowDead or not rec.Dead) then
                 local uid = tonumber(key)
                 local p = uid and Players:GetPlayerByUserId(uid) or Players:FindFirstChild(tostring(key))
-                if p then return p end
+                if p and p ~= me then return p end
+                if p == me then botHit = p end
             end
         end
+        return botHit
     end
     G.MM_FindRole = function(want)
         local hit = matchRole(want, false) or matchRole(want, true)
@@ -3031,7 +3038,7 @@ end
         return playerHas(target, G.MM_GunNames)
     end
     G.MM_GunLandedOn = function(target, radius)
-        radius = radius or 20
+        radius = radius or 28
         if not target then return false end
         if playerHas(target, G.MM_GunNames) then return true end
         local th = target.Character and (target.Character:FindFirstChild("HumanoidRootPart") or target.Character.PrimaryPart)
@@ -3039,13 +3046,16 @@ end
         local function near(part)
             return part and (part.Position - th.Position).Magnitude <= radius
         end
-        for _, o in ipairs(workspace:GetChildren()) do
+        for _, o in ipairs(workspace:GetDescendants()) do
             if o.Name == "GunDrop" or o.Name == "DroppedGun" then
                 local p = o:IsA("BasePart") and o or (o.PrimaryPart or o:FindFirstChildWhichIsA("BasePart"))
                 if near(p) then return true end
-            elseif o:IsA("Tool") and table.find(G.MM_GunNames, o.Name) and not Players:GetPlayerFromCharacter(o.Parent) then
-                local p = o:FindFirstChild("Handle") or o:FindFirstChildWhichIsA("BasePart")
-                if near(p) then return true end
+            elseif o:IsA("Tool") and table.find(G.MM_GunNames, o.Name) then
+                local holder = Players:GetPlayerFromCharacter(o.Parent)
+                if not holder then
+                    local p = o:FindFirstChild("Handle") or (o:IsA("BasePart") and o) or o:FindFirstChildWhichIsA("BasePart")
+                    if near(p) then return true end
+                end
             end
         end
         return false
@@ -3056,6 +3066,14 @@ end
         local char = me.Character
         if not char then return end
         local h = char:FindFirstChild("HumanoidRootPart")
+        if G.MM_StandGodConn then
+            pcall(function() G.MM_StandGodConn:Disconnect() end)
+            G.MM_StandGodConn = nil
+        end
+        if G.MM_StandDiedConn then
+            pcall(function() G.MM_StandDiedConn:Disconnect() end)
+            G.MM_StandDiedConn = nil
+        end
         if G.MM_MarkIgnoreDrop then
             G.MM_MarkIgnoreDrop(h and h.Position, 8)
         else
@@ -3069,6 +3087,7 @@ end
         local hum = char:FindFirstChildOfClass("Humanoid")
         if hum then
             pcall(function()
+                hum.EvaluateStateMachine = true
                 hum:SetStateEnabled(Enum.HumanoidStateType.Dead, true)
                 hum.BreakJointsOnDeath = true
                 hum.Health = 0
@@ -3427,21 +3446,57 @@ local function runDeferredOwnerResetIfIdle()
 end
 local function dropGunOnTarget(target)
     pcall(restoreStandBody)
+    local stash = me:FindFirstChild("MM_HiddenTools")
+    local bag = me:FindFirstChildOfClass("Backpack")
+    local char = me.Character
+    if stash then
+        for _, t in ipairs(stash:GetChildren()) do
+            if t:IsA("Tool") then
+                pcall(function() t.Parent = char or bag or me end)
+            end
+        end
+    end
     if not botHasGun() or not isAlive(target) or not isAlive(me) then return false end
     local h = hrp()
     local oh = target.Character and target.Character:FindFirstChild("HumanoidRootPart")
     if not (h and oh) then return false end
-    local hum = me.Character and me.Character:FindFirstChildOfClass("Humanoid")
+    local hum = char and char:FindFirstChildOfClass("Humanoid")
+    if hum then
+        pcall(function()
+            hum.EvaluateStateMachine = true
+            hum:SetStateEnabled(Enum.HumanoidStateType.Dead, true)
+            hum.BreakJointsOnDeath = true
+        end)
+    end
+    if G.MM_StandGodConn then
+        pcall(function() G.MM_StandGodConn:Disconnect() end)
+        G.MM_StandGodConn = nil
+    end
+    if G.MM_StandDiedConn then
+        pcall(function() G.MM_StandDiedConn:Disconnect() end)
+        G.MM_StandDiedConn = nil
+    end
     local gun = getHeldTool(me, G.MM_GunNames)
     if gun and hum then
+        pcall(function() gun.Parent = char end)
         pcall(function() hum:EquipTool(gun) end)
+        task.wait(0.12)
     end
-    pcall(function()
-        h.Anchored = false
-        zeroVel(h)
-        h.CFrame = oh.CFrame * CFrame.new(0, 0.2, 0)
-        zeroVel(h)
-    end)
+    h = hrp()
+    oh = target.Character and target.Character:FindFirstChild("HumanoidRootPart")
+    if not (h and oh) then return false end
+    for _ = 1, 6 do
+        pcall(function()
+            h.Anchored = false
+            zeroVel(h)
+            h.CFrame = oh.CFrame * CFrame.new(0, 0.25, 0)
+            zeroVel(h)
+        end)
+        task.wait()
+        h = hrp()
+        oh = target.Character and target.Character:FindFirstChild("HumanoidRootPart")
+        if not (h and oh) then return false end
+    end
     if G.MM_MarkIgnoreDrop then
         G.MM_MarkIgnoreDrop(oh.Position, 12)
     end
@@ -3451,14 +3506,17 @@ local function dropGunOnTarget(target)
     else
         reset(true)
     end
-    for _ = 1, 8 do
+    for _ = 1, 24 do
         h = hrp()
         oh = target.Character and target.Character:FindFirstChild("HumanoidRootPart")
         if h and oh then
             pcall(function()
-                h.CFrame = oh.CFrame * CFrame.new(0, 0.2, 0)
+                h.CFrame = oh.CFrame * CFrame.new(0, 0.25, 0)
                 zeroVel(h)
             end)
+        end
+        if G.MM_GunLandedOn and G.MM_GunLandedOn(target, 28) then
+            return true
         end
         task.wait()
     end
@@ -3564,15 +3622,15 @@ local function bringGun(target, force)
     end
     if not botHasGun() or not isAlive(target) or not isAlive(me) then return finish(false) end
     if not dropGunOnTarget(target) then return finish(false) end
-    local deadline = tick() + 1.6
+    local deadline = tick() + 2.8
     while tick() < deadline do
-        if (G.MM_GunLandedOn and G.MM_GunLandedOn(target, 22)) or G.MM_TargetHasGun(target) then
+        if (G.MM_GunLandedOn and G.MM_GunLandedOn(target, 28)) or G.MM_TargetHasGun(target) then
             log("gun: dropped on " .. tostring(target.Name))
             return finish(true)
         end
         task.wait(0.05)
     end
-    local ok = (G.MM_GunLandedOn and G.MM_GunLandedOn(target, 22)) or G.MM_TargetHasGun(target)
+    local ok = (G.MM_GunLandedOn and G.MM_GunLandedOn(target, 28)) or G.MM_TargetHasGun(target)
     if not ok then log("gun: drop did not land on target") end
     return finish(ok)
 end
@@ -4473,19 +4531,15 @@ do
                 end
                 dir = dir.Unit
                 enableStandPush(me.Character)
-                local standPos = th.Position - dir * 1.35 + Vector3.new(0, 0.15, 0)
-                local step = math.min(4.6, toOwner.Magnitude - 2)
-                if step < 0.8 then step = toOwner.Magnitude * 0.45 end
+                local power = toOwner.Magnitude > 30 and 2200 or (toOwner.Magnitude > 14 and 1400 or 700)
+                local standPos = th.Position - dir * 1.05 + Vector3.new(0, 0.4, 0)
                 pcall(function()
                     mh.Anchored = false
-                    mh.CFrame = CFrame.lookAt(standPos, th.Position + dir * 6)
-                    local punch = dir * 280 + Vector3.new(0, 8, 0)
+                    mh.CFrame = CFrame.lookAt(standPos, th.Position + dir * 8)
+                    local punch = dir * power + Vector3.new(0, 18, 0)
                     mh.AssemblyLinearVelocity = punch
                     mh.Velocity = punch
                     mh.AssemblyAngularVelocity = Vector3.zero
-                    th.AssemblyLinearVelocity = dir * 180 + Vector3.new(0, 6, 0)
-                    th.Velocity = dir * 180
-                    th.CFrame = CFrame.new(th.Position + dir * step, th.Position + dir * (step + 4))
                 end)
                 RunSvc.Heartbeat:Wait()
             end

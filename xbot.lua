@@ -1,4 +1,4 @@
---[[ Xeno V1.05 XBOT_BUILD 20261012c ]]--
+--[[ Xeno V1.05 XBOT_BUILD 20261012d ]]--
 local GRAPHICS = true
 local TARGET_FPS = 50
 local Players = game:GetService("Players")
@@ -4625,82 +4625,20 @@ do
         end)
         return root.Position.Y - hip - root.Size.Y / 2
     end
-    local function localNoclip()
-        local char = me.Character
-        if not char then return end
-        pcall(function()
-            for _, part in ipairs(char:GetDescendants()) do
-                if part:IsA("BasePart") then part.CanCollide = false end
-            end
-        end)
-    end
     local function setPlatformBody(on)
-        local char = me.Character
-        local hum = char and char:FindFirstChildOfClass("Humanoid")
+        local hum = me.Character and me.Character:FindFirstChildOfClass("Humanoid")
         if not hum then return end
         pcall(function()
             hum.PlatformStand = on
             hum.AutoRotate = not on
         end)
-        local anim = char:FindFirstChild("Animate")
+        local anim = me.Character:FindFirstChild("Animate")
         if anim then pcall(function() anim.Disabled = on end) end
-        local root = char:FindFirstChild("HumanoidRootPart")
-        for _, n in ipairs({"MM_BringBV", "MM_BringBG"}) do
-            local o = root and root:FindFirstChild(n)
-            if o then pcall(function() o:Destroy() end) end
-        end
         if on then
             pcall(function()
                 for _, tr in ipairs(hum:GetPlayingAnimationTracks()) do tr:Stop(0) end
             end)
-            if root then
-                pcall(function()
-                    local bv = Instance.new("BodyVelocity")
-                    bv.Name = "MM_BringBV"
-                    bv.MaxForce = Vector3.new(9e9, 9e9, 9e9)
-                    bv.P = 9e4
-                    bv.Velocity = Vector3.zero
-                    bv.Parent = root
-                    local bg = Instance.new("BodyGyro")
-                    bg.Name = "MM_BringBG"
-                    bg.MaxTorque = Vector3.new(9e9, 9e9, 9e9)
-                    bg.P = 9e4
-                    bg.D = 500
-                    bg.CFrame = root.CFrame
-                    bg.Parent = root
-                end)
-            end
-            localNoclip()
         end
-    end
-    local function rayParams()
-        local rp = RaycastParams.new()
-        rp.FilterType = Enum.RaycastFilterType.Exclude
-        local list = {}
-        for _, pl in ipairs(Players:GetPlayers()) do
-            if pl.Character then table.insert(list, pl.Character) end
-        end
-        rp.FilterDescendantsInstances = list
-        rp.IgnoreWater = true
-        return rp
-    end
-    local function pickLift(fromFeet, toFeet, rp)
-        local flat = Vector3.new(toFeet.X - fromFeet.X, 0, toFeet.Z - fromFeet.Z)
-        if flat.Magnitude < 1 then return 3 end
-        local ahead = flat.Unit * math.min(flat.Magnitude, 40)
-        for _, h in ipairs({3, 7, 12, 18}) do
-            local clear = true
-            for _, up in ipairs({0.6, 2.6, 4.8}) do
-                if workspace:Raycast(fromFeet + Vector3.new(0, h + up, 0), ahead, rp) then
-                    clear = false
-                    break
-                end
-            end
-            if clear and not workspace:Raycast(fromFeet + Vector3.new(0, 1, 0), Vector3.new(0, h + 5.5, 0), rp) then
-                return h
-            end
-        end
-        return 3
     end
     local function placePlatform(mh, pos, dir, vel)
         local look = CFrame.lookAt(pos, pos + dir) * CFrame.Angles(math.rad(-90), 0, 0)
@@ -4708,11 +4646,9 @@ do
             mh.Anchored = false
             mh.CFrame = look
             mh.AssemblyLinearVelocity = vel
+            mh.Velocity = vel
             mh.AssemblyAngularVelocity = Vector3.zero
-            local bv = mh:FindFirstChild("MM_BringBV")
-            if bv then bv.Velocity = vel end
-            local bg = mh:FindFirstChild("MM_BringBG")
-            if bg then bg.CFrame = look end
+            mh.RotVelocity = Vector3.zero
         end)
     end
     G.MM_BringPlayer = function(victim, dest)
@@ -4745,52 +4681,18 @@ do
                 ok = true
                 return
             end
+            local LIFT = 3
             local SLAB = 0.5
-            local MAX_SPEED = 70
             local thum1 = victim.Character:FindFirstChildOfClass("Humanoid")
-            local rideY = feetY(th1, thum1) - SLAB - 0.15
+            local groundY = feetY(th1, thum1)
+            local rideY = groundY - SLAB - 0.15
             local carryXZ = Vector3.new(th1.Position.X, 0, th1.Position.Z)
             local phase = "lift"
-            local liftTop = feetY(th1, thum1) + 3
-            local lostFor, airFor, resnaps = 0, 0, 0
-            local curSpeed = 0
-            local orient = nil
-            local hist = {}
-            local wF = Vector3.zero
-            local goalRideF = nil
-            local lastNoclip = 0
-            local ping = 0.08
-            pcall(function() ping = me:GetNetworkPing() end)
-            local L = math.clamp(ping * 2 + 0.1, 0.12, 0.6)
-            local lastEst, resnapAt, liftAt, settleAt = 0, tick(), tick(), 0
-            local liftH = 3
-            local rp = rayParams()
+            local lostFor = 0
+            local airFor = 0
+            local resnaps = 0
             local lastT = tick()
-            local deadline = tick() + math.clamp(startDist / 25 + 8, 8, 30)
-            local function histAt(tq)
-                for i = #hist, 1, -1 do
-                    local e = hist[i]
-                    if e[1] <= tq then
-                        local n = hist[i + 1]
-                        if n then
-                            local a = math.clamp((tq - e[1]) / math.max(1e-3, n[1] - e[1]), 0, 1)
-                            return e[2]:Lerp(n[2], a)
-                        end
-                        return e[2]
-                    end
-                end
-                return hist[1] and hist[1][2]
-            end
-            local function histEntry(tq)
-                for i = #hist, 1, -1 do
-                    if hist[i][1] <= tq then return hist[i] end
-                end
-                return hist[1]
-            end
-            local function floorUnder(xz, fromY)
-                local hit = workspace:Raycast(Vector3.new(xz.X, fromY, xz.Z), Vector3.new(0, -90, 0), rp)
-                return hit and hit.Position.Y
-            end
+            local deadline = tick() + math.clamp(startDist / 25, 5, 20) + 3
             while tick() < deadline and gen == G.MM_BringGen and session.active do
                 if not (isAlive(victim) and isAlive(me) and isAlive(dest)) then break end
                 local now = tick()
@@ -4801,193 +4703,76 @@ do
                 local thum = victim.Character and victim.Character:FindFirstChildOfClass("Humanoid")
                 local dh = dest.Character and dest.Character:FindFirstChild("HumanoidRootPart")
                 if not (mh and th and dh) then break end
-                if now - lastNoclip > 0.2 then
-                    lastNoclip = now
-                    localNoclip()
-                    if not mh:FindFirstChild("MM_BringBV") then setPlatformBody(true) end
-                end
-                local tv = th.AssemblyLinearVelocity
-                if tv.Magnitude < 0.5 then tv = th.Velocity end
-                local tvXZ = Vector3.new(tv.X, 0, tv.Z)
+                collideOn()
                 local vXZ = Vector3.new(th.Position.X, 0, th.Position.Z)
-                local vFeet = feetY(th, thum)
                 local dXZ = Vector3.new(dh.Position.X, 0, dh.Position.Z)
-
-                if #hist > 8 and now - lastEst > 0.1 and now - resnapAt > 0.7 then
-                    lastEst = now
-                    local old = histAt(now - 0.6)
-                    local cur = hist[#hist][2]
-                    if old and (Vector3.new(cur.X, 0, cur.Z) - Vector3.new(old.X, 0, old.Z)).Magnitude > 6 then
-                        local bestL, bestD = L, 1e9
-                        for c = 0.05, 0.8, 0.025 do
-                            local hp = histAt(now - c)
-                            if hp then
-                                local d = (Vector3.new(hp.X, 0, hp.Z) - vXZ).Magnitude
-                                if d < bestD then bestD, bestL = d, c end
-                            end
-                        end
-                        if bestD < 3 then L = L + (bestL - L) * 0.2 end
-                    end
-                end
-
-                local platAt = histAt(now - L) or Vector3.new(carryXZ.X, rideY, carryXZ.Z)
-                local eThen = histEntry(now - L)
-                local repThen = eThen and eThen[3] or Vector3.zero
-                local onOff = vXZ - Vector3.new(platAt.X, 0, platAt.Z)
-                local relTop = vFeet - (platAt.Y + SLAB)
-                local airborne = relTop > 0.8 and relTop < 14
-                local riding = (not airborne) and math.abs(relTop) < 1.6 and onOff.Magnitude < 3.4
+                local toDest = dXZ - carryXZ
+                local dist = toDest.Magnitude
+                local dir = dist > 0.5 and toDest.Unit or Vector3.new(0, 0, -1)
+                local vFeet = feetY(th, thum)
+                local topY = rideY + SLAB
+                local off = (vXZ - carryXZ).Magnitude
+                local tv = th.AssemblyLinearVelocity
+                local tvXZ = Vector3.new(tv.X, 0, tv.Z)
+                local airborne = vFeet > topY + 0.8 and vFeet < topY + 10
                 if airborne then airFor = airFor + dt else airFor = 0 end
-                local fell = relTop < -2.2
-                local slid = (not airborne) and onOff.Magnitude > 3.8
-                if phase ~= "lift" or now - liftAt > L + 0.4 then
-                    if fell or slid or airFor > 2.5 or relTop >= 14 then
-                        lostFor = lostFor + dt
-                    else
-                        lostFor = 0
-                    end
+                if (not airborne and off > 3.5) or vFeet < topY - 2.5 or vFeet >= topY + 10 or airFor > 1.6 then
+                    lostFor = lostFor + dt
+                else
+                    lostFor = 0
                 end
-                if lostFor > 0.25 then
+                if lostFor > 0.35 then
                     resnaps = resnaps + 1
-                    if resnaps > 10 then
+                    if resnaps > 6 then
                         log("bring: lost them")
                         break
                     end
-                    local trueXZ = vXZ + tvXZ * L
-                    local trueFeet = vFeet + math.clamp(tv.Y * L, -8, 4)
-                    local drop = tv.Y < -8 and 1.2 or 0.25
-                    carryXZ = trueXZ
-                    rideY = trueFeet - SLAB - drop
-                    liftTop = trueFeet + 3
-                    goalRideF = nil
+                    carryXZ = vXZ + tvXZ * 0.15
+                    rideY = vFeet - SLAB - 0.15
                     phase = "lift"
-                    curSpeed = 0
-                    lostFor, airFor = 0, 0
-                    resnapAt, liftAt = now, now
-                    hist = {}
-                    riding = false
+                    lostFor = 0
+                    airFor = 0
                 end
-
-                local floorVelThen = riding and Vector3.new(repThen.X, 0, repThen.Z) or Vector3.zero
-                local wRaw = tvXZ - floorVelThen
-                local wCap = ((thum and thum.WalkSpeed) or 16) * 1.4
-                if wRaw.Magnitude > wCap then wRaw = wRaw.Unit * wCap end
-                if not airborne then
-                    wF = wF:Lerp(wRaw, 1 - math.exp(-dt / 0.12))
-                end
-
-                local target = dXZ
-                local away = vXZ - dXZ
-                if away.Magnitude > 0.5 then target = dXZ + away.Unit * 3 end
-                local toT = target - carryXZ
-                local distT = toT.Magnitude
-                local dir = distT > 0.3 and toT.Unit or (orient or Vector3.new(0, 0, -1))
-
-                local ahead = carryXZ + dir * math.min(curSpeed * 0.35 + 2, 10)
-                local f1 = floorUnder(carryXZ, rideY + 2)
-                local f2 = floorUnder(ahead, rideY + 6)
-                local floorY = math.max(f1 or -1e9, f2 or -1e9)
-                if floorY < -1e8 then floorY = rideY + SLAB - liftH end
-                if now - (tonumber(G.MM_BringRayAt) or 0) > 0.25 then
-                    G.MM_BringRayAt = now
-                    rp = rayParams()
-                    local base = f1 or floorY
-                    local h = pickLift(Vector3.new(carryXZ.X, base, carryXZ.Z), Vector3.new(target.X, base, target.Z), rp)
-                    if distT < 10 then h = math.min(h, 3) end
-                    if h >= liftH or now - (tonumber(G.MM_BringLiftAt) or 0) > 1 then
-                        if h >= liftH then G.MM_BringLiftAt = now end
-                        liftH = h
-                    end
-                end
-
-                local follow
-                if riding and phase ~= "lift" then
-                    follow = onOff.Magnitude > 0.4 and onOff * 3 or Vector3.zero
-                else
-                    follow = (vXZ + tvXZ * L - carryXZ) * 7
-                end
-                if follow.Magnitude > 24 then follow = follow.Unit * 24 end
-
-                local moveXZ = follow
-                local vy = 0
+                local vel = Vector3.zero
                 if phase == "lift" then
-                    moveXZ = moveXZ + tvXZ
-                    vy = 12
-                    if rideY + SLAB >= liftTop - 0.05 then
-                        rideY = liftTop - SLAB
-                        vy = 0
-                        if now - liftAt > L + 0.15 and not airborne then phase = "carry" end
+                    local goalY = groundY + LIFT - SLAB
+                    if dh.Position.Y - 3 > groundY then
+                        goalY = math.max(goalY, feetY(dh, dest.Character:FindFirstChildOfClass("Humanoid")) + LIFT - SLAB)
                     end
+                    local vy = 14
+                    rideY = math.min(goalY, rideY + vy * dt)
+                    vel = Vector3.new(0, vy, 0)
+                    carryXZ = carryXZ:Lerp(vXZ + tvXZ * 0.15, 0.25)
+                    if rideY >= goalY - 0.05 then phase = "carry" end
                 elseif phase == "carry" then
-                    local want = math.clamp(distT * 1.8, 0, MAX_SPEED)
-                    if airborne then want = math.min(want, 40) end
-                    local acc = (want > curSpeed) and 120 or 200
-                    curSpeed = curSpeed + math.clamp(want - curSpeed, -acc * dt, acc * dt)
-                    if airborne then
-                        moveXZ = moveXZ + tvXZ
-                    else
-                        moveXZ = moveXZ + dir * curSpeed
-                    end
-                    if distT < 0.8 and curSpeed < 4 then
-                        phase = "settle"
-                        settleAt = now
-                        curSpeed = 0
-                    end
-                elseif phase == "settle" then
-                    local seen = (vXZ - target).Magnitude
-                    if distT > 3 then
-                        phase = "carry"
-                    elseif (seen < 4.5 and not airborne) or now - settleAt > L + 0.9 then
+                    if dist <= 4 then
                         phase = "lower"
-                    end
-                end
-
-                if phase == "carry" or phase == "settle" then
-                    local goalRide = floorY + liftH - SLAB
-                    if not goalRideF then goalRideF = rideY end
-                    goalRideF = goalRideF + math.clamp(goalRide - goalRideF, -10 * dt, 10 * dt)
-                    if not airborne then
-                        vy = math.clamp((goalRideF - rideY) * 5, -12, 12)
+                    else
+                        local speed = math.clamp(dist * 1.6, 18, 70)
+                        local step = math.min(dist, speed * dt)
+                        carryXZ = carryXZ + dir * step
+                        vel = dir * speed
                     end
                 elseif phase == "lower" then
-                    local goalRide = (f1 or floorY) - SLAB - 0.05
-                    if not airborne then
-                        vy = -8
-                        if rideY + vy * dt <= goalRide then
-                            rideY = goalRide
-                            vy = 0
-                            ok = true
-                        end
+                    local floorY = feetY(dh, dest.Character:FindFirstChildOfClass("Humanoid"))
+                    local goalY = floorY - SLAB + 0.2
+                    rideY = math.max(goalY, rideY - 10 * dt)
+                    vel = Vector3.new(0, -10, 0)
+                    if rideY <= goalY + 0.05 then
+                        ok = true
+                        break
                     end
                 end
-                if ok and phase == "lower" then break end
-
-                local rep = moveXZ - wF
-                carryXZ = carryXZ + moveXZ * dt
-                rideY = rideY + vy * dt
-                local vel = Vector3.new(rep.X, vy, rep.Z)
-
-                if not orient then orient = dir end
-                if phase == "carry" and distT > 2 then
-                    orient = orient:Lerp(dir, math.min(1, 1.5 * dt))
-                    if orient.Magnitude < 0.1 then orient = dir end
-                    orient = orient.Unit
-                end
-
                 local pos = Vector3.new(carryXZ.X, rideY, carryXZ.Z)
-                placePlatform(mh, pos, orient, vel)
-                table.insert(hist, { now, pos, rep, riding })
-                while #hist > 0 and now - hist[1][1] > 1.6 do table.remove(hist, 1) end
+                placePlatform(mh, pos, dir, vel)
                 task.wait()
             end
-            log(("bring lag %.2fs resnaps %d"):format(L, resnaps))
             local mh = hrp()
             if mh then
                 local slide = mh.Position - Vector3.new(0, 6, 0)
                 pcall(function()
-                    local bv = mh:FindFirstChild("MM_BringBV")
-                    if bv then bv.Velocity = Vector3.zero end
                     mh.AssemblyLinearVelocity = Vector3.zero
+                    mh.Velocity = Vector3.zero
                     mh.CFrame = CFrame.new(slide)
                 end)
             end
@@ -7299,30 +7084,35 @@ while session.active and gui and gui.Parent do
             if pl ~= me then
                 local rec = G.MM_PlayerData[pl.Name] or G.MM_PlayerData[tostring(pl.UserId)]
                 local down = rec and (rec.Dead == true or rec.Killed == true)
-                if isAlive(pl) and not down then
+                local r = pl.Character and pl.Character:FindFirstChild("HumanoidRootPart")
+                local onMap = r and r.Position.Y < 430
+                if isAlive(pl) and not down and onMap then
                     table.insert(living, pl)
                 end
             end
         end
         G.MM_PeakAlive = math.max(tonumber(G.MM_PeakAlive) or 0, #living)
-        local owner = findOwner()
-        local ownerAlive = false
-        if owner and owner ~= me then
-            local orec = G.MM_PlayerData[owner.Name] or G.MM_PlayerData[tostring(owner.UserId)]
-            local ownerDown = orec and (orec.Dead == true or orec.Killed == true)
-            ownerAlive = isAlive(owner) and not ownerDown
-        end
-        if announced and not G.MM_LastMurdReset and (tonumber(G.MM_PeakAlive) or 0) >= 2
-           and #living == 1 and m and living[1] == m and m ~= me and m ~= owner
-           and not ownerAlive and not botM and not G.MM_Resetting
-           and not G.MM_OwnerAdopted then
-            G.MM_LastMurdReset = true
-            log("only murderer & bot left -> reset")
-            task.spawn(function() pcall(reset) end)
+        local myRec = G.MM_PlayerData[me.Name] or G.MM_PlayerData[tostring(me.UserId)]
+        local botInRound = isAlive(me) and not (myRec and (myRec.Dead == true or myRec.Killed == true))
+        local onlyMurd = announced and not G.MM_OwnerAdopted and not G.MM_LastMurdReset
+           and (tonumber(G.MM_PeakAlive) or 0) >= 2
+           and #living == 1 and m and living[1] == m and m ~= me
+           and not botM and botInRound and not G.MM_Resetting
+        if onlyMurd then
+            G.MM_LastMurdSince = G.MM_LastMurdSince or tick()
+            if tick() - G.MM_LastMurdSince >= 1 then
+                G.MM_LastMurdReset = true
+                G.MM_LastMurdSince = nil
+                log("only murderer & bot left -> reset")
+                task.spawn(function() pcall(reset) end)
+            end
+        else
+            G.MM_LastMurdSince = nil
         end
     else
         G.MM_PeakAlive = 0
         G.MM_LastMurdReset = false
+        G.MM_LastMurdSince = nil
     end
 
     if liveNow and toggleReveal and not G.MM_RoleSentThisRound and not G.MM_RoundOver and findOwner()

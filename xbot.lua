@@ -1,4 +1,4 @@
---[[ Xeno V1.05 XBOT_BUILD 20261011g ]]--
+--[[ Xeno V1.05 XBOT_BUILD 20261011h ]]--
 local GRAPHICS = true
 local TARGET_FPS = 50
 local Players = game:GetService("Players")
@@ -961,19 +961,11 @@ local function commandTargetLabel(p)
     if isOwnerPlayer(p) then return "you" end
     return shortName(p)
 end
-local function matchedPlayerLabel(p, query)
+local function matchedPlayerLabel(p)
     if not p then return "?" end
-    local name = tostring(p.Name or "")
-    local dn = tostring(p.DisplayName or "")
-    local label = name
-    if dn ~= "" and dn:lower() ~= name:lower() then
-        label = dn .. " (@" .. name .. ")"
-    end
-    local q = (tostring(query or ""):match("^%s*(.-)%s*$") or ""):lower()
-    if q ~= "" and q ~= name:lower() and q ~= dn:lower() then
-        label = label .. '  (matched "' .. tostring(query) .. '")'
-    end
-    return label
+    local n = tostring(p.Name or "")
+    if #n <= 5 then return n end
+    return n:sub(1, 5) .. "..."
 end
 local function restOfChatArgs(args)
     if not args or #args < 2 then return "" end
@@ -4724,7 +4716,7 @@ local function handleCommand(p, msg, viaPublic)
                 whisper("Could not find player: " .. work)
                 return
             end
-            matchLabel = matchedPlayerLabel(tgt, work)
+            matchLabel = matchedPlayerLabel(tgt)
             log("fling: \"" .. work .. "\" -> " .. tgt.Name)
         end
 

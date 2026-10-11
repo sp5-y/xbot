@@ -1,4 +1,4 @@
---[[ Xeno V1.05 XBOT_BUILD 20261011h ]]--
+--[[ Xeno V1.05 XBOT_BUILD 20261011i ]]--
 local GRAPHICS = true
 local TARGET_FPS = 50
 local Players = game:GetService("Players")
@@ -767,7 +767,7 @@ G.MM_OwnerPrefs = G.MM_OwnerPrefs or {}
 G.MM_TipLines = {
     "❓ Tip: Whisper commands so the lobby doesn't see them",
     "❓ Tip: !help reveal  ·  !help gun  ·  !help hide",
-    "❓ Tip: Add loop after !fling to keep going (!fling ... loop)",
+    "❓ Tip: Add loop after !banish to keep going (!banish ... loop)",
     "❓ Tip: Use !reveal (player) to reveal the round roles to someone",
     "❓ Tip: Use !hide to keep the bot hidden",
     "❓ Tip: !reset respawns the bot if it's stuck",
@@ -1766,7 +1766,7 @@ G.MM_ResumeStand = function()
     if G.MM_EnsureAutoStand then task.defer(G.MM_EnsureAutoStand) end
 end
 local function standBusy()
-    return G.MM_StandPaused or G.MM_FlingBusy or _G.MM_GunBusy or _G.MM_ShootBusy or _G.MM_StabBusy
+    return G.MM_StandPaused or G.MM_FlingBusy or G.MM_BringBusy or _G.MM_GunBusy or _G.MM_ShootBusy or _G.MM_StabBusy
 end
 function isFollowing()
     return G.MM_FollowUserId ~= nil or G.MM_SummonUserId ~= nil or G.MM_Hiding == true
@@ -1835,6 +1835,7 @@ local function standGroundHumanoid(hum, forceState)
         hum.JumpPower = 0
         pcall(function() hum.JumpHeight = 0 end)
         pcall(function() hum.EvaluateStateMachine = false end)
+        pcall(function() hum:Move(Vector3.zero, false) end)
         local block = {
             Enum.HumanoidStateType.Freefall,
             Enum.HumanoidStateType.FallingDown,
@@ -1848,36 +1849,44 @@ local function standGroundHumanoid(hum, forceState)
             Enum.HumanoidStateType.Seated,
             Enum.HumanoidStateType.Physics,
             Enum.HumanoidStateType.Dead,
+            Enum.HumanoidStateType.Running,
+            Enum.HumanoidStateType.RunningNoPhysics,
         }
         for i = 1, #block do
             pcall(function() hum:SetStateEnabled(block[i], false) end)
         end
-        pcall(function()
-            local np = Enum.HumanoidStateType.RunningNoPhysics
-            if np then
-                hum:SetStateEnabled(np, true)
-                if forceState then hum:ChangeState(np) end
-            end
-        end)
     end)
 end
 
+local function isStandEmoteTrack(tr)
+    if not tr then return false end
+    if G.MM_StandTrack == tr then return true end
+    local n = tostring(tr.Name):lower()
+    local aid = ""
+    pcall(function()
+        aid = tostring(tr.Animation and tr.Animation.AnimationId or ""):lower()
+    end)
+    return n:find("mm_stand", 1, true) or n:find("angelic", 1, true)
+        or n:find("endless", 1, true) or n:find("aura", 1, true)
+        or aid:find("124474822519936", 1, true)
+end
 local function stopFallTracks(hum)
     if not hum then return end
     pcall(function()
         for _, tr in ipairs(hum:GetPlayingAnimationTracks()) do
-            local n = tostring(tr.Name):lower()
-            local aid = ""
-            pcall(function()
-                aid = tostring(tr.Animation and tr.Animation.AnimationId or ""):lower()
-            end)
-            if n:find("fall", 1, true) or n:find("jump", 1, true) or n:find("walk", 1, true)
-                or n:find("run", 1, true) or n:find("swim", 1, true) or n:find("climb", 1, true)
-                or aid:find("fall", 1, true) then
+            if not isStandEmoteTrack(tr) then
                 tr:Stop(0)
             end
         end
     end)
+end
+local function silenceStandLocomotion(char, hum)
+    pcall(function()
+        local animate = char and char:FindFirstChild("Animate")
+        if animate then animate.Disabled = true end
+    end)
+    standGroundHumanoid(hum)
+    stopFallTracks(hum)
 end
 
 G.MM_StandNoclip = function(char)
@@ -2032,9 +2041,14 @@ local function tryStandAnimation(char)
     if not hum then return end
     standGroundHumanoid(hum, not G.MM_StandEmoteOk)
     muteAnimateFalls(char)
+    pcall(function()
+        local a = char:FindFirstChild("Animate")
+        if a then a.Disabled = false end
+    end)
     stopFallTracks(hum)
     if G.MM_AuraPlaying and G.MM_AuraPlaying(hum) then
         G.MM_StandEmoteOk = true
+        silenceStandLocomotion(char, hum)
         return
     end
     local names, ids = auraEmoteTargets(hum)
@@ -2050,7 +2064,7 @@ local function tryStandAnimation(char)
             G.MM_EmoteUntil = tick() + 1e8
             G.MM_StandEmoteOk = true
             G.MM_StandEmoteName = emoteName
-            stopFallTracks(hum)
+            silenceStandLocomotion(char, hum)
             pcall(function()
                 if G.MM_AuraPlaying then G.MM_AuraPlaying(hum) end
                 local tr = G.MM_StandTrack
@@ -2091,6 +2105,7 @@ local function tryStandAnimation(char)
         local played = pcall(function() track:Play(0.2, 1, 1) end)
         if played and track.IsPlaying then
             G.MM_StandTrack = track
+            silenceStandLocomotion(char, hum)
             return true
         end
         pcall(function() track:Stop() end)
@@ -2104,6 +2119,7 @@ local function tryStandAnimation(char)
             return
         end
     end
+    silenceStandLocomotion(char, hum)
 end
 
 local function weaponNameLooks(n)
@@ -2239,7 +2255,7 @@ local function prepareStandBody(char)
     local hum = char:FindFirstChildOfClass("Humanoid")
     standGroundHumanoid(hum, true)
     muteAnimateFalls(char)
-    stopFallTracks(hum)
+    silenceStandLocomotion(char, hum)
     hideBackWeapons(char, true)
     pcall(function()
         for _, part in ipairs(char:GetChildren()) do
@@ -2270,9 +2286,7 @@ local function prepareStandBody(char)
         trackConnection(G.MM_StandStateConn)
         G.MM_StandAnimConn = hum.AnimationPlayed:Connect(function(tr)
             if not G.MM_SummonUserId or G.MM_StandPaused or G.MM_Resetting then return end
-            local n = tostring(tr.Name):lower()
-            if n:find("walk", 1, true) or n:find("run", 1, true) or n:find("fall", 1, true)
-                or n:find("jump", 1, true) or n:find("swim", 1, true) or n:find("climb", 1, true) then
+            if not isStandEmoteTrack(tr) then
                 pcall(function() tr:Stop(0) end)
                 return
             end
@@ -2415,10 +2429,9 @@ function startSummonLoop(userId)
         summonSnap(target, bornAt, dt)
         local hum = char and char:FindFirstChildOfClass("Humanoid")
         if not hum then return end
-        if tick() - lastGround > 0.45 then
+        if tick() - lastGround > 0.12 then
             lastGround = tick()
-            stopFallTracks(hum)
-            standGroundHumanoid(hum)
+            silenceStandLocomotion(char, hum)
         end
         if tick() - lastHide > 0.35 then
             lastHide = tick()
@@ -4325,6 +4338,139 @@ function runFlingLoop(mode, playerQuery, gen, continuousLoop)
 end
 end
 
+do
+    G.MM_BringGen = tonumber(G.MM_BringGen) or 0
+    G.MM_BringBusy = false
+    local BRING_DONE = 8
+    local BRING_TIMEOUT = 22
+    local function enableStandPush(char)
+        if not char then return end
+        pcall(function()
+            for _, part in ipairs(char:GetDescendants()) do
+                if part:IsA("BasePart") then
+                    local n = part.Name
+                    local hit = n == "HumanoidRootPart" or n == "Torso" or n == "UpperTorso"
+                        or n == "LowerTorso" or n == "Head"
+                    part.Anchored = false
+                    part.CanCollide = hit
+                    part.CanTouch = hit
+                    part.Massless = false
+                end
+            end
+        end)
+    end
+    local function bringPathPoints(fromPos, toPos)
+        local pts = {}
+        local used = false
+        pcall(function()
+            local pfs = game:GetService("PathfindingService")
+            local path = pfs:CreatePath({
+                AgentRadius = 2.4,
+                AgentHeight = 5,
+                AgentCanJump = true,
+                WaypointSpacing = 7,
+            })
+            path:ComputeAsync(fromPos, toPos)
+            if path.Status == Enum.PathStatus.Success then
+                for _, wp in ipairs(path:GetWaypoints()) do
+                    table.insert(pts, wp.Position)
+                end
+                used = #pts >= 2
+            end
+        end)
+        if #pts < 2 then
+            pts = { fromPos, toPos }
+            used = false
+        end
+        return pts, used
+    end
+    local function nextBringGoal(pts, idx, tgtPos, ownerPos)
+        while idx <= #pts do
+            local wp = pts[idx]
+            local flat = Vector3.new(wp.X - tgtPos.X, 0, wp.Z - tgtPos.Z)
+            if flat.Magnitude < 4.5 then
+                idx = idx + 1
+            else
+                return idx, wp
+            end
+        end
+        return idx, ownerPos
+    end
+    G.MM_BringPlayer = function(target, owner)
+        if not target or not owner or target == owner or target == me then
+            return false
+        end
+        if not isAlive(target) or not isAlive(me) or not isAlive(owner) then
+            return false
+        end
+        G.MM_BringGen = (tonumber(G.MM_BringGen) or 0) + 1
+        local gen = G.MM_BringGen
+        G.MM_BringBusy = true
+        if G.MM_PauseStand then G.MM_PauseStand() end
+        if G.MM_ActionBegin then G.MM_ActionBegin() end
+        pcall(restoreStandBody)
+        local ok = false
+        local lastPath = 0
+        local pts, usedPath = {}, false
+        local wpIdx = 1
+        local deadline = tick() + BRING_TIMEOUT
+        local runOk, runErr = pcall(function()
+            while tick() < deadline and gen == G.MM_BringGen and session.active do
+                if not (isAlive(target) and isAlive(me) and isAlive(owner)) then break end
+                local mh = hrp()
+                local th = target.Character and target.Character:FindFirstChild("HumanoidRootPart")
+                local oh = owner.Character and owner.Character:FindFirstChild("HumanoidRootPart")
+                if not (mh and th and oh) then break end
+                local dist = (th.Position - oh.Position).Magnitude
+                if dist <= BRING_DONE then
+                    ok = true
+                    break
+                end
+                if lastPath == 0 or tick() - lastPath > 2.4 then
+                    local firstPath = lastPath == 0
+                    pts, usedPath = bringPathPoints(th.Position, oh.Position)
+                    wpIdx = 1
+                    lastPath = tick()
+                    if firstPath then
+                        log("bring path: " .. tostring(#pts) .. (usedPath and " wp" or " direct"))
+                    end
+                end
+                local goal
+                wpIdx, goal = nextBringGoal(pts, wpIdx, th.Position, oh.Position)
+                local dir = Vector3.new(goal.X - th.Position.X, 0, goal.Z - th.Position.Z)
+                if dir.Magnitude < 0.8 then
+                    dir = Vector3.new(oh.Position.X - th.Position.X, 0, oh.Position.Z - th.Position.Z)
+                end
+                if dir.Magnitude < 0.4 then
+                    ok = true
+                    break
+                end
+                dir = dir.Unit
+                enableStandPush(me.Character)
+                local standPos = th.Position - dir * 2.35 + Vector3.new(0, 0.15, 0)
+                pcall(function()
+                    mh.Anchored = false
+                    mh.CFrame = CFrame.lookAt(standPos, th.Position + dir * 4)
+                    local punch = dir * 58 + Vector3.new(0, 3, 0)
+                    mh.AssemblyLinearVelocity = punch
+                    mh.Velocity = punch
+                    mh.AssemblyAngularVelocity = Vector3.zero
+                end)
+                task.wait()
+            end
+        end)
+        if not runOk then
+            log("bring error: " .. tostring(runErr))
+        end
+        if gen == G.MM_BringGen then
+            G.MM_BringBusy = false
+            G.MM_StandPaused = false
+            if G.MM_ResumeStand then G.MM_ResumeStand() end
+        end
+        return ok
+    end
+end
+
 --[[ Round ]]--
 local function isRoundActive()
     if G.MM_HasRoundRoles and G.MM_HasRoundRoles() then return true end
@@ -4369,11 +4515,13 @@ local COMMAND_HELP = {
     togglegun = "<player> - Auto-deliver gun to a player",
     toggleshoot = "[murderer | name] - Auto-grab dropped gun and silent-aim shoot",
     chat = "<msg> - Make bot send a public chat message",
-    fling = "<player> - Flings player off the map",
+    banish = "<player> - Flings player off the map",
+    bring = "<player> - Pathfind and push them to you with the stand",
     help = "<cmd> - Show command list or explain one command",
 }
 local HELP_ORDER = {
-    "owner", "adopt", "unadopt", "tp", "tpmurd", "tpsher", "reveal", "stab", "shoot", "gun", "drop", "fling",
+    "owner", "adopt", "unadopt", "tp", "tpmurd", "tpsher", "reveal", "stab", "shoot", "gun", "drop", "banish",
+    "bring",
     "togglegun", "toggleshoot", "togglereveal", "togglealerts", "togglereset", "toggledrop",
     "reset", "spawn", "hide", "summon", "unsummon", "emote", "chat", "help",
 }
@@ -4384,7 +4532,8 @@ local PREMIUM_ONLY_COMMANDS = {
     toggleshoot = true,
     togglereveal = true,
     togglealerts = true,
-    fling = true,
+    banish = true,
+    bring = true,
     chat = true,
 }
 
@@ -4603,6 +4752,7 @@ local function handleCommand(p, msg, viaPublic)
     local args = splitChatArgs(msg)
     if not args[1] or args[1]:sub(1, 1) ~= "!" then return end
     local cmd, rest = args[1]:sub(2):lower(), msg:sub(#args[1] + 2)
+    if cmd == "fling" then cmd = "banish" end
     if cmd == "" or (cmd ~= "dethrone" and not COMMAND_HELP[cmd]) then
         return
     end
@@ -4656,11 +4806,11 @@ local function handleCommand(p, msg, viaPublic)
     if not authorizeCommand(p) then
         return
     end
-    if flingLoopContinuous and cmd ~= "fling" then
-        whisper('You need to toggle off fling loop using "!fling"')
+    if flingLoopContinuous and cmd ~= "banish" then
+        whisper('You need to toggle off banish loop using "!banish"')
         return
     end
-    if cmd == "fling" then
+    if cmd == "banish" then
         local raw = restOfChatArgs(args)
         local trimmed = (raw:match("^%s*(.-)%s*$") or "")
         local wl = trimmed:lower()
@@ -4673,15 +4823,15 @@ local function handleCommand(p, msg, viaPublic)
         if q == "" then
             if flingLoopActive or flingActive or flingSettling then
                 cancelFlingWork()
-                whisper("Fling loop stopped")
+                whisper("Banish loop stopped")
         return
     end
-            whisper("!fling all | sheriff | murder | <name> — add loop to repeat, !fling alone stops")
+            whisper("!banish all | sheriff | murder | <name> — add loop to repeat, !banish alone stops")
         return
         end
 
         if flingLoopContinuous then
-            whisper('You need to toggle off fling loop using "!fling"')
+            whisper('You need to toggle off banish loop using "!banish"')
             return
         end
         if flingLoopActive or flingActive or flingSettling then
@@ -4705,7 +4855,7 @@ local function handleCommand(p, msg, viaPublic)
         end
 
         if continuousLoop and mode == "all" then
-            whisper("Use !fling all only")
+            whisper("Use !banish all only")
             return
         end
 
@@ -4717,7 +4867,7 @@ local function handleCommand(p, msg, viaPublic)
                 return
             end
             matchLabel = matchedPlayerLabel(tgt)
-            log("fling: \"" .. work .. "\" -> " .. tgt.Name)
+            log("banish: \"" .. work .. "\" -> " .. tgt.Name)
         end
 
         flingActive = false
@@ -4729,14 +4879,65 @@ local function handleCommand(p, msg, viaPublic)
         flingLoopContinuous = loopArg
         runFlingLoop(mode, playerQuery, gen, loopArg)
         if mode == "all" then
-            whisper("Flinging everyone")
+            whisper("Banishing everyone")
         elseif loopArg then
-            whisper("Say !fling alone to stop the loop")
+            whisper("Say !banish alone to stop the loop")
             task.wait(0.3)
             whisper("Looping on: " .. matchLabel)
         else
-            whisper("Flinging " .. matchLabel)
+            whisper("Banishing " .. matchLabel)
         end
+        return
+    end
+    if cmd == "bring" then
+        local work = restOfChatArgs(args)
+        work = (work:match("^%s*(.-)%s*$") or "")
+        if work == "" then
+            whisper("!bring <player>")
+            return
+        end
+        if standBusy() or G.MM_BringBusy then
+            whisper("Busy, try again")
+            return
+        end
+        local tgt = findOtherPlayer(work)
+        if not tgt then
+            whisper("Could not find player: " .. work)
+            return
+        end
+        local owner = findOwner()
+        if not owner or owner == me then
+            whisper("No owner")
+            return
+        end
+        if tgt == owner then
+            whisper("They're already here")
+            return
+        end
+        if not isAlive(tgt) or not isAlive(me) then
+            whisper("Can't reach " .. matchedPlayerLabel(tgt))
+            return
+        end
+        local th = tgt.Character and tgt.Character:FindFirstChild("HumanoidRootPart")
+        local oh = owner.Character and owner.Character:FindFirstChild("HumanoidRootPart")
+        if not (th and oh) then
+            whisper("Can't reach " .. matchedPlayerLabel(tgt))
+            return
+        end
+        local dist = (th.Position - oh.Position).Magnitude
+        if dist <= 10 then
+            whisper("Already close")
+            return
+        end
+        whisper("Bringing " .. matchedPlayerLabel(tgt))
+        log("bring: \"" .. work .. "\" -> " .. tgt.Name .. " (" .. tostring(math.floor(dist + 0.5)) .. " studs)")
+        task.spawn(function()
+            local ok = false
+            if G.MM_BringPlayer then
+                ok = G.MM_BringPlayer(tgt, owner)
+            end
+            log(ok and "bring done" or "bring failed")
+        end)
         return
     end
     local m, s = findHolder({"Knife"}), findHolder(G.MM_GunNames)
@@ -5548,9 +5749,9 @@ local function bridgeRunFlingOnce(mode, playerQuery, gen)
             end
         end
         if n > 0 then
-            return "ok", "Flung " .. tostring(n) .. " player(s)"
+            return "ok", "Banished " .. tostring(n) .. " player(s)"
         end
-        return "ok", "Fling finished (no hits)"
+        return "ok", "Banish finished (no hits)"
     end
 
     local tgt
@@ -5569,9 +5770,45 @@ local function bridgeRunFlingOnce(mode, playerQuery, gen)
     fling(tgt, function(ok) flung = ok end)
     waitFlingDone(gen, 25)
     if flung then
-        return "ok", "Flung " .. bridgeTargetLabel(tgt)
+        return "ok", "Banished " .. bridgeTargetLabel(tgt)
     end
-    return "ok", "Fling finished"
+    return "ok", "Banish finished"
+end
+
+local function bridgeBringMessage(targetQuery)
+    if not session.ownerId then
+        return "error", "No owner — join your reserved server first"
+    end
+    if standBusy() or G.MM_BringBusy then
+        return "error", "Busy, try again"
+    end
+    local tgt = findOtherPlayer(bridgeTrim(targetQuery))
+    if not tgt then
+        return "error", "Player not found"
+    end
+    local owner = findOwner()
+    if not owner or owner == me then
+        return "error", "No owner"
+    end
+    if tgt == owner then
+        return "error", "They're already here"
+    end
+    if not isAlive(tgt) or not isAlive(me) then
+        return "error", "Can't reach target"
+    end
+    local th = tgt.Character and tgt.Character:FindFirstChild("HumanoidRootPart")
+    local oh = owner.Character and owner.Character:FindFirstChild("HumanoidRootPart")
+    if not (th and oh) then
+        return "error", "Can't reach target"
+    end
+    if (th.Position - oh.Position).Magnitude <= 10 then
+        return "ok", "Already close"
+    end
+    local ok = G.MM_BringPlayer and G.MM_BringPlayer(tgt, owner)
+    if ok then
+        return "ok", "Brought " .. bridgeTargetLabel(tgt)
+    end
+    return "error", "Bring failed"
 end
 
 local function bridgeStabMessage(targetQuery)
@@ -5670,7 +5907,7 @@ local function bridgeFlingMessage(query)
         return "error", "No owner — join your reserved server first"
     end
     if flingLoopContinuous then
-        return "error", "Stop the in-game fling loop with !fling first"
+        return "error", "Stop the in-game banish loop with !banish first"
     end
     local mode, playerQuery, err = bridgeParseFlingQuery(query)
     if err then return "error", err end
@@ -5834,6 +6071,8 @@ local function processBridgeCommands(jobId, commands)
         stab = bridgeStabMessage,
         shoot = bridgeShootMessage,
         fling = bridgeFlingMessage,
+        banish = bridgeFlingMessage,
+        bring = bridgeBringMessage,
         tp = bridgeTpMessage,
         reveal = bridgeRevealMessage,
         reset = bridgeResetMessage,

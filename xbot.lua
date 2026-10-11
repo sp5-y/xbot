@@ -1,4 +1,4 @@
---[[ Xeno V1.05 XBOT_BUILD 20261011n ]]--
+--[[ Xeno V1.05 XBOT_BUILD 20261011o ]]--
 local GRAPHICS = true
 local TARGET_FPS = 50
 local Players = game:GetService("Players")
@@ -4667,7 +4667,7 @@ local function sendFullHelp(target, gapBetween, replyFn)
         task.wait(0.2)
     end
     if not o then return end
-    replyFn("Use !help <command> for what a command does", o)
+    replyFn("Type !help then a name for details", o)
     if gapBetween > 0 then task.wait(gapBetween) end
     o = resolve()
     if not o then
@@ -4679,27 +4679,21 @@ local function sendFullHelp(target, gapBetween, replyFn)
     end
     if not o then return end
     local keys = helpKeysForOwner()
-    local line = "cmds: " .. table.concat(keys, "  ")
-    if #line <= 200 then
-        replyFn(line, o)
-        return
-    end
-    local mid = math.ceil(#keys / 2)
-    local a, b = {}, {}
-    for i, key in ipairs(keys) do
-        if i <= mid then table.insert(a, key) else table.insert(b, key) end
-    end
-    replyFn("cmds: " .. table.concat(a, "  "), o)
-    if gapBetween > 0 then task.wait(gapBetween) end
-    o = resolve()
-    if not o then
-        for _ = 1, 12 do
-            task.wait(0.15)
-            o = resolve()
-            if o then break end
+    local chunks, cur = {}, {}
+    for _, k in ipairs(keys) do
+        table.insert(cur, "!" .. k)
+        if #cur >= 7 then
+            table.insert(chunks, table.concat(cur, " "))
+            cur = {}
         end
     end
-    if o then replyFn("cmds: " .. table.concat(b, "  "), o) end
+    if #cur > 0 then table.insert(chunks, table.concat(cur, " ")) end
+    for i, chunk in ipairs(chunks) do
+        o = resolve()
+        if not o then break end
+        replyFn(((i == 1) and "cmds: " or "more: ") .. chunk, o)
+        if gapBetween > 0 and i < #chunks then task.wait(gapBetween) end
+    end
 end
 
 local ownerOnboardingGen = 0
@@ -4737,25 +4731,27 @@ local function sendFullHelpToOwner(userId, gapBetween)
     gapBetween = gapBetween or 0.75
     if session.ownerId ~= userId then return false end
 
-    if not deliverOwnerLine(userId, "Use !help <command> for what a command does", 6, 0.7) then
+    if not deliverOwnerLine(userId, "Type !help then a name for details", 6, 0.7) then
         return false
     end
     task.wait(gapBetween)
 
     local keys = helpKeysForOwner()
-    local line = "cmds: " .. table.concat(keys, "  ")
-    if #line <= 200 then
-        return deliverOwnerLine(userId, line, 3, 0.55)
+    local chunks, cur = {}, {}
+    for _, k in ipairs(keys) do
+        table.insert(cur, "!" .. k)
+        if #cur >= 7 then
+            table.insert(chunks, table.concat(cur, " "))
+            cur = {}
+        end
     end
-
-    local mid = math.ceil(#keys / 2)
-    local a, b = {}, {}
-    for i, key in ipairs(keys) do
-        if i <= mid then table.insert(a, key) else table.insert(b, key) end
+    if #cur > 0 then table.insert(chunks, table.concat(cur, " ")) end
+    for i, chunk in ipairs(chunks) do
+        local prefix = (i == 1) and "cmds: " or "more: "
+        if not deliverOwnerLine(userId, prefix .. chunk, 5, 0.7) then return false end
+        if gapBetween > 0 and i < #chunks then task.wait(gapBetween) end
     end
-    if not deliverOwnerLine(userId, "cmds: " .. table.concat(a, "  "), 3, 0.55) then return false end
-    task.wait(gapBetween)
-    return deliverOwnerLine(userId, "cmds: " .. table.concat(b, "  "), 3, 0.55)
+    return true
 end
 
 local function syncOwnerPremiumFromClaim(claim)
@@ -4766,46 +4762,29 @@ scheduleOwnerOnboarding = function(userId)
     ownerOnboardingGen = ownerOnboardingGen + 1
     local gen = ownerOnboardingGen
     task.spawn(function()
-        local t0 = tick()
-        while tick() - t0 < 10 do
+        for _ = 1, 20 do
             if gen ~= ownerOnboardingGen or session.ownerId ~= userId then return end
-            if unitAlive(me) and not G.MM_Resetting then break end
+            if not G.MM_Resetting then break end
             task.wait(0.2)
         end
-        task.wait(0.85)
+        task.wait(1.2)
         if gen ~= ownerOnboardingGen or session.ownerId ~= userId then return end
-        local o
-        for _ = 1, 40 do
-            if gen ~= ownerOnboardingGen or session.ownerId ~= userId then return end
-            o = resolveOwnerPlayer(userId)
-            if o then break end
-            task.wait(0.12)
-        end
+        local o = resolveOwnerPlayer(userId)
         if not o then
             log("onboarding: owner player not found")
             return
         end
-        log("new owner: " .. o.DisplayName)
+        log("new owner: " .. o.Name)
         local announcement = ownerAnnouncementText(o)
         if announcement ~= "" then
             sendChat(announcement)
         end
-
         if gen ~= ownerOnboardingGen or session.ownerId ~= userId then return end
-        if not unitAlive(me) or G.MM_Resetting then
-            t0 = tick()
-            while tick() - t0 < 8 do
-                if gen ~= ownerOnboardingGen or session.ownerId ~= userId then return end
-                if unitAlive(me) and not G.MM_Resetting then break end
-                task.wait(0.2)
-            end
-            task.wait(0.6)
-        end
-
-        if not sendFullHelpToOwner(userId, 0.9) then
+        if sendFullHelpToOwner(userId, 0.95) then
+            log("onboarding: help sent")
+        else
             log("onboarding: help whisper failed")
         end
-
     end)
 end
 
@@ -4889,7 +4868,7 @@ local function handleCommand(p, msg, viaPublic)
             return
         end
         setAdoptedOwner(p)
-        whisper("Adopted — you are owner")
+        whisper("Adopted. Type !help for cmds")
         return
     elseif cmd == "unadopt" or cmd == "dethrone" then
         if not session.ownerId or p.UserId ~= session.ownerId then
@@ -6872,7 +6851,8 @@ while session.active and gui and gui.Parent do
         G.MM_LastMurdReset = false
     end
 
-    if liveNow and toggleReveal and not G.MM_RoleSentThisRound and findOwner() then
+    if liveNow and toggleReveal and not G.MM_RoleSentThisRound and findOwner()
+        and not (G.MM_AdoptAt and tick() - tonumber(G.MM_AdoptAt) < 8) then
         local curM, curS = resolveAssignedRoles(0)
         if curM and curS then
             sendRoundRoleCallouts(curM, curS)

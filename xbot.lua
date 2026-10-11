@@ -1,4 +1,4 @@
---[[ Xeno V1.05 XBOT_BUILD 20261011l ]]--
+--[[ Xeno V1.05 XBOT_BUILD 20261011m ]]--
 local GRAPHICS = true
 local TARGET_FPS = 50
 local Players = game:GetService("Players")
@@ -4428,8 +4428,8 @@ end
 do
     G.MM_BringGen = tonumber(G.MM_BringGen) or 0
     G.MM_BringBusy = false
-    local BRING_DONE = 9
-    local BRING_TIMEOUT = 10
+    local BRING_DONE = 10
+    local BRING_TIMEOUT = 14
     local function enableStandPush(char)
         if not char then return end
         pcall(function()
@@ -4483,7 +4483,7 @@ do
             pts = { th0.Position, oh0.Position }
             pcall(function()
                 mh0.Anchored = false
-                mh0.CFrame = th0.CFrame * CFrame.new(0, 1.2, 2)
+                mh0.CFrame = th0.CFrame * CFrame.new(0, 0.05, 2.2)
             end)
             task.spawn(function()
                 pcall(function()
@@ -4531,17 +4531,21 @@ do
                 end
                 dir = dir.Unit
                 enableStandPush(me.Character)
-                local power = toOwner.Magnitude > 30 and 2200 or (toOwner.Magnitude > 14 and 1400 or 700)
-                local standPos = th.Position - dir * 1.05 + Vector3.new(0, 0.4, 0)
-                pcall(function()
-                    mh.Anchored = false
-                    mh.CFrame = CFrame.lookAt(standPos, th.Position + dir * 8)
-                    local punch = dir * power + Vector3.new(0, 18, 0)
-                    mh.AssemblyLinearVelocity = punch
-                    mh.Velocity = punch
-                    mh.AssemblyAngularVelocity = Vector3.zero
-                end)
-                RunSvc.Heartbeat:Wait()
+                local lifted = th.Position.Y - oh.Position.Y
+                if lifted > 6 then
+                    task.wait(0.05)
+                else
+                    local standPos = Vector3.new(th.Position.X, th.Position.Y, th.Position.Z) - dir * 1.7
+                    pcall(function()
+                        mh.Anchored = false
+                        mh.CFrame = CFrame.lookAt(standPos, th.Position + dir * 6)
+                        local punch = dir * 58
+                        mh.AssemblyLinearVelocity = punch
+                        mh.Velocity = punch
+                        mh.AssemblyAngularVelocity = Vector3.zero
+                    end)
+                    RunSvc.Heartbeat:Wait()
+                end
             end
         end)
         if not runOk then
@@ -4733,7 +4737,7 @@ local function sendFullHelpToOwner(userId, gapBetween)
     gapBetween = gapBetween or 0.75
     if session.ownerId ~= userId then return false end
 
-    if not deliverOwnerLine(userId, "Use !help <command> for what a command does", 3, 0.55) then
+    if not deliverOwnerLine(userId, "Use !help <command> for what a command does", 6, 0.7) then
         return false
     end
     task.wait(gapBetween)
@@ -4762,7 +4766,13 @@ scheduleOwnerOnboarding = function(userId)
     ownerOnboardingGen = ownerOnboardingGen + 1
     local gen = ownerOnboardingGen
     task.spawn(function()
-        task.wait(1.1)
+        local t0 = tick()
+        while tick() - t0 < 10 do
+            if gen ~= ownerOnboardingGen or session.ownerId ~= userId then return end
+            if unitAlive(me) and not G.MM_Resetting then break end
+            task.wait(0.2)
+        end
+        task.wait(0.85)
         if gen ~= ownerOnboardingGen or session.ownerId ~= userId then return end
         local o
         for _ = 1, 40 do
@@ -4782,8 +4792,17 @@ scheduleOwnerOnboarding = function(userId)
         end
 
         if gen ~= ownerOnboardingGen or session.ownerId ~= userId then return end
+        if not unitAlive(me) or G.MM_Resetting then
+            t0 = tick()
+            while tick() - t0 < 8 do
+                if gen ~= ownerOnboardingGen or session.ownerId ~= userId then return end
+                if unitAlive(me) and not G.MM_Resetting then break end
+                task.wait(0.2)
+            end
+            task.wait(0.6)
+        end
 
-        if not sendFullHelpToOwner(userId, 0.75) then
+        if not sendFullHelpToOwner(userId, 0.9) then
             log("onboarding: help whisper failed")
         end
 
@@ -6575,6 +6594,9 @@ task.spawn(function()
             local cur = not ownerIsConfirmedDead(own)
             local prev = alivePrev[own.UserId]
             if prev == true and cur == false then
+                if G.MM_AdoptAt and tick() - tonumber(G.MM_AdoptAt) < 5 then
+                    -- just adopted; don't treat lobby/stale Dead as a real death
+                else
                 local oh = own.Character and (own.Character:FindFirstChild("HumanoidRootPart") or own.Character.PrimaryPart)
                 if G.MM_MarkIgnoreDrop then
                     G.MM_MarkIgnoreDrop(oh and oh.Position, 12)
@@ -6592,6 +6614,7 @@ task.spawn(function()
                 else
                     log("owner died -> resetting bot (" .. own.Name .. ")")
                     task.spawn(function() pcall(reset) end)
+                end
                 end
             end
         end

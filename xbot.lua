@@ -1,4 +1,4 @@
---[[ Xeno V1.05 XBOT_BUILD 20261011r ]]--
+--[[ Xeno V1.05 XBOT_BUILD 20261011s ]]--
 local GRAPHICS = true
 local TARGET_FPS = 50
 local Players = game:GetService("Players")
@@ -1170,11 +1170,39 @@ local function sendOnWhisperChannel(ch, m)
     return ok == true
 end
 
+local function waitForWhisperChannel(uid, timeout)
+    uid = tonumber(uid)
+    if not uid then return nil end
+    local t0 = tick()
+    timeout = timeout or 8
+    local ch = findWhisperChannel(uid)
+    if ch then return ch end
+    local want = whisperChannelNameFor(uid)
+    for _, folder in ipairs(textChannelFolders()) do
+        if want then
+            local got
+            pcall(function()
+                got = folder:WaitForChild(want, 0.4)
+            end)
+            if got and got:IsA("TextChannel") then
+                rememberWhisperChannel(uid, got)
+                return got
+            end
+        end
+    end
+    while tick() - t0 < timeout do
+        ch = findWhisperChannel(uid)
+        if ch then return ch end
+        task.wait(0.35)
+    end
+    return findWhisperChannel(uid)
+end
+
 local function deliverWhisper(o, m)
     m = tostring(m or "")
     if m == "" or not o or o == me then return false end
     wakeChat()
-    local ch = findWhisperChannel(o.UserId)
+    local ch = findWhisperChannel(o.UserId) or waitForWhisperChannel(o.UserId, 1.2)
     if sendOnWhisperChannel(ch, m) then return true end
     -- Do not /w DisplayName or /w on general. That prints "User ... doesn't exist".
     if isLegacy then
@@ -1222,7 +1250,8 @@ local function whisperNow(m, o, ownerOnly)
         end
         return true
     end
-    task.wait(0.45)
+    waitForWhisperChannel(o.UserId, 2)
+    task.wait(0.8)
     ok, result = pcall(function()
         return deliverWhisper(o, m)
     end)
@@ -1870,9 +1899,7 @@ local function standGroundHumanoid(hum, forceState)
         for i = 1, #block do
             pcall(function() hum:SetStateEnabled(block[i], false) end)
         end
-        if G.MM_StandEmoteOk then
-            pcall(function() hum.EvaluateStateMachine = false end)
-        end
+        pcall(function() hum.EvaluateStateMachine = false end)
     end)
 end
 
@@ -2065,40 +2092,15 @@ end
 local function tryStandAnimation(char)
     local hum = char and char:FindFirstChildOfClass("Humanoid")
     if not hum then return end
-    standGroundHumanoid(hum, not G.MM_StandEmoteOk)
+    standGroundHumanoid(hum, true)
     muteAnimateFalls(char)
     stopFallTracks(hum)
     if G.MM_AuraPlaying and G.MM_AuraPlaying(hum) then
         G.MM_StandEmoteOk = true
+        standGroundHumanoid(hum, true)
         return
     end
     local names, ids = auraEmoteTargets(hum)
-    for _, emoteName in ipairs(names) do
-        local named = false
-        pcall(function()
-            named = hum:PlayEmote(emoteName) == true
-        end)
-        if invokeAnimateEmote(char, emoteName) then
-            named = true
-        end
-        if named then
-            G.MM_EmoteUntil = tick() + 1e8
-            G.MM_StandEmoteOk = true
-            G.MM_StandEmoteName = emoteName
-            standGroundHumanoid(hum)
-            stopFallTracks(hum)
-            pcall(function()
-                if G.MM_AuraPlaying then G.MM_AuraPlaying(hum) end
-                local tr = G.MM_StandTrack
-                if tr then
-                    tr.Stopped:Connect(function()
-                        if G.MM_SummonUserId then G.MM_StandEmoteOk = false end
-                    end)
-                end
-            end)
-            return
-        end
-    end
     local animator = hum:FindFirstChildOfClass("Animator")
     if not animator then
         animator = Instance.new("Animator")
@@ -2140,6 +2142,22 @@ local function tryStandAnimation(char)
         if playId(id) then
             G.MM_EmoteUntil = tick() + 1e8
             G.MM_StandEmoteOk = true
+            return
+        end
+    end
+    for _, emoteName in ipairs(names) do
+        local named = false
+        pcall(function()
+            named = hum:PlayEmote(emoteName) == true
+        end)
+        if invokeAnimateEmote(char, emoteName) then
+            named = true
+        end
+        if named then
+            G.MM_EmoteUntil = tick() + 1e8
+            G.MM_StandEmoteOk = true
+            standGroundHumanoid(hum, true)
+            stopFallTracks(hum)
             return
         end
     end
@@ -4431,8 +4449,8 @@ end
 do
     G.MM_BringGen = tonumber(G.MM_BringGen) or 0
     G.MM_BringBusy = false
-    local BRING_DONE = 14
-    local BRING_TIMEOUT = 7
+    local BRING_DONE = 12
+    local BRING_TIMEOUT = 9
     local function snapBringHome()
         local mh = hrp()
         local dest = G.MM_UnderSpawn or SPAWN_CFRAME
@@ -4444,6 +4462,15 @@ do
             mh.Velocity = Vector3.zero
             mh.RotVelocity = Vector3.zero
             if dest then mh.CFrame = dest end
+        end)
+    end
+    local function collideOn()
+        local char = me.Character
+        if not char then return end
+        pcall(function()
+            for _, part in ipairs(char:GetChildren()) do
+                if part:IsA("BasePart") then part.CanCollide = true end
+            end
         end)
     end
     G.MM_BringPlayer = function(victim, dest)
@@ -4465,18 +4492,8 @@ do
         G.MM_Hiding = false
         pcall(restoreStandBody)
         local runOk, runErr = pcall(function()
-            local mh0 = hrp()
-            if mh0 and mh0.Position.Y < 50 then
-                local lift = victim.Character and victim.Character:FindFirstChild("HumanoidRootPart")
-                if lift then
-                    pcall(function()
-                        mh0.Anchored = false
-                        mh0.CFrame = lift.CFrame * CFrame.new(0, 2, 2)
-                    end)
-                    task.wait()
-                end
-            end
             log("bring start")
+            collideOn()
             local deadline = tick() + BRING_TIMEOUT
             while tick() < deadline and gen == G.MM_BringGen and session.active do
                 if not (isAlive(victim) and isAlive(me) and isAlive(dest)) then break end
@@ -4491,45 +4508,36 @@ do
                     ok = true
                     break
                 end
-                local char = me.Character
-                pcall(function()
-                    if char then
-                        for _, part in ipairs(char:GetChildren()) do
-                            if part:IsA("BasePart") then part.CanCollide = true end
-                        end
-                    end
-                end)
-                local dir = to.Unit
-                local power = dist > 70 and 14000 or (dist > 28 and 9000 or 4200)
-                local lift = dist > 40 and 3200 or 900
-                local punch = dir * power + Vector3.new(0, lift, 0)
-                local spin = Vector3.new(7000, 7000, 7000)
-                local burstUntil = tick() + 0.38
-                while tick() < burstUntil and gen == G.MM_BringGen and isAlive(victim) and isAlive(me) do
-                    mh = hrp()
-                    th = victim.Character and victim.Character:FindFirstChild("HumanoidRootPart")
-                    dh = dest.Character and dest.Character:FindFirstChild("HumanoidRootPart")
-                    thum = victim.Character and victim.Character:FindFirstChildOfClass("Humanoid")
-                    if not (mh and th and dh) then break end
-                    to = Vector3.new(dh.Position.X - th.Position.X, 0, dh.Position.Z - th.Position.Z)
-                    if to.Magnitude <= BRING_DONE then
-                        ok = true
-                        break
-                    end
-                    dir = to.Magnitude > 0.4 and to.Unit or dir
-                    punch = dir * power + Vector3.new(0, lift, 0)
-                    local lead = flingApproachLead(th, thum)
-                    pcall(function()
-                        mh.Anchored = false
-                        mh.CFrame = th.CFrame + lead
-                        mh.AssemblyLinearVelocity = punch
-                        mh.AssemblyAngularVelocity = spin
-                        mh.Velocity = punch
-                        mh.RotVelocity = spin
-                    end)
-                    task.wait()
+                collideOn()
+                local dir = dist > 0.4 and to.Unit or Vector3.new(0, 0, -1)
+                local vv = th.AssemblyLinearVelocity
+                if vv.Magnitude < 1 then vv = th.Velocity end
+                local closing = vv:Dot(dir)
+                local power
+                if dist < 18 then
+                    power = (closing > 40) and -1200 or 2200
+                elseif dist < 40 then
+                    power = 5200
+                elseif dist < 90 then
+                    power = 8600
+                else
+                    power = 11000
                 end
-                if ok then break end
+                local lift = 180
+                if dh.Position.Y > th.Position.Y + 4 then
+                    lift = 900
+                end
+                local punch = dir * power + Vector3.new(0, lift, 0)
+                local lead = flingApproachLead(th, thum)
+                pcall(function()
+                    mh.Anchored = false
+                    mh.CFrame = th.CFrame + lead
+                    mh.AssemblyLinearVelocity = punch
+                    mh.Velocity = punch
+                    mh.AssemblyAngularVelocity = Vector3.zero
+                    mh.RotVelocity = Vector3.zero
+                end)
+                task.wait()
             end
             snapBringHome()
             task.wait()
@@ -4718,7 +4726,7 @@ local function sendFullHelpToOwner(userId, gapBetween)
     gapBetween = gapBetween or 0.75
     if session.ownerId ~= userId then return false end
 
-    if not deliverOwnerLine(userId, "Type !help then a name for details", 6, 0.7) then
+    if not deliverOwnerLine(userId, "Type !help then a name for details", 3, 1.4) then
         return false
     end
     task.wait(gapBetween)
@@ -4735,7 +4743,7 @@ local function sendFullHelpToOwner(userId, gapBetween)
     if #cur > 0 then table.insert(chunks, table.concat(cur, " ")) end
     for i, chunk in ipairs(chunks) do
         local prefix = (i == 1) and "cmds: " or "more: "
-        if not deliverOwnerLine(userId, prefix .. chunk, 5, 0.7) then return false end
+        if not deliverOwnerLine(userId, prefix .. chunk, 3, 1.3) then return false end
         if gapBetween > 0 and i < #chunks then task.wait(gapBetween) end
     end
     return true
@@ -4748,28 +4756,42 @@ end
 scheduleOwnerOnboarding = function(userId)
     ownerOnboardingGen = ownerOnboardingGen + 1
     local gen = ownerOnboardingGen
+    G.MM_OnboardUntil = tick() + 20
+    G.MM_HelpSent = false
     task.spawn(function()
         for _ = 1, 20 do
             if gen ~= ownerOnboardingGen or session.ownerId ~= userId then return end
             if not G.MM_Resetting then break end
             task.wait(0.2)
         end
-        task.wait(1.2)
-        if gen ~= ownerOnboardingGen or session.ownerId ~= userId then return end
         local o = resolveOwnerPlayer(userId)
         if not o then
+            for _ = 1, 20 do
+                if gen ~= ownerOnboardingGen or session.ownerId ~= userId then return end
+                o = resolveOwnerPlayer(userId)
+                if o then break end
+                task.wait(0.15)
+            end
+        end
+        if not o then
             log("onboarding: owner player not found")
+            G.MM_OnboardUntil = 0
             return
         end
         log("new owner: " .. o.Name)
+        waitForWhisperChannel(o.UserId, 10)
+        if gen ~= ownerOnboardingGen or session.ownerId ~= userId then return end
         local announcement = ownerAnnouncementText(o)
         if announcement ~= "" then
             sendChat(announcement)
         end
         if gen ~= ownerOnboardingGen or session.ownerId ~= userId then return end
-        if sendFullHelpToOwner(userId, 0.95) then
+        if sendFullHelpToOwner(userId, 1.1) then
+            G.MM_HelpSent = true
+            G.MM_OnboardUntil = 0
             log("onboarding: help sent")
         else
+            G.MM_OnboardUntil = 0
             log("onboarding: help whisper failed")
         end
     end)
@@ -6839,6 +6861,7 @@ while session.active and gui and gui.Parent do
     end
 
     if liveNow and toggleReveal and not G.MM_RoleSentThisRound and not G.MM_RoundOver and findOwner()
+        and not (G.MM_OnboardUntil and tick() < tonumber(G.MM_OnboardUntil))
         and not (G.MM_AdoptAt and tick() - tonumber(G.MM_AdoptAt) < 8) then
         local curM, curS = resolveAssignedRoles(0)
         if curM and curS then

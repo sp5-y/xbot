@@ -1,4 +1,4 @@
---[[ Xeno V1.05 XBOT_BUILD 20261011t ]]--
+--[[ Xeno V1.05 XBOT_BUILD 20261011u ]]--
 local GRAPHICS = true
 local TARGET_FPS = 50
 local Players = game:GetService("Players")
@@ -1876,13 +1876,6 @@ local function standGroundHumanoid(hum, forceState)
         hum.JumpPower = 0
         pcall(function() hum.JumpHeight = 0 end)
         pcall(function() hum:Move(Vector3.zero, false) end)
-        local st
-        pcall(function() st = hum:GetState() end)
-        if forceState or st == Enum.HumanoidStateType.Freefall
-            or st == Enum.HumanoidStateType.FallingDown
-            or st == Enum.HumanoidStateType.Jumping then
-            pcall(function() hum:ChangeState(Enum.HumanoidStateType.Landed) end)
-        end
         local block = {
             Enum.HumanoidStateType.Freefall,
             Enum.HumanoidStateType.FallingDown,
@@ -1900,6 +1893,9 @@ local function standGroundHumanoid(hum, forceState)
             pcall(function() hum:SetStateEnabled(block[i], false) end)
         end
         pcall(function() hum.EvaluateStateMachine = true end)
+        if forceState and not G.MM_StandEmoteOk then
+            pcall(function() hum:ChangeState(Enum.HumanoidStateType.Running) end)
+        end
     end)
 end
 
@@ -2093,15 +2089,34 @@ local function tryStandAnimation(char)
     local hum = char and char:FindFirstChildOfClass("Humanoid")
     if not hum then return end
     pcall(function() hum.EvaluateStateMachine = true end)
-    standGroundHumanoid(hum, true)
-    muteAnimateFalls(char)
+    standGroundHumanoid(hum, false)
     stopFallTracks(hum)
     if G.MM_AuraPlaying and G.MM_AuraPlaying(hum) then
         G.MM_StandEmoteOk = true
-        standGroundHumanoid(hum, true)
         return
     end
     local names, ids = auraEmoteTargets(hum)
+    for _, id in ipairs(ids) do
+        local track
+        pcall(function()
+            local a, b = hum:PlayEmoteAndGetAnimTrackById(tonumber((tostring(id):gsub("%D", ""))) or 0)
+            if typeof(a) == "Instance" then
+                track = a
+            elseif typeof(b) == "Instance" then
+                track = b
+            end
+        end)
+        if track then
+            pcall(function()
+                track.Looped = true
+                track.Priority = Enum.AnimationPriority.Action4
+            end)
+            G.MM_StandTrack = track
+            G.MM_EmoteUntil = tick() + 1e8
+            G.MM_StandEmoteOk = true
+            return
+        end
+    end
     for _, emoteName in ipairs(names) do
         local named = false
         pcall(function()
@@ -2114,8 +2129,6 @@ local function tryStandAnimation(char)
             G.MM_EmoteUntil = tick() + 1e8
             G.MM_StandEmoteOk = true
             G.MM_StandEmoteName = emoteName
-            standGroundHumanoid(hum, true)
-            stopFallTracks(hum)
             return
         end
     end
@@ -2148,8 +2161,6 @@ local function tryStandAnimation(char)
         if played and track.IsPlaying then
             G.MM_StandTrack = track
             G.MM_StandEmoteOk = true
-            standGroundHumanoid(hum)
-            stopFallTracks(hum)
             return true
         end
         pcall(function() track:Stop() end)
@@ -2174,8 +2185,7 @@ local function tryStandAnimation(char)
         if named then
             G.MM_EmoteUntil = tick() + 1e8
             G.MM_StandEmoteOk = true
-            standGroundHumanoid(hum, true)
-            stopFallTracks(hum)
+            G.MM_StandEmoteName = emoteName
             return
         end
     end
@@ -2312,8 +2322,18 @@ local function prepareStandBody(char)
     if not char then return end
     G.MM_AnimateFallSaved = nil
     local hum = char:FindFirstChildOfClass("Humanoid")
-    standGroundHumanoid(hum, true)
-    muteAnimateFalls(char)
+    local root = char:FindFirstChild("HumanoidRootPart")
+    if root then
+        pcall(function() root.Anchored = true end)
+    end
+    if hum then
+        pcall(function()
+            hum.EvaluateStateMachine = true
+            hum.PlatformStand = false
+            hum:ChangeState(Enum.HumanoidStateType.Running)
+        end)
+    end
+    standGroundHumanoid(hum, false)
     stopFallTracks(hum)
     hideBackWeapons(char, true)
     pcall(function()
@@ -2338,7 +2358,6 @@ local function prepareStandBody(char)
             if not G.MM_SummonUserId or G.MM_StandPaused or G.MM_Resetting then return end
             if new == Enum.HumanoidStateType.Freefall or new == Enum.HumanoidStateType.FallingDown
                 or new == Enum.HumanoidStateType.Jumping then
-                standGroundHumanoid(hum, true)
                 stopFallTracks(hum)
             end
             if G.MM_StandNoclip then G.MM_StandNoclip(char) end
@@ -2406,7 +2425,7 @@ local function summonSnap(p, bornAt, dt)
     end
     G.MM_StandSmoothCF = use
     pcall(function()
-        h.Anchored = false
+        h.Anchored = true
         h.CFrame = use
         h.AssemblyLinearVelocity = Vector3.zero
         h.AssemblyAngularVelocity = Vector3.zero
@@ -2501,12 +2520,11 @@ function startSummonLoop(userId)
         local playing = G.MM_AuraPlaying and G.MM_AuraPlaying(hum)
         if playing then
             G.MM_StandEmoteOk = true
-        elseif G.MM_StandEmoteOk and tick() - lastEmote < 1.1 then
+        elseif G.MM_StandEmoteOk and tick() - lastEmote < 1.6 then
             -- PlayEmote just fired; wait for the track to show
         else
             G.MM_StandEmoteOk = false
-            applyStandMotors(char, tick())
-            if tick() - lastEmote > 0.8 then
+            if tick() - lastEmote > 1.2 then
                 lastEmote = tick()
                 tryStandAnimation(char)
             end
@@ -2524,6 +2542,7 @@ function startSummonLoop(userId)
         local cf = G.MM_StandSmoothCF
         if h and typeof(cf) == "CFrame" then
             pcall(function()
+                h.Anchored = true
                 h.CFrame = cf
                 h.AssemblyLinearVelocity = Vector3.zero
                 h.AssemblyAngularVelocity = Vector3.zero
@@ -4468,7 +4487,7 @@ end
 do
     G.MM_BringGen = tonumber(G.MM_BringGen) or 0
     G.MM_BringBusy = false
-    local BRING_DONE = 10
+    local BRING_DONE = 12
     local function horizDist(a, b)
         if not (a and b) then return 1e9 end
         local d = Vector3.new(a.X - b.X, 0, a.Z - b.Z)
@@ -4491,10 +4510,46 @@ do
         local char = me.Character
         if not char then return end
         pcall(function()
-            for _, part in ipairs(char:GetChildren()) do
-                if part:IsA("BasePart") then part.CanCollide = true end
+            for _, part in ipairs(char:GetDescendants()) do
+                if part:IsA("BasePart") then
+                    part.CanCollide = true
+                    part.Massless = false
+                    part.CanTouch = true
+                end
             end
         end)
+    end
+    local function harden(on)
+        local char = me.Character
+        if not char then return end
+        if on then
+            local bag = {}
+            G.MM_BringPhys = bag
+            for _, part in ipairs(char:GetDescendants()) do
+                if part:IsA("BasePart") then
+                    table.insert(bag, {part, part.CustomPhysicalProperties, part.Massless})
+                    pcall(function()
+                        part.Massless = false
+                        part.CanCollide = true
+                        part.CustomPhysicalProperties = PhysicalProperties.new(80, 0.2, 0.15, 1, 1)
+                    end)
+                end
+            end
+        else
+            local bag = G.MM_BringPhys
+            G.MM_BringPhys = nil
+            if type(bag) == "table" then
+                for i = 1, #bag do
+                    local e = bag[i]
+                    if e[1] and e[1].Parent then
+                        pcall(function()
+                            e[1].CustomPhysicalProperties = e[2]
+                            e[1].Massless = e[3]
+                        end)
+                    end
+                end
+            end
+        end
     end
     G.MM_BringPlayer = function(victim, dest)
         if not victim or not dest or victim == dest or victim == me then
@@ -4516,88 +4571,94 @@ do
         pcall(restoreStandBody)
         local runOk, runErr = pcall(function()
             collideOn()
+            harden(true)
             local mh0 = hrp()
             local thLift = victim.Character and victim.Character:FindFirstChild("HumanoidRootPart")
-            if mh0 and mh0.Position.Y < 50 and thLift then
+            if mh0 and thLift then
                 pcall(function()
                     mh0.Anchored = false
-                    mh0.CFrame = thLift.CFrame * CFrame.new(0, 2, 2)
+                    mh0.CFrame = thLift.CFrame * CFrame.new(0, 2, 1)
                 end)
                 task.wait()
             end
-            task.wait()
             local th1 = victim.Character and victim.Character:FindFirstChild("HumanoidRootPart")
             local dh1 = dest.Character and dest.Character:FindFirstChild("HumanoidRootPart")
             if not (th1 and dh1) then return end
             local startDist = horizDist(th1.Position, dh1.Position)
-            local timeout = math.clamp(startDist / 8, 4.5, 16)
-            local minBurst = startDist > 14 and math.clamp(startDist / 90, 0.85, 2.2) or 0.28
-            local t0 = tick()
-            local deadline = t0 + timeout
-            local punched = false
+            local bursts = math.clamp(math.ceil(startDist / 50), 1, 6)
+            if startDist <= 14 then bursts = 1 end
+            log("bring start " .. math.floor(startDist) .. " studs x" .. bursts)
             local closest = startDist
-            log("bring start " .. math.floor(startDist) .. " studs")
-            while tick() < deadline and gen == G.MM_BringGen and session.active do
+            for b = 1, bursts do
+                if gen ~= G.MM_BringGen or not session.active then break end
                 if not (isAlive(victim) and isAlive(me) and isAlive(dest)) then break end
-                local mh = hrp()
                 local th = victim.Character and victim.Character:FindFirstChild("HumanoidRootPart")
                 local dh = dest.Character and dest.Character:FindFirstChild("HumanoidRootPart")
-                local thum = victim.Character and victim.Character:FindFirstChildOfClass("Humanoid")
-                if not (mh and th and dh) then break end
-                if mh.Position.Y < -25 then break end
-                local to = Vector3.new(dh.Position.X - th.Position.X, 0, dh.Position.Z - th.Position.Z)
-                local dist = to.Magnitude
+                if not (th and dh) then break end
+                local dist = horizDist(th.Position, dh.Position)
                 if dist < closest then closest = dist end
-                local worked = tick() - t0 >= minBurst
-                if dist <= BRING_DONE and punched and worked then
-                    if startDist <= 14 or dist <= startDist - 8 then
-                        ok = true
-                        break
-                    end
+                if dist <= BRING_DONE and b > 1 then
+                    ok = true
+                    break
                 end
-                collideOn()
-                local dir = dist > 0.4 and to.Unit or Vector3.new(0, 0, -1)
-                local vv = th.AssemblyLinearVelocity
-                if vv.Magnitude < 1 then vv = th.Velocity end
-                local closing = vv:Dot(dir)
-                local power = math.clamp(dist * 110, 3200, 14000)
+                local power = 14000
+                local dur = 0.42
                 if dist < 16 then
-                    power = (closing > 28) and -1600 or 2000
-                elseif dist < 28 then
-                    power = math.clamp(dist * 90, 2800, 5200)
+                    power = 5200
+                    dur = 0.22
+                elseif dist < 32 then
+                    power = 8800
+                    dur = 0.32
+                elseif dist < 70 then
+                    power = 12000
+                    dur = 0.40
+                elseif dist > 120 then
+                    power = 14000
+                    dur = 0.50
                 end
-                local lift = 220
-                if dh.Position.Y > th.Position.Y + 4 then
-                    lift = 1100
-                elseif dist > 60 then
-                    lift = 380
+                local spinAmt = dist < 18 and 0 or 2200
+                local untilT = tick() + dur
+                while tick() < untilT and gen == G.MM_BringGen do
+                    if not (isAlive(victim) and isAlive(me) and isAlive(dest)) then break end
+                    local mh = hrp()
+                    th = victim.Character and victim.Character:FindFirstChild("HumanoidRootPart")
+                    dh = dest.Character and dest.Character:FindFirstChild("HumanoidRootPart")
+                    local thum = victim.Character and victim.Character:FindFirstChildOfClass("Humanoid")
+                    if not (mh and th and dh) then break end
+                    if mh.Position.Y < -25 then break end
+                    collideOn()
+                    local aim = dh.Position + Vector3.new(0, 3, 0)
+                    local delta = aim - th.Position
+                    local dir = delta.Magnitude > 1 and delta.Unit or Vector3.new(0, 1, 0)
+                    local punch = dir * power
+                    local lead = flingApproachLead(th, thum)
+                    local spin = Vector3.new(spinAmt, spinAmt, spinAmt)
+                    pcall(function()
+                        mh.Anchored = false
+                        mh.CFrame = th.CFrame + lead
+                        mh.AssemblyLinearVelocity = punch
+                        mh.Velocity = punch
+                        mh.AssemblyAngularVelocity = spin
+                        mh.RotVelocity = spin
+                    end)
+                    task.wait()
                 end
-                local punch = dir * power + Vector3.new(0, lift, 0)
-                local lead = flingApproachLead(th, thum)
-                pcall(function()
-                    mh.Anchored = false
-                    mh.CFrame = th.CFrame + lead
-                    mh.AssemblyLinearVelocity = punch
-                    mh.Velocity = punch
-                    mh.AssemblyAngularVelocity = Vector3.zero
-                    mh.RotVelocity = Vector3.zero
-                end)
-                punched = true
-                task.wait()
+                task.wait(0.07)
             end
-            if not ok then
-                local thf = victim.Character and victim.Character:FindFirstChild("HumanoidRootPart")
-                local dhf = dest.Character and dest.Character:FindFirstChild("HumanoidRootPart")
-                local endDist = horizDist(thf and thf.Position, dhf and dhf.Position)
-                if endDist <= BRING_DONE or (startDist > 14 and closest <= startDist * 0.35) then
-                    ok = punched
-                end
-                log("bring end " .. math.floor(endDist) .. " studs")
+            local thf = victim.Character and victim.Character:FindFirstChild("HumanoidRootPart")
+            local dhf = dest.Character and dest.Character:FindFirstChild("HumanoidRootPart")
+            local endDist = horizDist(thf and thf.Position, dhf and dhf.Position)
+            if endDist < closest then closest = endDist end
+            if endDist <= BRING_DONE or (startDist > 14 and closest <= math.max(14, startDist * 0.28)) then
+                ok = true
             end
+            log("bring end " .. math.floor(endDist) .. " studs")
+            harden(false)
             snapBringHome()
             task.wait()
             snapBringHome()
         end)
+        pcall(function() harden(false) end)
         if not runOk then
             log("bring error: " .. tostring(runErr))
         end

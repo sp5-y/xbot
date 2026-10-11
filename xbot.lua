@@ -1,4 +1,4 @@
---[[ Xeno V1.05 XBOT_BUILD 20261011f ]]--
+--[[ Xeno V1.05 XBOT_BUILD 20261011g ]]--
 local GRAPHICS = true
 local TARGET_FPS = 50
 local Players = game:GetService("Players")
@@ -2471,22 +2471,16 @@ end
 local function ownerInMap(owner)
     local t = owner and owner.Character and (owner.Character:FindFirstChild("HumanoidRootPart") or owner.Character.PrimaryPart)
     if t then return t.Position.Y < 430 end
-    return G.MM_RoundLive == true
+    return false
 end
 
 local function wantStandFollow(owner)
     if not owner then return false end
-    if not unitAlive(owner) then return true end
     return not ownerInMap(owner)
 end
 local function inMapRound()
-    if botHasKnife() or botHasGun() then return true end
-    if findHolder({"Knife"}) or findHolder(G.MM_GunNames) then return true end
-    if G.MM_RoundLive ~= true then return false end
     local owner = findOwner()
-    if owner then return ownerInMap(owner) == true end
-    local h = hrp()
-    return h and h.Position.Y < 430
+    return owner and ownerInMap(owner) == true
 end
 G.MM_InMapRound = inMapRound
 
@@ -2593,36 +2587,21 @@ G.MM_EnsureAutoStand = function()
             if owner and keepSummon(owner.UserId) then return end
             return
         end
-        local owner = findOwner()
-        local onMap = inMapRound()
-        if not onMap then
-            if G.MM_ForceHide then
-                if not (G.MM_Hiding and G.MM_StandLoopAlive) then
-                    startHideLoop()
-                end
-                return
-            end
-            if owner and owner ~= me then
-                keepSummon(owner.UserId)
-                return
-            end
-            if G.MM_Hiding and G.MM_StandLoopAlive then return end
-            startHideLoop()
-            return
-        end
-        local justAdopted = G.MM_AdoptAt and (tick() - tonumber(G.MM_AdoptAt) < 12)
-        if justAdopted and owner and owner ~= me then
-            keepSummon(owner.UserId)
-            return
-        end
-        if G.MM_ForceHide or not justAdopted then
+        if G.MM_ForceHide then
             if not (G.MM_Hiding and G.MM_StandLoopAlive) then
                 startHideLoop()
             end
             return
         end
-        if owner and owner ~= me and wantStandFollow(owner) then
-            keepSummon(owner.UserId)
+        local owner = findOwner()
+        if owner and owner ~= me then
+            if ownerInMap(owner) then
+                if not (G.MM_Hiding and G.MM_StandLoopAlive) then
+                    startHideLoop()
+                end
+            else
+                keepSummon(owner.UserId)
+            end
             return
         end
         if G.MM_Hiding and G.MM_StandLoopAlive then return end

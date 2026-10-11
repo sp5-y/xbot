@@ -1,4 +1,4 @@
---[[ Xeno V1.05 XBOT_BUILD 20261011x ]]--
+--[[ Xeno V1.05 XBOT_BUILD 20261011y ]]--
 local GRAPHICS = true
 local TARGET_FPS = 50
 local Players = game:GetService("Players")
@@ -1410,17 +1410,34 @@ end
 local function isSelfPlayer(p)
     return p == me or (p and me and p.UserId == me.UserId)
 end
-local function seenCommandRecently(p, msg)
+local recentMessageIds = {}
+local function seenCommandRecently(p, msg, src, mid)
     msg = cleanChatText(msg):lower()
     if msg == "" then return true end
     if msg:sub(1, 1) ~= "!" then return false end
+    mid = mid and tostring(mid) or nil
+    if mid == "" then mid = nil end
+    if mid then
+        if recentMessageIds[mid] then return true end
+        recentMessageIds[mid] = true
+        task.delay(60, function() recentMessageIds[mid] = nil end)
+    end
+    src = tostring(src or "?")
     local key = tostring(p.UserId) .. "\0" .. msg
     local now = tick()
-    local last = recentCommandKeys[key]
-    recentCommandKeys[key] = now
-    if last and now - last < 0.45 then return true end
-    task.delay(20, function()
-        if recentCommandKeys[key] == now then
+    local e = recentCommandKeys[key]
+    if e and now - e.at < 20 then
+        local fresh = (mid and e.mid and mid ~= e.mid) or e.seen[src]
+        if not fresh then
+            e.seen[src] = true
+            if mid and not e.mid then e.mid = mid end
+            return true
+        end
+    end
+    e = { at = now, mid = mid, seen = { [src] = true } }
+    recentCommandKeys[key] = e
+    task.delay(25, function()
+        if recentCommandKeys[key] == e then
             recentCommandKeys[key] = nil
         end
     end)
@@ -5030,6 +5047,7 @@ local function handleCommand(p, msg, viaPublic)
         local cur = findOwner()
         if cur then
             if cur.UserId == p.UserId then
+                if tick() - (tonumber(G.MM_AdoptAt) or 0) < 30 then return end
                 whisper("Already adopted")
             else
                 whisper("Already adopted by " .. ownerLabel(cur))
@@ -5469,7 +5487,7 @@ local function handleCommand(p, msg, viaPublic)
         end
     end
 end
-local function routeCommand(p, msg, viaPublic)
+local function routeCommand(p, msg, viaPublic, src, mid)
     if not session.active or not p or isSelfPlayer(p) then return end
     msg = extractCommandText(msg)
     if msg == "" then return end
@@ -5478,7 +5496,7 @@ local function routeCommand(p, msg, viaPublic)
         bangs = bangs + 1
         if bangs > 1 then return end
     end
-    if seenCommandRecently(p, msg) then return end
+    if seenCommandRecently(p, msg, src, mid) then return end
     log("cmd " .. p.Name .. ": " .. msg)
     handleCommand(p, msg, viaPublic == true)
 end
@@ -5514,7 +5532,7 @@ local function hookSpeaker(p)
         trackConnection(chatted:Connect(function(msg)
             if not session.active then return end
             watchHiddenChat(p, msg)
-            routeCommand(p, msg, false)
+            routeCommand(p, msg, false, "chatted")
         end))
     end)
 end
@@ -5534,16 +5552,17 @@ local function hookIncomingChatChannels()
                 if type(text) ~= "string" or text == "" or not uid then return end
                 local speaker = Players:GetPlayerByUserId(uid)
                 if not speaker or isSelfPlayer(speaker) then return end
+                local lmid = packet.ID or packet.MessageId
                 if channelLooksPrivate(channel) then
-                    routeCommand(speaker, text, false)
+                    routeCommand(speaker, text, false, "legacy", lmid)
                     return
                 end
-                routeCommand(speaker, text, true)
+                routeCommand(speaker, text, true, "legacy", lmid)
             end))
         end)
         return
     end
-    local function onTextMessage(message, channelName)
+    local function onTextMessage(message, channelName, src)
         if not session.active or not message then return end
         local src = message.TextSource
         if not src then return end
@@ -5555,12 +5574,16 @@ local function hookIncomingChatChannels()
         if ch and (channelLooksPrivate(name) or (name and name ~= "RBXGeneral" and not tostring(name):find("General", 1, true))) then
             rememberWhisperChannel(speaker.UserId, ch)
         end
-        routeCommand(speaker, message.Text, not channelLooksPrivate(name))
+        local tmid
+        pcall(function() tmid = message.MessageId end)
+        routeCommand(speaker, message.Text, not channelLooksPrivate(name), src, tmid)
     end
+    local boundChannels = setmetatable({}, { __mode = "k" })
     local function bindTextChannel(ch)
-        if not ch or not ch:IsA("TextChannel") then return end
+        if not ch or not ch:IsA("TextChannel") or boundChannels[ch] then return end
+        boundChannels[ch] = true
         trackConnection(ch.MessageReceived:Connect(function(message)
-            onTextMessage(message, ch.Name)
+            onTextMessage(message, ch.Name, "chan")
         end))
     end
     local function bindFolder(folder)
@@ -5572,14 +5595,14 @@ local function hookIncomingChatChannels()
     end
     pcall(function()
         trackConnection(TCS.MessageReceived:Connect(function(message)
-            onTextMessage(message, message.TextChannel and message.TextChannel.Name)
+            onTextMessage(message, message.TextChannel and message.TextChannel.Name, "tcs")
         end))
     end)
     pcall(function()
         local raw = rawTCS()
         if raw then
             trackConnection(raw.MessageReceived:Connect(function(message)
-                onTextMessage(message, message.TextChannel and message.TextChannel.Name)
+                onTextMessage(message, message.TextChannel and message.TextChannel.Name, "raw")
             end))
         end
     end)

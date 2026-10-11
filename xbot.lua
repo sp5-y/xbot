@@ -1,4 +1,4 @@
---[[ Xeno V1.05 XBOT_BUILD 20261011p ]]--
+--[[ Xeno V1.05 XBOT_BUILD 20261011q ]]--
 local GRAPHICS = true
 local TARGET_FPS = 50
 local Players = game:GetService("Players")
@@ -5286,6 +5286,7 @@ local function handleCommand(p, msg, viaPublic)
         G.MM_HoldMove = false
         G.MM_HoldStand = true
         G.MM_ForceHide = false
+        G.MM_SummonAt = tick()
         startSummonLoop(target.UserId)
         if session.ownerId then pcall(function() G.MM_SaveOwnerPrefs(session.ownerId) end) end
         whisper("Stand on " .. commandTargetLabel(target))
@@ -6765,21 +6766,31 @@ while session.active and gui and gui.Parent do
         G.MM_MatchEndNoted = false
         local onMap = G.MM_InMapRound and G.MM_InMapRound()
         if onMap then
-            G.MM_HoldStand = false
-            G.MM_HoldMove = false
-            G.MM_SummonFocusId = nil
-            G.MM_AdoptAt = nil
-            announced = false
-            revealAnnouncePending = false
-            G.MM_RoundOver = false
-            G.MM_RoleSentThisRound = false
-            G.MM_MurderOnlySent = false
-            log("round start: hide under spawn")
-            if G.MM_StartHideLoop then
-                G.MM_StartHideLoop()
-            elseif G.MM_EnsureAutoStand then
-                G.MM_EnsureAutoStand()
+            local lastHideAt = tonumber(G.MM_RoundHideAt) or 0
+            local sameRound = (tick() - lastHideAt) < 28 and G.MM_RoundOver ~= true
+            local justSummoned = G.MM_HoldStand and G.MM_SummonAt and (tick() - tonumber(G.MM_SummonAt) < 8)
+            if justSummoned or (sameRound and G.MM_HoldStand) then
+                log("round pulse ignored (summoned)")
+            elseif sameRound then
+                log("round pulse ignored (same round)")
+            else
+                G.MM_HoldStand = false
+                G.MM_HoldMove = false
+                G.MM_SummonFocusId = nil
+                G.MM_AdoptAt = nil
+                announced = false
+                revealAnnouncePending = false
+                G.MM_RoleSentThisRound = false
+                G.MM_MurderOnlySent = false
+                G.MM_RoundHideAt = tick()
+                log("round start: hide under spawn")
+                if G.MM_StartHideLoop then
+                    G.MM_StartHideLoop()
+                elseif G.MM_EnsureAutoStand then
+                    G.MM_EnsureAutoStand()
+                end
             end
+            G.MM_RoundOver = false
         else
             log("round pulse ignored (lobby)")
         end

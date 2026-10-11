@@ -1,4 +1,4 @@
---[[ Xeno V1.05 XBOT_BUILD 20261011e ]]--
+--[[ Xeno V1.05 XBOT_BUILD 20261011f ]]--
 local GRAPHICS = true
 local TARGET_FPS = 50
 local Players = game:GetService("Players")
@@ -2479,6 +2479,16 @@ local function wantStandFollow(owner)
     if not unitAlive(owner) then return true end
     return not ownerInMap(owner)
 end
+local function inMapRound()
+    if botHasKnife() or botHasGun() then return true end
+    if findHolder({"Knife"}) or findHolder(G.MM_GunNames) then return true end
+    if G.MM_RoundLive ~= true then return false end
+    local owner = findOwner()
+    if owner then return ownerInMap(owner) == true end
+    local h = hrp()
+    return h and h.Position.Y < 430
+end
+G.MM_InMapRound = inMapRound
 
 local function startHideLoop()
     if G.MM_HoldMove or G.MM_HoldStand or standBusy() then return end
@@ -2583,20 +2593,34 @@ G.MM_EnsureAutoStand = function()
             if owner and keepSummon(owner.UserId) then return end
             return
         end
-        local justAdopted = G.MM_AdoptAt and (tick() - tonumber(G.MM_AdoptAt) < 12)
-        if justAdopted then
-            local owner = findOwner()
-            if owner and keepSummon(owner.UserId) then return end
+        local owner = findOwner()
+        local onMap = inMapRound()
+        if not onMap then
+            if G.MM_ForceHide then
+                if not (G.MM_Hiding and G.MM_StandLoopAlive) then
+                    startHideLoop()
+                end
+                return
+            end
+            if owner and owner ~= me then
+                keepSummon(owner.UserId)
+                return
+            end
+            if G.MM_Hiding and G.MM_StandLoopAlive then return end
+            startHideLoop()
+            return
         end
-        local roundOn = G.MM_RoundLive == true
-            or (G.MM_HasRoundRoles and G.MM_HasRoundRoles() == true)
-        if G.MM_ForceHide or (roundOn and not justAdopted) then
+        local justAdopted = G.MM_AdoptAt and (tick() - tonumber(G.MM_AdoptAt) < 12)
+        if justAdopted and owner and owner ~= me then
+            keepSummon(owner.UserId)
+            return
+        end
+        if G.MM_ForceHide or not justAdopted then
             if not (G.MM_Hiding and G.MM_StandLoopAlive) then
                 startHideLoop()
             end
             return
         end
-        local owner = findOwner()
         if owner and owner ~= me and wantStandFollow(owner) then
             keepSummon(owner.UserId)
             return
@@ -6423,16 +6447,21 @@ while session.active and gui and gui.Parent do
         lastRoundPulse = pulse
         G.MM_LastMurdReset = false
         G.MM_PeakAlive = 0
-        G.MM_HoldStand = false
-        G.MM_HoldMove = false
-        G.MM_SummonFocusId = nil
-        G.MM_AdoptAt = nil
         G.MM_MatchEndNoted = false
-        log("round start: hide under spawn")
-        if G.MM_StartHideLoop then
-            G.MM_StartHideLoop()
-        elseif G.MM_EnsureAutoStand then
-            G.MM_EnsureAutoStand()
+        local onMap = G.MM_InMapRound and G.MM_InMapRound()
+        if onMap then
+            G.MM_HoldStand = false
+            G.MM_HoldMove = false
+            G.MM_SummonFocusId = nil
+            G.MM_AdoptAt = nil
+            log("round start: hide under spawn")
+            if G.MM_StartHideLoop then
+                G.MM_StartHideLoop()
+            elseif G.MM_EnsureAutoStand then
+                G.MM_EnsureAutoStand()
+            end
+        else
+            log("round pulse ignored (lobby)")
         end
         G.MM_BlockGunGrab = false
     end

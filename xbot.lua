@@ -1,4 +1,4 @@
---[[ Xeno V1.05 XBOT_BUILD 20261011i ]]--
+--[[ Xeno V1.05 XBOT_BUILD 20261011j ]]--
 local GRAPHICS = true
 local TARGET_FPS = 50
 local Players = game:GetService("Players")
@@ -1663,6 +1663,8 @@ function restoreStandBody()
                 hum:SetStateEnabled(Enum.HumanoidStateType.Flying, true)
                 hum:SetStateEnabled(Enum.HumanoidStateType.Seated, true)
                 hum:SetStateEnabled(Enum.HumanoidStateType.Physics, true)
+                hum:SetStateEnabled(Enum.HumanoidStateType.Running, true)
+                hum:SetStateEnabled(Enum.HumanoidStateType.RunningNoPhysics, true)
                 hum.BreakJointsOnDeath = true
             end)
             if G.MM_StandGodConn then
@@ -1834,7 +1836,6 @@ local function standGroundHumanoid(hum, forceState)
         hum.WalkSpeed = 0
         hum.JumpPower = 0
         pcall(function() hum.JumpHeight = 0 end)
-        pcall(function() hum.EvaluateStateMachine = false end)
         pcall(function() hum:Move(Vector3.zero, false) end)
         local block = {
             Enum.HumanoidStateType.Freefall,
@@ -1849,8 +1850,6 @@ local function standGroundHumanoid(hum, forceState)
             Enum.HumanoidStateType.Seated,
             Enum.HumanoidStateType.Physics,
             Enum.HumanoidStateType.Dead,
-            Enum.HumanoidStateType.Running,
-            Enum.HumanoidStateType.RunningNoPhysics,
         }
         for i = 1, #block do
             pcall(function() hum:SetStateEnabled(block[i], false) end)
@@ -1870,21 +1869,28 @@ local function isStandEmoteTrack(tr)
         or n:find("endless", 1, true) or n:find("aura", 1, true)
         or aid:find("124474822519936", 1, true)
 end
+local function isLocomotionTrack(tr)
+    if not tr or isStandEmoteTrack(tr) then return false end
+    local n = tostring(tr.Name):lower()
+    local aid = ""
+    pcall(function()
+        aid = tostring(tr.Animation and tr.Animation.AnimationId or ""):lower()
+    end)
+    return n:find("walk", 1, true) or n:find("run", 1, true) or n:find("fall", 1, true)
+        or n:find("jump", 1, true) or n:find("swim", 1, true) or n:find("climb", 1, true)
+        or aid:find("walk", 1, true) or aid:find("run", 1, true) or aid:find("fall", 1, true)
+end
 local function stopFallTracks(hum)
     if not hum then return end
     pcall(function()
         for _, tr in ipairs(hum:GetPlayingAnimationTracks()) do
-            if not isStandEmoteTrack(tr) then
+            if isLocomotionTrack(tr) then
                 tr:Stop(0)
             end
         end
     end)
 end
 local function silenceStandLocomotion(char, hum)
-    pcall(function()
-        local animate = char and char:FindFirstChild("Animate")
-        if animate then animate.Disabled = true end
-    end)
     standGroundHumanoid(hum)
     stopFallTracks(hum)
 end
@@ -2041,14 +2047,9 @@ local function tryStandAnimation(char)
     if not hum then return end
     standGroundHumanoid(hum, not G.MM_StandEmoteOk)
     muteAnimateFalls(char)
-    pcall(function()
-        local a = char:FindFirstChild("Animate")
-        if a then a.Disabled = false end
-    end)
     stopFallTracks(hum)
     if G.MM_AuraPlaying and G.MM_AuraPlaying(hum) then
         G.MM_StandEmoteOk = true
-        silenceStandLocomotion(char, hum)
         return
     end
     local names, ids = auraEmoteTargets(hum)
@@ -2064,7 +2065,7 @@ local function tryStandAnimation(char)
             G.MM_EmoteUntil = tick() + 1e8
             G.MM_StandEmoteOk = true
             G.MM_StandEmoteName = emoteName
-            silenceStandLocomotion(char, hum)
+            stopFallTracks(hum)
             pcall(function()
                 if G.MM_AuraPlaying then G.MM_AuraPlaying(hum) end
                 local tr = G.MM_StandTrack
@@ -2105,7 +2106,7 @@ local function tryStandAnimation(char)
         local played = pcall(function() track:Play(0.2, 1, 1) end)
         if played and track.IsPlaying then
             G.MM_StandTrack = track
-            silenceStandLocomotion(char, hum)
+            stopFallTracks(hum)
             return true
         end
         pcall(function() track:Stop() end)
@@ -2119,7 +2120,6 @@ local function tryStandAnimation(char)
             return
         end
     end
-    silenceStandLocomotion(char, hum)
 end
 
 local function weaponNameLooks(n)
@@ -2255,7 +2255,7 @@ local function prepareStandBody(char)
     local hum = char:FindFirstChildOfClass("Humanoid")
     standGroundHumanoid(hum, true)
     muteAnimateFalls(char)
-    silenceStandLocomotion(char, hum)
+    stopFallTracks(hum)
     hideBackWeapons(char, true)
     pcall(function()
         for _, part in ipairs(char:GetChildren()) do
@@ -2286,7 +2286,7 @@ local function prepareStandBody(char)
         trackConnection(G.MM_StandStateConn)
         G.MM_StandAnimConn = hum.AnimationPlayed:Connect(function(tr)
             if not G.MM_SummonUserId or G.MM_StandPaused or G.MM_Resetting then return end
-            if not isStandEmoteTrack(tr) then
+            if isLocomotionTrack(tr) then
                 pcall(function() tr:Stop(0) end)
                 return
             end
@@ -2429,9 +2429,10 @@ function startSummonLoop(userId)
         summonSnap(target, bornAt, dt)
         local hum = char and char:FindFirstChildOfClass("Humanoid")
         if not hum then return end
-        if tick() - lastGround > 0.12 then
+        if tick() - lastGround > 0.45 then
             lastGround = tick()
-            silenceStandLocomotion(char, hum)
+            stopFallTracks(hum)
+            standGroundHumanoid(hum)
         end
         if tick() - lastHide > 0.35 then
             lastHide = tick()
@@ -4078,10 +4079,24 @@ function fling(target, onDone)
         return
     end
     local mh0 = hrp()
-    if not mh0 or mh0.Position.Y < -25 then
-        snapFlingHome()
+    if not mh0 then
         if onDoneFn then onDoneFn(false) end
         return
+    end
+    if mh0.Position.Y < 50 then
+        local lift = target.Character and target.Character:FindFirstChild("HumanoidRootPart")
+        if lift then
+            pcall(function()
+                mh0.Anchored = false
+                mh0.CFrame = lift.CFrame * CFrame.new(0, 2, 2)
+            end)
+            task.wait()
+            mh0 = hrp()
+        end
+        if not mh0 or mh0.Position.Y < -25 then
+            if onDoneFn then onDoneFn(false) end
+            return
+        end
     end
     flingActive = true
     G.MM_FlingBusy = true
@@ -4342,7 +4357,7 @@ do
     G.MM_BringGen = tonumber(G.MM_BringGen) or 0
     G.MM_BringBusy = false
     local BRING_DONE = 8
-    local BRING_TIMEOUT = 22
+    local BRING_TIMEOUT = 18
     local function enableStandPush(char)
         if not char then return end
         pcall(function()
@@ -4360,29 +4375,35 @@ do
         end)
     end
     local function bringPathPoints(fromPos, toPos)
-        local pts = {}
-        local used = false
-        pcall(function()
-            local pfs = game:GetService("PathfindingService")
-            local path = pfs:CreatePath({
-                AgentRadius = 2.4,
-                AgentHeight = 5,
-                AgentCanJump = true,
-                WaypointSpacing = 7,
-            })
-            path:ComputeAsync(fromPos, toPos)
-            if path.Status == Enum.PathStatus.Success then
-                for _, wp in ipairs(path:GetWaypoints()) do
-                    table.insert(pts, wp.Position)
+        local box = { pts = { fromPos, toPos }, used = false, done = false }
+        task.spawn(function()
+            pcall(function()
+                local pfs = game:GetService("PathfindingService")
+                local path = pfs:CreatePath({
+                    AgentRadius = 2.4,
+                    AgentHeight = 5,
+                    AgentCanJump = true,
+                    WaypointSpacing = 8,
+                })
+                path:ComputeAsync(fromPos, toPos)
+                if path.Status == Enum.PathStatus.Success then
+                    local pts = {}
+                    for _, wp in ipairs(path:GetWaypoints()) do
+                        table.insert(pts, wp.Position)
+                    end
+                    if #pts >= 2 then
+                        box.pts = pts
+                        box.used = true
+                    end
                 end
-                used = #pts >= 2
-            end
+            end)
+            box.done = true
         end)
-        if #pts < 2 then
-            pts = { fromPos, toPos }
-            used = false
+        local t0 = tick()
+        while not box.done and tick() - t0 < 0.4 do
+            task.wait()
         end
-        return pts, used
+        return box.pts, box.used
     end
     local function nextBringGoal(pts, idx, tgtPos, ownerPos)
         while idx <= #pts do
@@ -4410,11 +4431,23 @@ do
         if G.MM_ActionBegin then G.MM_ActionBegin() end
         pcall(restoreStandBody)
         local ok = false
-        local lastPath = 0
-        local pts, usedPath = {}, false
+        local pts, usedPath = { }, false
         local wpIdx = 1
         local deadline = tick() + BRING_TIMEOUT
         local runOk, runErr = pcall(function()
+            local mh0 = hrp()
+            local th0 = target.Character and target.Character:FindFirstChild("HumanoidRootPart")
+            local oh0 = owner.Character and owner.Character:FindFirstChild("HumanoidRootPart")
+            if not (mh0 and th0 and oh0) then return end
+            if mh0.Position.Y < 50 then
+                pcall(function()
+                    mh0.Anchored = false
+                    mh0.CFrame = th0.CFrame * CFrame.new(0, 1.5, 3)
+                end)
+                task.wait()
+            end
+            pts, usedPath = bringPathPoints(th0.Position, oh0.Position)
+            log("bring path: " .. tostring(#pts) .. (usedPath and " wp" or " direct"))
             while tick() < deadline and gen == G.MM_BringGen and session.active do
                 if not (isAlive(target) and isAlive(me) and isAlive(owner)) then break end
                 local mh = hrp()
@@ -4425,15 +4458,6 @@ do
                 if dist <= BRING_DONE then
                     ok = true
                     break
-                end
-                if lastPath == 0 or tick() - lastPath > 2.4 then
-                    local firstPath = lastPath == 0
-                    pts, usedPath = bringPathPoints(th.Position, oh.Position)
-                    wpIdx = 1
-                    lastPath = tick()
-                    if firstPath then
-                        log("bring path: " .. tostring(#pts) .. (usedPath and " wp" or " direct"))
-                    end
                 end
                 local goal
                 wpIdx, goal = nextBringGoal(pts, wpIdx, th.Position, oh.Position)
@@ -4447,11 +4471,11 @@ do
                 end
                 dir = dir.Unit
                 enableStandPush(me.Character)
-                local standPos = th.Position - dir * 2.35 + Vector3.new(0, 0.15, 0)
+                local standPos = th.Position - dir * 2.1 + Vector3.new(0, 0.2, 0)
                 pcall(function()
                     mh.Anchored = false
                     mh.CFrame = CFrame.lookAt(standPos, th.Position + dir * 4)
-                    local punch = dir * 58 + Vector3.new(0, 3, 0)
+                    local punch = dir * 72 + Vector3.new(0, 4, 0)
                     mh.AssemblyLinearVelocity = punch
                     mh.Velocity = punch
                     mh.AssemblyAngularVelocity = Vector3.zero
@@ -4465,6 +4489,7 @@ do
         if gen == G.MM_BringGen then
             G.MM_BringBusy = false
             G.MM_StandPaused = false
+            if G.MM_ActionEnd then G.MM_ActionEnd() end
             if G.MM_ResumeStand then G.MM_ResumeStand() end
         end
         return ok
@@ -4896,7 +4921,7 @@ local function handleCommand(p, msg, viaPublic)
             whisper("!bring <player>")
             return
         end
-        if standBusy() or G.MM_BringBusy then
+        if G.MM_FlingBusy or G.MM_BringBusy or _G.MM_GunBusy or _G.MM_ShootBusy or _G.MM_StabBusy then
             whisper("Busy, try again")
             return
         end

@@ -1,4 +1,4 @@
---[[ Xeno V1.05 XBOT_BUILD 20261011w ]]--
+--[[ Xeno V1.05 XBOT_BUILD 20261011x ]]--
 local GRAPHICS = true
 local TARGET_FPS = 50
 local Players = game:GetService("Players")
@@ -1971,19 +1971,11 @@ G.MM_AuraPlaying = function(hum)
             pcall(function()
                 aid = tostring(tr.Animation and tr.Animation.AnimationId or ""):lower()
             end)
+            local known = tostring(G.MM_StandAnimId or ""):lower()
             local isAura = n:find("mm_stand", 1, true) or n:find("angelic", 1, true)
                 or n:find("endless", 1, true) or n:find("aura", 1, true)
                 or aid:find("124474822519936", 1, true)
-            if not isAura then
-                local pri
-                pcall(function() pri = tr.Priority end)
-                if (pri == Enum.AnimationPriority.Action4 or pri == Enum.AnimationPriority.Action)
-                    and not (n:find("walk", 1, true) or n:find("run", 1, true)
-                        or n:find("fall", 1, true) or n:find("jump", 1, true)
-                        or n:find("idle", 1, true) or n:find("tool", 1, true)) then
-                    isAura = true
-                end
-            end
+                or (known ~= "" and aid == known)
             if isAura then
                 found = true
                 G.MM_StandTrack = tr
@@ -2119,6 +2111,7 @@ local function tryStandAnimation(char)
             pcall(function()
                 track.Looped = true
                 track.Priority = Enum.AnimationPriority.Action4
+                G.MM_StandAnimId = tostring(track.Animation and track.Animation.AnimationId or "")
             end)
             G.MM_StandTrack = track
             G.MM_StandEmoteRep = true
@@ -2129,6 +2122,7 @@ local function tryStandAnimation(char)
     end
     for _, emoteName in ipairs(names) do
         local named = false
+        G.MM_EmoteCaptureAt = tick()
         pcall(function()
             named = hum:PlayEmote(emoteName) == true
         end)
@@ -2359,13 +2353,31 @@ local function prepareStandBody(char)
                 pcall(function() tr:Stop(0) end)
                 return
             end
+            if tick() - (tonumber(G.MM_EmoteCaptureAt) or 0) < 0.6 then
+                G.MM_StandTrack = tr
+                pcall(function()
+                    tr.Looped = true
+                    tr.Priority = Enum.AnimationPriority.Action4
+                    G.MM_StandAnimId = tostring(tr.Animation and tr.Animation.AnimationId or "")
+                end)
+                G.MM_EmoteCaptureAt = 0
+            end
             if G.MM_AuraPlaying then G.MM_AuraPlaying(hum) end
             if G.MM_StandTrack == tr then
                 pcall(function()
                     tr.Stopped:Connect(function()
-                        if G.MM_SummonUserId then G.MM_StandEmoteOk = false end
+                        if not G.MM_SummonUserId or G.MM_StandPaused or G.MM_Resetting then return end
+                        G.MM_StandEmoteOk = false
+                        G.MM_StandEmoteRep = false
+                        task.delay(0.05, function()
+                            if G.MM_SummonUserId and not G.MM_StandPaused and not G.MM_Resetting then
+                                tryStandAnimation(me.Character)
+                            end
+                        end)
                     end)
                 end)
+            elseif G.MM_StandTrack and G.MM_StandTrack.IsPlaying then
+                pcall(function() tr:Stop(0) end)
             end
         end)
         trackConnection(G.MM_StandAnimConn)
@@ -4252,7 +4264,12 @@ function fling(target, onDone)
             end)
             local th0 = target.Character and target.Character:FindFirstChild("HumanoidRootPart")
             if not th0 then return end
-            local burstUntil = tick() + 0.42
+            local startPos = th0.Position
+            local t0 = tick()
+            local minUntil = t0 + 0.42
+            local burstUntil = t0 + 1.6
+            local hitAt
+            local frame = 0
             while flingActive and tick() < burstUntil and isAlive(target) and isAlive(me) do
                 local mh = hrp()
                 local th = target.Character and target.Character:FindFirstChild("HumanoidRootPart")
@@ -4261,10 +4278,15 @@ function fling(target, onDone)
                 if mh.Position.Y < -25 then break end
                 local hum = me.Character and me.Character:FindFirstChildOfClass("Humanoid")
                 if hum and hum.Health < hum.MaxHealth * 0.35 then break end
+                frame = frame + 1
                 local lead = flingApproachLead(th, thum)
+                local jitter = Vector3.new(math.sin(frame * 1.7) * 0.6, -0.4, math.cos(frame * 1.3) * 0.6)
                 pcall(function()
+                    for _, part in ipairs(me.Character:GetChildren()) do
+                        if part:IsA("BasePart") then part.CanCollide = true end
+                    end
                     mh.Anchored = false
-                    mh.CFrame = th.CFrame + lead
+                    mh.CFrame = th.CFrame + lead + jitter
                     local punch = Vector3.new(14000, 10000, 14000)
                     mh.AssemblyLinearVelocity = punch
                     mh.AssemblyAngularVelocity = Vector3.new(9000, 9000, 9000)
@@ -4273,7 +4295,12 @@ function fling(target, onDone)
                 end)
                 local tv = th.AssemblyLinearVelocity
                 if tv.Magnitude < 1 then tv = th.Velocity end
-                if tv.Magnitude > 450 then flung = true end
+                local moved = (th.Position - startPos).Magnitude
+                if tv.Magnitude > 450 or moved > 60 or th.Position.Y > startPos.Y + 40 then
+                    flung = true
+                    hitAt = hitAt or tick()
+                end
+                if hitAt and tick() >= minUntil and tick() - hitAt > 0.12 then break end
                 task.wait()
             end
             snapFlingHome()
@@ -4563,9 +4590,7 @@ do
                     table.insert(bag, {part, part.Size})
                     pcall(function()
                         if name == "HumanoidRootPart" then
-                            part.Size = Vector3.new(8, 8, 8)
-                        else
-                            part.Size = part.Size + Vector3.new(2.5, 2.5, 2.5)
+                            part.Size = Vector3.new(7, 6, 1.2)
                         end
                     end)
                 end
@@ -4582,14 +4607,6 @@ do
                 end
             end
         end
-    end
-    local function glueInside(mh, th)
-        pcall(function()
-            mh.Anchored = false
-            mh.CFrame = th.CFrame
-            mh.AssemblyAngularVelocity = Vector3.zero
-            mh.RotVelocity = Vector3.zero
-        end)
     end
     G.MM_BringPlayer = function(victim, dest)
         if not victim or not dest or victim == dest or victim == me then
@@ -4613,31 +4630,15 @@ do
             collideOn()
             harden(true)
             captureSize(true)
-            local th0 = victim.Character and victim.Character:FindFirstChild("HumanoidRootPart")
-            local mh0 = hrp()
-            if not (mh0 and th0) then return end
-            glueInside(mh0, th0)
-            local holdUntil = tick() + 0.22
-            while tick() < holdUntil and gen == G.MM_BringGen do
-                local mh = hrp()
-                local th = victim.Character and victim.Character:FindFirstChild("HumanoidRootPart")
-                if not (mh and th) then break end
-                collideOn()
-                glueInside(mh, th)
-                pcall(function()
-                    mh.AssemblyLinearVelocity = Vector3.zero
-                    mh.Velocity = Vector3.zero
-                end)
-                task.wait()
-            end
             local th1 = victim.Character and victim.Character:FindFirstChild("HumanoidRootPart")
             local dh1 = dest.Character and dest.Character:FindFirstChild("HumanoidRootPart")
             if not (th1 and dh1) then return end
             local startDist = horizDist(th1.Position, dh1.Position)
-            local timeout = math.clamp(startDist / 9, 5, 18)
-            log("bring capture " .. math.floor(startDist) .. " studs")
-            local closest = startDist
+            local timeout = math.clamp(startDist / 30, 4, 14)
+            log("bring push " .. math.floor(startDist) .. " studs")
             local deadline = tick() + timeout
+            local lastPos = th1.Position
+            local stuck = 0
             while tick() < deadline and gen == G.MM_BringGen and session.active do
                 if not (isAlive(victim) and isAlive(me) and isAlive(dest)) then break end
                 local mh = hrp()
@@ -4646,36 +4647,48 @@ do
                 if not (mh and th and dh) then break end
                 if mh.Position.Y < -25 then break end
                 collideOn()
-                local dist = horizDist(th.Position, dh.Position)
-                if dist < closest then closest = dist end
+                local flat = Vector3.new(dh.Position.X - th.Position.X, 0, dh.Position.Z - th.Position.Z)
+                local dist = flat.Magnitude
                 if dist <= BRING_DONE then
                     ok = true
                     break
                 end
-                if (mh.Position - th.Position).Magnitude > 7 then
-                    glueInside(mh, th)
-                else
-                    pcall(function()
-                        mh.Anchored = false
-                        mh.CFrame = th.CFrame
-                    end)
+                local dir = flat.Unit
+                local tv = th.AssemblyLinearVelocity
+                if tv.Magnitude < 1 then tv = th.Velocity end
+                local along = tv:Dot(dir)
+                local speed = math.clamp(dist * 3.2, 45, 220)
+                if dist < 30 then speed = math.clamp(dist * 2.2, 28, 70) end
+                if along > speed * 1.25 or tv.Magnitude > 320 then
+                    speed = 0
                 end
-                local aim = dh.Position + Vector3.new(0, 2.5, 0)
-                local delta = aim - th.Position
-                local dir = delta.Magnitude > 1 and delta.Unit or Vector3.new(0, 1, 0)
-                local power = math.clamp(dist * 130, 4500, 14000)
-                if dist < 18 then
-                    power = 2800
-                end
-                local punch = dir * power
+                local stepMoved = (th.Position - lastPos).Magnitude
+                lastPos = th.Position
+                if stepMoved < 0.05 then stuck = stuck + 1 else stuck = 0 end
+                local lift = (dh.Position.Y > th.Position.Y + 3 or stuck > 12) and 0.9 or 0
+                local behind = th.Position - dir * 1.6 + Vector3.new(0, lift, 0)
+                local face = CFrame.lookAt(behind, behind + dir)
+                local push = dir * speed + Vector3.new(0, lift * 30, 0)
                 pcall(function()
-                    mh.AssemblyLinearVelocity = punch
-                    mh.Velocity = punch
+                    mh.Anchored = false
+                    mh.CFrame = face
+                    mh.AssemblyLinearVelocity = push
+                    mh.Velocity = push
                     mh.AssemblyAngularVelocity = Vector3.zero
                     mh.RotVelocity = Vector3.zero
                 end)
                 task.wait()
             end
+            pcall(function()
+                local mh = hrp()
+                local th = victim.Character and victim.Character:FindFirstChild("HumanoidRootPart")
+                if mh and th then
+                    mh.AssemblyLinearVelocity = Vector3.zero
+                    mh.Velocity = Vector3.zero
+                    mh.CFrame = mh.CFrame + Vector3.new(0, 8, 0)
+                end
+            end)
+            task.wait()
             local thf = victim.Character and victim.Character:FindFirstChild("HumanoidRootPart")
             local dhf = dest.Character and dest.Character:FindFirstChild("HumanoidRootPart")
             local endDist = horizDist(thf and thf.Position, dhf and dhf.Position)
@@ -4749,7 +4762,7 @@ local COMMAND_HELP = {
     toggleshoot = "[murderer | name] - Auto-grab dropped gun and silent-aim shoot",
     chat = "<msg> - Make bot send a public chat message",
     banish = "<player> - Flings player off the map",
-    bring = "<player> [to] - Capture them, then carry to you or another player",
+    bring = "<player> [to] - Push them to you, or to another player",
     help = "<cmd> - Show command list or explain one command",
 }
 local HELP_ORDER = {
@@ -5074,15 +5087,10 @@ local function handleCommand(p, msg, viaPublic)
             whisper('You need to toggle off banish loop using "!banish"')
             return
         end
-        if flingLoopActive or flingActive or flingSettling then
+        if flingLoopActive or flingActive or flingSettling or G.MM_BringBusy then
+            whisper("Busy, try again")
             return
         end
-        local flingKey = tostring(p.UserId) .. ":" .. q
-        if G.MM_LastFlingKey == flingKey and tick() - (tonumber(G.MM_LastFlingAt) or 0) < 20 then
-            return
-        end
-        G.MM_LastFlingKey = flingKey
-        G.MM_LastFlingAt = tick()
 
         local mode, playerQuery = "player", work
         local first = q:match("^(%S+)")

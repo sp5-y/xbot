@@ -1,4 +1,4 @@
---[[ Xeno V1.05 XBOT_BUILD 20261011v ]]--
+--[[ Xeno V1.05 XBOT_BUILD 20261011w ]]--
 local GRAPHICS = true
 local TARGET_FPS = 50
 local Players = game:GetService("Players")
@@ -2393,7 +2393,7 @@ local function standHoverCFrame(ownerRoot, bornAt)
         rise = math.clamp((now - bornAt) / 0.35, 0, 1)
     end
     return ownerRoot.CFrame
-        * CFrame.new(2.15, 1.55 + bob + (1 - rise) * -1.4, 0.35)
+        * CFrame.new(3.35, 2.85 + bob + (1 - rise) * -2.2, 1.05)
         * CFrame.Angles(0, math.rad(18), 0)
 end
 

@@ -1,4 +1,4 @@
---[[ Xeno V1.05 XBOT_BUILD 20261011j ]]--
+--[[ Xeno V1.05 XBOT_BUILD 20261011k ]]--
 local GRAPHICS = true
 local TARGET_FPS = 50
 local Players = game:GetService("Players")
@@ -1837,13 +1837,19 @@ local function standGroundHumanoid(hum, forceState)
         hum.JumpPower = 0
         pcall(function() hum.JumpHeight = 0 end)
         pcall(function() hum:Move(Vector3.zero, false) end)
+        local st
+        pcall(function() st = hum:GetState() end)
+        if forceState or st == Enum.HumanoidStateType.Freefall
+            or st == Enum.HumanoidStateType.FallingDown
+            or st == Enum.HumanoidStateType.Jumping then
+            pcall(function() hum:ChangeState(Enum.HumanoidStateType.Landed) end)
+        end
         local block = {
             Enum.HumanoidStateType.Freefall,
             Enum.HumanoidStateType.FallingDown,
             Enum.HumanoidStateType.Jumping,
             Enum.HumanoidStateType.Ragdoll,
             Enum.HumanoidStateType.GettingUp,
-            Enum.HumanoidStateType.Landed,
             Enum.HumanoidStateType.Swimming,
             Enum.HumanoidStateType.Climbing,
             Enum.HumanoidStateType.Flying,
@@ -1853,6 +1859,9 @@ local function standGroundHumanoid(hum, forceState)
         }
         for i = 1, #block do
             pcall(function() hum:SetStateEnabled(block[i], false) end)
+        end
+        if G.MM_StandEmoteOk then
+            pcall(function() hum.EvaluateStateMachine = false end)
         end
     end)
 end
@@ -1878,6 +1887,7 @@ local function isLocomotionTrack(tr)
     end)
     return n:find("walk", 1, true) or n:find("run", 1, true) or n:find("fall", 1, true)
         or n:find("jump", 1, true) or n:find("swim", 1, true) or n:find("climb", 1, true)
+        or n:find("land", 1, true) or n:find("freefall", 1, true)
         or aid:find("walk", 1, true) or aid:find("run", 1, true) or aid:find("fall", 1, true)
 end
 local function stopFallTracks(hum)
@@ -2065,6 +2075,7 @@ local function tryStandAnimation(char)
             G.MM_EmoteUntil = tick() + 1e8
             G.MM_StandEmoteOk = true
             G.MM_StandEmoteName = emoteName
+            standGroundHumanoid(hum)
             stopFallTracks(hum)
             pcall(function()
                 if G.MM_AuraPlaying then G.MM_AuraPlaying(hum) end
@@ -2106,6 +2117,8 @@ local function tryStandAnimation(char)
         local played = pcall(function() track:Play(0.2, 1, 1) end)
         if played and track.IsPlaying then
             G.MM_StandTrack = track
+            G.MM_StandEmoteOk = true
+            standGroundHumanoid(hum)
             stopFallTracks(hum)
             return true
         end
@@ -2275,13 +2288,14 @@ local function prepareStandBody(char)
         G.MM_StandAnimConn = nil
     end
     if hum then
-        G.MM_StandStateConn = hum.StateChanged:Connect(function()
+        G.MM_StandStateConn = hum.StateChanged:Connect(function(_, new)
             if not G.MM_SummonUserId or G.MM_StandPaused or G.MM_Resetting then return end
-            standGroundHumanoid(hum)
-            if G.MM_StandNoclip then G.MM_StandNoclip(char) end
-            if not (G.MM_AuraPlaying and G.MM_AuraPlaying(hum)) then
-                G.MM_StandEmoteOk = false
+            if new == Enum.HumanoidStateType.Freefall or new == Enum.HumanoidStateType.FallingDown
+                or new == Enum.HumanoidStateType.Jumping then
+                standGroundHumanoid(hum, true)
+                stopFallTracks(hum)
             end
+            if G.MM_StandNoclip then G.MM_StandNoclip(char) end
         end)
         trackConnection(G.MM_StandStateConn)
         G.MM_StandAnimConn = hum.AnimationPlayed:Connect(function(tr)
@@ -2429,9 +2443,9 @@ function startSummonLoop(userId)
         summonSnap(target, bornAt, dt)
         local hum = char and char:FindFirstChildOfClass("Humanoid")
         if not hum then return end
-        if tick() - lastGround > 0.45 then
+        stopFallTracks(hum)
+        if tick() - lastGround > 0.2 then
             lastGround = tick()
-            stopFallTracks(hum)
             standGroundHumanoid(hum)
         end
         if tick() - lastHide > 0.35 then
@@ -4356,8 +4370,8 @@ end
 do
     G.MM_BringGen = tonumber(G.MM_BringGen) or 0
     G.MM_BringBusy = false
-    local BRING_DONE = 8
-    local BRING_TIMEOUT = 18
+    local BRING_DONE = 9
+    local BRING_TIMEOUT = 10
     local function enableStandPush(char)
         if not char then return end
         pcall(function()
@@ -4374,42 +4388,11 @@ do
             end
         end)
     end
-    local function bringPathPoints(fromPos, toPos)
-        local box = { pts = { fromPos, toPos }, used = false, done = false }
-        task.spawn(function()
-            pcall(function()
-                local pfs = game:GetService("PathfindingService")
-                local path = pfs:CreatePath({
-                    AgentRadius = 2.4,
-                    AgentHeight = 5,
-                    AgentCanJump = true,
-                    WaypointSpacing = 8,
-                })
-                path:ComputeAsync(fromPos, toPos)
-                if path.Status == Enum.PathStatus.Success then
-                    local pts = {}
-                    for _, wp in ipairs(path:GetWaypoints()) do
-                        table.insert(pts, wp.Position)
-                    end
-                    if #pts >= 2 then
-                        box.pts = pts
-                        box.used = true
-                    end
-                end
-            end)
-            box.done = true
-        end)
-        local t0 = tick()
-        while not box.done and tick() - t0 < 0.4 do
-            task.wait()
-        end
-        return box.pts, box.used
-    end
     local function nextBringGoal(pts, idx, tgtPos, ownerPos)
         while idx <= #pts do
             local wp = pts[idx]
             local flat = Vector3.new(wp.X - tgtPos.X, 0, wp.Z - tgtPos.Z)
-            if flat.Magnitude < 4.5 then
+            if flat.Magnitude < 6 then
                 idx = idx + 1
             else
                 return idx, wp
@@ -4431,7 +4414,7 @@ do
         if G.MM_ActionBegin then G.MM_ActionBegin() end
         pcall(restoreStandBody)
         local ok = false
-        local pts, usedPath = { }, false
+        local pts = {}
         local wpIdx = 1
         local deadline = tick() + BRING_TIMEOUT
         local runOk, runErr = pcall(function()
@@ -4439,48 +4422,72 @@ do
             local th0 = target.Character and target.Character:FindFirstChild("HumanoidRootPart")
             local oh0 = owner.Character and owner.Character:FindFirstChild("HumanoidRootPart")
             if not (mh0 and th0 and oh0) then return end
-            if mh0.Position.Y < 50 then
+            pts = { th0.Position, oh0.Position }
+            pcall(function()
+                mh0.Anchored = false
+                mh0.CFrame = th0.CFrame * CFrame.new(0, 1.2, 2)
+            end)
+            task.spawn(function()
                 pcall(function()
-                    mh0.Anchored = false
-                    mh0.CFrame = th0.CFrame * CFrame.new(0, 1.5, 3)
+                    local pfs = game:GetService("PathfindingService")
+                    local path = pfs:CreatePath({
+                        AgentRadius = 2.2,
+                        AgentHeight = 5,
+                        AgentCanJump = true,
+                        WaypointSpacing = 10,
+                    })
+                    path:ComputeAsync(th0.Position, oh0.Position)
+                    if gen ~= G.MM_BringGen then return end
+                    if path.Status == Enum.PathStatus.Success then
+                        local found = {}
+                        for _, wp in ipairs(path:GetWaypoints()) do
+                            table.insert(found, wp.Position)
+                        end
+                        if #found >= 2 then
+                            pts = found
+                            wpIdx = 1
+                            log("bring path: " .. tostring(#found) .. " wp")
+                        end
+                    end
                 end)
-                task.wait()
-            end
-            pts, usedPath = bringPathPoints(th0.Position, oh0.Position)
-            log("bring path: " .. tostring(#pts) .. (usedPath and " wp" or " direct"))
+            end)
+            log("bring start")
             while tick() < deadline and gen == G.MM_BringGen and session.active do
                 if not (isAlive(target) and isAlive(me) and isAlive(owner)) then break end
                 local mh = hrp()
                 local th = target.Character and target.Character:FindFirstChild("HumanoidRootPart")
                 local oh = owner.Character and owner.Character:FindFirstChild("HumanoidRootPart")
                 if not (mh and th and oh) then break end
-                local dist = (th.Position - oh.Position).Magnitude
-                if dist <= BRING_DONE then
+                local toOwner = Vector3.new(oh.Position.X - th.Position.X, 0, oh.Position.Z - th.Position.Z)
+                if toOwner.Magnitude <= BRING_DONE then
                     ok = true
                     break
                 end
                 local goal
                 wpIdx, goal = nextBringGoal(pts, wpIdx, th.Position, oh.Position)
                 local dir = Vector3.new(goal.X - th.Position.X, 0, goal.Z - th.Position.Z)
-                if dir.Magnitude < 0.8 then
-                    dir = Vector3.new(oh.Position.X - th.Position.X, 0, oh.Position.Z - th.Position.Z)
-                end
+                if dir.Magnitude < 1 then dir = toOwner end
                 if dir.Magnitude < 0.4 then
                     ok = true
                     break
                 end
                 dir = dir.Unit
                 enableStandPush(me.Character)
-                local standPos = th.Position - dir * 2.1 + Vector3.new(0, 0.2, 0)
+                local standPos = th.Position - dir * 1.35 + Vector3.new(0, 0.15, 0)
+                local step = math.min(4.6, toOwner.Magnitude - 2)
+                if step < 0.8 then step = toOwner.Magnitude * 0.45 end
                 pcall(function()
                     mh.Anchored = false
-                    mh.CFrame = CFrame.lookAt(standPos, th.Position + dir * 4)
-                    local punch = dir * 72 + Vector3.new(0, 4, 0)
+                    mh.CFrame = CFrame.lookAt(standPos, th.Position + dir * 6)
+                    local punch = dir * 280 + Vector3.new(0, 8, 0)
                     mh.AssemblyLinearVelocity = punch
                     mh.Velocity = punch
                     mh.AssemblyAngularVelocity = Vector3.zero
+                    th.AssemblyLinearVelocity = dir * 180 + Vector3.new(0, 6, 0)
+                    th.Velocity = dir * 180
+                    th.CFrame = CFrame.new(th.Position + dir * step, th.Position + dir * (step + 4))
                 end)
-                task.wait()
+                RunSvc.Heartbeat:Wait()
             end
         end)
         if not runOk then

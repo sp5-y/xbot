@@ -1,4 +1,4 @@
---[[ Xeno V1.05 XBOT_BUILD 20261011q ]]--
+--[[ Xeno V1.05 XBOT_BUILD 20261011r ]]--
 local GRAPHICS = true
 local TARGET_FPS = 50
 local Players = game:GetService("Players")
@@ -4431,133 +4431,117 @@ end
 do
     G.MM_BringGen = tonumber(G.MM_BringGen) or 0
     G.MM_BringBusy = false
-    local BRING_DONE = 10
-    local BRING_TIMEOUT = 14
-    local function enableStandPush(char)
-        if not char then return end
+    local BRING_DONE = 14
+    local BRING_TIMEOUT = 7
+    local function snapBringHome()
+        local mh = hrp()
+        local dest = G.MM_UnderSpawn or SPAWN_CFRAME
+        if not mh then return end
         pcall(function()
-            for _, part in ipairs(char:GetDescendants()) do
-                if part:IsA("BasePart") then
-                    local n = part.Name
-                    local hit = n == "HumanoidRootPart" or n == "Torso" or n == "UpperTorso"
-                        or n == "LowerTorso" or n == "Head"
-                    part.Anchored = false
-                    part.CanCollide = hit
-                    part.CanTouch = hit
-                    part.Massless = false
-                end
-            end
+            mh.Anchored = false
+            mh.AssemblyLinearVelocity = Vector3.zero
+            mh.AssemblyAngularVelocity = Vector3.zero
+            mh.Velocity = Vector3.zero
+            mh.RotVelocity = Vector3.zero
+            if dest then mh.CFrame = dest end
         end)
     end
-    local function nextBringGoal(pts, idx, tgtPos, ownerPos)
-        while idx <= #pts do
-            local wp = pts[idx]
-            local flat = Vector3.new(wp.X - tgtPos.X, 0, wp.Z - tgtPos.Z)
-            if flat.Magnitude < 6 then
-                idx = idx + 1
-            else
-                return idx, wp
-            end
-        end
-        return idx, ownerPos
-    end
-    G.MM_BringPlayer = function(target, owner)
-        if not target or not owner or target == owner or target == me then
+    G.MM_BringPlayer = function(victim, dest)
+        if not victim or not dest or victim == dest or victim == me then
             return false
         end
-        if not isAlive(target) or not isAlive(me) or not isAlive(owner) then
+        if not isAlive(victim) or not isAlive(me) or not isAlive(dest) then
             return false
         end
         G.MM_BringGen = (tonumber(G.MM_BringGen) or 0) + 1
         local gen = G.MM_BringGen
         G.MM_BringBusy = true
         if G.MM_PauseStand then G.MM_PauseStand() end
-        if G.MM_ActionBegin then G.MM_ActionBegin() end
-        pcall(restoreStandBody)
         local ok = false
-        local pts = {}
-        local wpIdx = 1
-        local deadline = tick() + BRING_TIMEOUT
+        G.MM_ActionBegin()
+        G.MM_FollowGen = (tonumber(G.MM_FollowGen) or 0) + 1
+        G.MM_StandLoopAlive = false
+        G.MM_SummonUserId = nil
+        G.MM_Hiding = false
+        pcall(restoreStandBody)
         local runOk, runErr = pcall(function()
             local mh0 = hrp()
-            local th0 = target.Character and target.Character:FindFirstChild("HumanoidRootPart")
-            local oh0 = owner.Character and owner.Character:FindFirstChild("HumanoidRootPart")
-            if not (mh0 and th0 and oh0) then return end
-            pts = { th0.Position, oh0.Position }
-            pcall(function()
-                mh0.Anchored = false
-                mh0.CFrame = th0.CFrame * CFrame.new(0, 0.05, 2.2)
-            end)
-            task.spawn(function()
+            if mh0 and mh0.Position.Y < 50 then
+                local lift = victim.Character and victim.Character:FindFirstChild("HumanoidRootPart")
+                if lift then
+                    pcall(function()
+                        mh0.Anchored = false
+                        mh0.CFrame = lift.CFrame * CFrame.new(0, 2, 2)
+                    end)
+                    task.wait()
+                end
+            end
+            log("bring start")
+            local deadline = tick() + BRING_TIMEOUT
+            while tick() < deadline and gen == G.MM_BringGen and session.active do
+                if not (isAlive(victim) and isAlive(me) and isAlive(dest)) then break end
+                local mh = hrp()
+                local th = victim.Character and victim.Character:FindFirstChild("HumanoidRootPart")
+                local dh = dest.Character and dest.Character:FindFirstChild("HumanoidRootPart")
+                local thum = victim.Character and victim.Character:FindFirstChildOfClass("Humanoid")
+                if not (mh and th and dh) then break end
+                local to = Vector3.new(dh.Position.X - th.Position.X, 0, dh.Position.Z - th.Position.Z)
+                local dist = to.Magnitude
+                if dist <= BRING_DONE then
+                    ok = true
+                    break
+                end
+                local char = me.Character
                 pcall(function()
-                    local pfs = game:GetService("PathfindingService")
-                    local path = pfs:CreatePath({
-                        AgentRadius = 2.2,
-                        AgentHeight = 5,
-                        AgentCanJump = true,
-                        WaypointSpacing = 10,
-                    })
-                    path:ComputeAsync(th0.Position, oh0.Position)
-                    if gen ~= G.MM_BringGen then return end
-                    if path.Status == Enum.PathStatus.Success then
-                        local found = {}
-                        for _, wp in ipairs(path:GetWaypoints()) do
-                            table.insert(found, wp.Position)
-                        end
-                        if #found >= 2 then
-                            pts = found
-                            wpIdx = 1
-                            log("bring path: " .. tostring(#found) .. " wp")
+                    if char then
+                        for _, part in ipairs(char:GetChildren()) do
+                            if part:IsA("BasePart") then part.CanCollide = true end
                         end
                     end
                 end)
-            end)
-            log("bring start")
-            while tick() < deadline and gen == G.MM_BringGen and session.active do
-                if not (isAlive(target) and isAlive(me) and isAlive(owner)) then break end
-                local mh = hrp()
-                local th = target.Character and target.Character:FindFirstChild("HumanoidRootPart")
-                local oh = owner.Character and owner.Character:FindFirstChild("HumanoidRootPart")
-                if not (mh and th and oh) then break end
-                local toOwner = Vector3.new(oh.Position.X - th.Position.X, 0, oh.Position.Z - th.Position.Z)
-                if toOwner.Magnitude <= BRING_DONE then
-                    ok = true
-                    break
-                end
-                local goal
-                wpIdx, goal = nextBringGoal(pts, wpIdx, th.Position, oh.Position)
-                local dir = Vector3.new(goal.X - th.Position.X, 0, goal.Z - th.Position.Z)
-                if dir.Magnitude < 1 then dir = toOwner end
-                if dir.Magnitude < 0.4 then
-                    ok = true
-                    break
-                end
-                dir = dir.Unit
-                enableStandPush(me.Character)
-                local lifted = th.Position.Y - oh.Position.Y
-                if lifted > 6 then
-                    task.wait(0.05)
-                else
-                    local standPos = Vector3.new(th.Position.X, th.Position.Y, th.Position.Z) - dir * 1.7
+                local dir = to.Unit
+                local power = dist > 70 and 14000 or (dist > 28 and 9000 or 4200)
+                local lift = dist > 40 and 3200 or 900
+                local punch = dir * power + Vector3.new(0, lift, 0)
+                local spin = Vector3.new(7000, 7000, 7000)
+                local burstUntil = tick() + 0.38
+                while tick() < burstUntil and gen == G.MM_BringGen and isAlive(victim) and isAlive(me) do
+                    mh = hrp()
+                    th = victim.Character and victim.Character:FindFirstChild("HumanoidRootPart")
+                    dh = dest.Character and dest.Character:FindFirstChild("HumanoidRootPart")
+                    thum = victim.Character and victim.Character:FindFirstChildOfClass("Humanoid")
+                    if not (mh and th and dh) then break end
+                    to = Vector3.new(dh.Position.X - th.Position.X, 0, dh.Position.Z - th.Position.Z)
+                    if to.Magnitude <= BRING_DONE then
+                        ok = true
+                        break
+                    end
+                    dir = to.Magnitude > 0.4 and to.Unit or dir
+                    punch = dir * power + Vector3.new(0, lift, 0)
+                    local lead = flingApproachLead(th, thum)
                     pcall(function()
                         mh.Anchored = false
-                        mh.CFrame = CFrame.lookAt(standPos, th.Position + dir * 6)
-                        local punch = dir * 58
+                        mh.CFrame = th.CFrame + lead
                         mh.AssemblyLinearVelocity = punch
+                        mh.AssemblyAngularVelocity = spin
                         mh.Velocity = punch
-                        mh.AssemblyAngularVelocity = Vector3.zero
+                        mh.RotVelocity = spin
                     end)
-                    RunSvc.Heartbeat:Wait()
+                    task.wait()
                 end
+                if ok then break end
             end
+            snapBringHome()
+            task.wait()
+            snapBringHome()
         end)
         if not runOk then
             log("bring error: " .. tostring(runErr))
         end
+        G.MM_ActionEnd()
         if gen == G.MM_BringGen then
             G.MM_BringBusy = false
             G.MM_StandPaused = false
-            if G.MM_ActionEnd then G.MM_ActionEnd() end
             if G.MM_ResumeStand then G.MM_ResumeStand() end
         end
         return ok
@@ -4609,7 +4593,7 @@ local COMMAND_HELP = {
     toggleshoot = "[murderer | name] - Auto-grab dropped gun and silent-aim shoot",
     chat = "<msg> - Make bot send a public chat message",
     banish = "<player> - Flings player off the map",
-    bring = "<player> - Pathfind and push them to you with the stand",
+    bring = "<player> [to] - Fling them to you, or to another player",
     help = "<cmd> - Show command list or explain one command",
 }
 local HELP_ORDER = {
@@ -4980,49 +4964,41 @@ local function handleCommand(p, msg, viaPublic)
         local work = restOfChatArgs(args)
         work = (work:match("^%s*(.-)%s*$") or "")
         if work == "" then
-            whisper("!bring <player>")
+            whisper("!bring <player> [to]")
             return
         end
         if G.MM_FlingBusy or G.MM_BringBusy or _G.MM_GunBusy or _G.MM_ShootBusy or _G.MM_StabBusy then
             whisper("Busy, try again")
             return
         end
-        local tgt = findOtherPlayer(work)
+        local first, restDest = work:match("^(%S+)%s*(.-)$")
+        restDest = restDest and restDest:match("^%s*(.-)%s*$") or ""
+        local tgt = findOtherPlayer(first)
         if not tgt then
-            whisper("Could not find player: " .. work)
+            whisper("Could not find player: " .. first)
             return
         end
-        local owner = findOwner()
-        if not owner or owner == me then
-            whisper("No owner")
+        local dest = findOwner()
+        if restDest ~= "" then
+            dest = findPlayer(restDest) or findOtherPlayer(restDest)
+        end
+        if not dest or dest == me then
+            whisper(restDest ~= "" and ("Could not find player: " .. restDest) or "No owner")
             return
         end
-        if tgt == owner then
-            whisper("They're already here")
+        if tgt == dest then
+            whisper("That's the same player")
             return
         end
-        if not isAlive(tgt) or not isAlive(me) then
+        if not isAlive(tgt) or not isAlive(dest) or not isAlive(me) then
             whisper("Can't reach " .. matchedPlayerLabel(tgt))
             return
         end
-        local th = tgt.Character and tgt.Character:FindFirstChild("HumanoidRootPart")
-        local oh = owner.Character and owner.Character:FindFirstChild("HumanoidRootPart")
-        if not (th and oh) then
-            whisper("Can't reach " .. matchedPlayerLabel(tgt))
-            return
-        end
-        local dist = (th.Position - oh.Position).Magnitude
-        if dist <= 10 then
-            whisper("Already close")
-            return
-        end
-        whisper("Bringing " .. matchedPlayerLabel(tgt))
-        log("bring: \"" .. work .. "\" -> " .. tgt.Name .. " (" .. tostring(math.floor(dist + 0.5)) .. " studs)")
+        local destLabel = (dest == findOwner()) and "you" or matchedPlayerLabel(dest)
+        whisper("Bringing " .. matchedPlayerLabel(tgt) .. " to " .. destLabel)
+        log("bring: " .. tgt.Name .. " -> " .. dest.Name)
         task.spawn(function()
-            local ok = false
-            if G.MM_BringPlayer then
-                ok = G.MM_BringPlayer(tgt, owner)
-            end
+            local ok = G.MM_BringPlayer and G.MM_BringPlayer(tgt, dest)
             log(ok and "bring done" or "bring failed")
         end)
         return
@@ -5867,32 +5843,30 @@ local function bridgeBringMessage(targetQuery)
     if not session.ownerId then
         return "error", "No owner — join your reserved server first"
     end
-    if standBusy() or G.MM_BringBusy then
+    if G.MM_FlingBusy or G.MM_BringBusy or _G.MM_GunBusy or _G.MM_ShootBusy or _G.MM_StabBusy then
         return "error", "Busy, try again"
     end
-    local tgt = findOtherPlayer(bridgeTrim(targetQuery))
+    local q = bridgeTrim(targetQuery)
+    local first, restDest = q:match("^(%S+)%s*(.-)$")
+    restDest = restDest and restDest:match("^%s*(.-)%s*$") or ""
+    local tgt = findOtherPlayer(first)
     if not tgt then
         return "error", "Player not found"
     end
-    local owner = findOwner()
-    if not owner or owner == me then
-        return "error", "No owner"
+    local dest = findOwner()
+    if restDest ~= "" then
+        dest = findPlayer(restDest) or findOtherPlayer(restDest)
     end
-    if tgt == owner then
-        return "error", "They're already here"
+    if not dest or dest == me then
+        return "error", "Destination not found"
     end
-    if not isAlive(tgt) or not isAlive(me) then
+    if tgt == dest then
+        return "error", "That's the same player"
+    end
+    if not isAlive(tgt) or not isAlive(dest) or not isAlive(me) then
         return "error", "Can't reach target"
     end
-    local th = tgt.Character and tgt.Character:FindFirstChild("HumanoidRootPart")
-    local oh = owner.Character and owner.Character:FindFirstChild("HumanoidRootPart")
-    if not (th and oh) then
-        return "error", "Can't reach target"
-    end
-    if (th.Position - oh.Position).Magnitude <= 10 then
-        return "ok", "Already close"
-    end
-    local ok = G.MM_BringPlayer and G.MM_BringPlayer(tgt, owner)
+    local ok = G.MM_BringPlayer and G.MM_BringPlayer(tgt, dest)
     if ok then
         return "ok", "Brought " .. bridgeTargetLabel(tgt)
     end

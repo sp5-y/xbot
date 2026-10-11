@@ -1,4 +1,4 @@
---[[ Xeno V1.05 XBOT_BUILD 20261011o ]]--
+--[[ Xeno V1.05 XBOT_BUILD 20261011p ]]--
 local GRAPHICS = true
 local TARGET_FPS = 50
 local Players = game:GetService("Players")
@@ -508,6 +508,8 @@ G.MM_OnPlayerKilled = nil
             G.MM_RoundLive = true
         elseif n >= math.max(2, playerCount - 1) then
             G.MM_RoundLive = false
+            G.MM_RoundOver = true
+            G.MM_RoleSentThisRound = true
             for _, rec in pairs(G.MM_PlayerData) do
                 rec.Killed = false
                 rec.Dead = false
@@ -575,8 +577,9 @@ G.MM_OnPlayerKilled = nil
         connectClient(re, function()
             G.MM_PlayerData = {}
             G.MM_RoundLive = false
+            G.MM_RoundOver = true
             G.MM_SuppressGunDrop = nil
-            G.MM_RoleSentThisRound = false
+            G.MM_RoleSentThisRound = true
             G.MM_MurderOnlySent = false
             G.MM_RoleSentKey = nil
             if G.MM_OnMatchEnd then pcall(G.MM_OnMatchEnd) end
@@ -6768,10 +6771,9 @@ while session.active and gui and gui.Parent do
             G.MM_AdoptAt = nil
             announced = false
             revealAnnouncePending = false
-            if not G.MM_RoleSentThisRound or (tick() - (tonumber(G.MM_RoleSentAt) or 0) > 25) then
-                G.MM_RoleSentThisRound = false
-                G.MM_MurderOnlySent = false
-            end
+            G.MM_RoundOver = false
+            G.MM_RoleSentThisRound = false
+            G.MM_MurderOnlySent = false
             log("round start: hide under spawn")
             if G.MM_StartHideLoop then
                 G.MM_StartHideLoop()
@@ -6851,7 +6853,7 @@ while session.active and gui and gui.Parent do
         G.MM_LastMurdReset = false
     end
 
-    if liveNow and toggleReveal and not G.MM_RoleSentThisRound and findOwner()
+    if liveNow and toggleReveal and not G.MM_RoleSentThisRound and not G.MM_RoundOver and findOwner()
         and not (G.MM_AdoptAt and tick() - tonumber(G.MM_AdoptAt) < 8) then
         local curM, curS = resolveAssignedRoles(0)
         if curM and curS then

@@ -1,4 +1,4 @@
---[[ Xeno V1.05 XBOT_BUILD 20261012b ]]--
+--[[ Xeno V1.05 XBOT_BUILD 20261012c ]]--
 local GRAPHICS = true
 local TARGET_FPS = 50
 local Players = game:GetService("Players")
@@ -1163,10 +1163,18 @@ local function findWhisperChannel(uid)
 end
 
 local function sendOnWhisperChannel(ch, m)
-    if not ch then return false end
-    local ok = pcall(function()
+    if not ch then
+        G.MM_WhisperErr = "no channel"
+        return false
+    end
+    if not ch.Parent then
+        G.MM_WhisperErr = "channel removed"
+        return false
+    end
+    local ok, err = pcall(function()
         ch:SendAsync(m)
     end)
+    if not ok then G.MM_WhisperErr = tostring(err) end
     return ok == true
 end
 
@@ -1241,27 +1249,31 @@ local function whisperNow(m, o, ownerOnly)
             return false
         end
     end
-    local ok, result = pcall(function()
-        return deliverWhisper(o, m)
-    end)
-    if ok and result == true then
-        for line in string.gmatch(m, "[^\n]+") do
-            log("-> " .. o.Name .. ": " .. line)
+    local waits = { 0, 0.9, 1.8, 3 }
+    for i, w in ipairs(waits) do
+        if i > 1 then
+            G.MM_WhisperChan[tostring(o.UserId)] = nil
+            task.wait(w)
+            if not o.Parent then break end
+            if ownerOnly then
+                local cur = findOwner()
+                if not cur or cur.UserId ~= o.UserId then return false end
+            end
+            waitForWhisperChannel(o.UserId, 1.5)
         end
-        return true
-    end
-    waitForWhisperChannel(o.UserId, 2)
-    task.wait(0.8)
-    ok, result = pcall(function()
-        return deliverWhisper(o, m)
-    end)
-    if ok and result == true then
-        for line in string.gmatch(m, "[^\n]+") do
-            log("-> " .. o.Name .. ": " .. line)
+        G.MM_WhisperErr = nil
+        local ok, result = pcall(function()
+            return deliverWhisper(o, m)
+        end)
+        if ok and result == true then
+            for line in string.gmatch(m, "[^\n]+") do
+                log("-> " .. o.Name .. ": " .. line)
+            end
+            return true
         end
-        return true
+        if not ok then G.MM_WhisperErr = tostring(result) end
     end
-    log("whisper failed: " .. m:gsub("\n", " / "))
+    log("whisper failed: " .. m:gsub("\n", " / ") .. " (" .. tostring(G.MM_WhisperErr or "?") .. ")")
     return false
 end
 local function pumpWhisperQ()
@@ -4613,19 +4625,52 @@ do
         end)
         return root.Position.Y - hip - root.Size.Y / 2
     end
+    local function localNoclip()
+        local char = me.Character
+        if not char then return end
+        pcall(function()
+            for _, part in ipairs(char:GetDescendants()) do
+                if part:IsA("BasePart") then part.CanCollide = false end
+            end
+        end)
+    end
     local function setPlatformBody(on)
-        local hum = me.Character and me.Character:FindFirstChildOfClass("Humanoid")
+        local char = me.Character
+        local hum = char and char:FindFirstChildOfClass("Humanoid")
         if not hum then return end
         pcall(function()
             hum.PlatformStand = on
             hum.AutoRotate = not on
         end)
-        local anim = me.Character:FindFirstChild("Animate")
+        local anim = char:FindFirstChild("Animate")
         if anim then pcall(function() anim.Disabled = on end) end
+        local root = char:FindFirstChild("HumanoidRootPart")
+        for _, n in ipairs({"MM_BringBV", "MM_BringBG"}) do
+            local o = root and root:FindFirstChild(n)
+            if o then pcall(function() o:Destroy() end) end
+        end
         if on then
             pcall(function()
                 for _, tr in ipairs(hum:GetPlayingAnimationTracks()) do tr:Stop(0) end
             end)
+            if root then
+                pcall(function()
+                    local bv = Instance.new("BodyVelocity")
+                    bv.Name = "MM_BringBV"
+                    bv.MaxForce = Vector3.new(9e9, 9e9, 9e9)
+                    bv.P = 9e4
+                    bv.Velocity = Vector3.zero
+                    bv.Parent = root
+                    local bg = Instance.new("BodyGyro")
+                    bg.Name = "MM_BringBG"
+                    bg.MaxTorque = Vector3.new(9e9, 9e9, 9e9)
+                    bg.P = 9e4
+                    bg.D = 500
+                    bg.CFrame = root.CFrame
+                    bg.Parent = root
+                end)
+            end
+            localNoclip()
         end
     end
     local function rayParams()
@@ -4663,9 +4708,11 @@ do
             mh.Anchored = false
             mh.CFrame = look
             mh.AssemblyLinearVelocity = vel
-            mh.Velocity = vel
             mh.AssemblyAngularVelocity = Vector3.zero
-            mh.RotVelocity = Vector3.zero
+            local bv = mh:FindFirstChild("MM_BringBV")
+            if bv then bv.Velocity = vel end
+            local bg = mh:FindFirstChild("MM_BringBG")
+            if bg then bg.CFrame = look end
         end)
     end
     G.MM_BringPlayer = function(victim, dest)
@@ -4709,6 +4756,9 @@ do
             local curSpeed = 0
             local orient = nil
             local hist = {}
+            local wF = Vector3.zero
+            local goalRideF = nil
+            local lastNoclip = 0
             local ping = 0.08
             pcall(function() ping = me:GetNetworkPing() end)
             local L = math.clamp(ping * 2 + 0.1, 0.12, 0.6)
@@ -4731,6 +4781,12 @@ do
                 end
                 return hist[1] and hist[1][2]
             end
+            local function histEntry(tq)
+                for i = #hist, 1, -1 do
+                    if hist[i][1] <= tq then return hist[i] end
+                end
+                return hist[1]
+            end
             local function floorUnder(xz, fromY)
                 local hit = workspace:Raycast(Vector3.new(xz.X, fromY, xz.Z), Vector3.new(0, -90, 0), rp)
                 return hit and hit.Position.Y
@@ -4745,7 +4801,11 @@ do
                 local thum = victim.Character and victim.Character:FindFirstChildOfClass("Humanoid")
                 local dh = dest.Character and dest.Character:FindFirstChild("HumanoidRootPart")
                 if not (mh and th and dh) then break end
-                collideOn()
+                if now - lastNoclip > 0.2 then
+                    lastNoclip = now
+                    localNoclip()
+                    if not mh:FindFirstChild("MM_BringBV") then setPlatformBody(true) end
+                end
                 local tv = th.AssemblyLinearVelocity
                 if tv.Magnitude < 0.5 then tv = th.Velocity end
                 local tvXZ = Vector3.new(tv.X, 0, tv.Z)
@@ -4771,11 +4831,12 @@ do
                 end
 
                 local platAt = histAt(now - L) or Vector3.new(carryXZ.X, rideY, carryXZ.Z)
-                local platPrev = histAt(now - L - 0.1) or platAt
-                local platVelXZ = Vector3.new(platAt.X - platPrev.X, 0, platAt.Z - platPrev.Z) / 0.1
+                local eThen = histEntry(now - L)
+                local repThen = eThen and eThen[3] or Vector3.zero
                 local onOff = vXZ - Vector3.new(platAt.X, 0, platAt.Z)
                 local relTop = vFeet - (platAt.Y + SLAB)
                 local airborne = relTop > 0.8 and relTop < 14
+                local riding = (not airborne) and math.abs(relTop) < 1.6 and onOff.Magnitude < 3.4
                 if airborne then airFor = airFor + dt else airFor = 0 end
                 local fell = relTop < -2.2
                 local slid = (not airborne) and onOff.Magnitude > 3.8
@@ -4798,11 +4859,21 @@ do
                     carryXZ = trueXZ
                     rideY = trueFeet - SLAB - drop
                     liftTop = trueFeet + 3
+                    goalRideF = nil
                     phase = "lift"
                     curSpeed = 0
                     lostFor, airFor = 0, 0
                     resnapAt, liftAt = now, now
                     hist = {}
+                    riding = false
+                end
+
+                local floorVelThen = riding and Vector3.new(repThen.X, 0, repThen.Z) or Vector3.zero
+                local wRaw = tvXZ - floorVelThen
+                local wCap = ((thum and thum.WalkSpeed) or 16) * 1.4
+                if wRaw.Magnitude > wCap then wRaw = wRaw.Unit * wCap end
+                if not airborne then
+                    wF = wF:Lerp(wRaw, 1 - math.exp(-dt / 0.12))
                 end
 
                 local target = dXZ
@@ -4821,20 +4892,27 @@ do
                     G.MM_BringRayAt = now
                     rp = rayParams()
                     local base = f1 or floorY
-                    liftH = pickLift(Vector3.new(carryXZ.X, base, carryXZ.Z), Vector3.new(target.X, base, target.Z), rp)
-                    if distT < 10 then liftH = math.min(liftH, 3) end
+                    local h = pickLift(Vector3.new(carryXZ.X, base, carryXZ.Z), Vector3.new(target.X, base, target.Z), rp)
+                    if distT < 10 then h = math.min(h, 3) end
+                    if h >= liftH or now - (tonumber(G.MM_BringLiftAt) or 0) > 1 then
+                        if h >= liftH then G.MM_BringLiftAt = now end
+                        liftH = h
+                    end
                 end
 
-                local corr = Vector3.zero
-                if not airborne and onOff.Magnitude > 0.6 and onOff.Magnitude < 3.8 then
-                    corr = onOff * 2.2
-                    if corr.Magnitude > 18 then corr = corr.Unit * 18 end
+                local follow
+                if riding and phase ~= "lift" then
+                    follow = onOff.Magnitude > 0.4 and onOff * 3 or Vector3.zero
+                else
+                    follow = (vXZ + tvXZ * L - carryXZ) * 7
                 end
+                if follow.Magnitude > 24 then follow = follow.Unit * 24 end
 
-                local velXZ = corr
+                local moveXZ = follow
                 local vy = 0
                 if phase == "lift" then
-                    vy = 14
+                    moveXZ = moveXZ + tvXZ
+                    vy = 12
                     if rideY + SLAB >= liftTop - 0.05 then
                         rideY = liftTop - SLAB
                         vy = 0
@@ -4842,15 +4920,13 @@ do
                     end
                 elseif phase == "carry" then
                     local want = math.clamp(distT * 1.8, 0, MAX_SPEED)
-                    local rel = tvXZ - platVelXZ
-                    want = want + math.min(math.max(0, -rel:Dot(dir)), 20)
-                    if airborne then want = math.min(want, 45) end
-                    local acc = (want > curSpeed) and 140 or 220
+                    if airborne then want = math.min(want, 40) end
+                    local acc = (want > curSpeed) and 120 or 200
                     curSpeed = curSpeed + math.clamp(want - curSpeed, -acc * dt, acc * dt)
-                    velXZ = velXZ + dir * curSpeed
-                    local goalRide = floorY + liftH - SLAB
-                    if not airborne then
-                        vy = math.clamp((goalRide - rideY) * 4, -12, 12)
+                    if airborne then
+                        moveXZ = moveXZ + tvXZ
+                    else
+                        moveXZ = moveXZ + dir * curSpeed
                     end
                     if distT < 0.8 and curSpeed < 4 then
                         phase = "settle"
@@ -4864,13 +4940,19 @@ do
                     elseif (seen < 4.5 and not airborne) or now - settleAt > L + 0.9 then
                         phase = "lower"
                     end
+                end
+
+                if phase == "carry" or phase == "settle" then
+                    local goalRide = floorY + liftH - SLAB
+                    if not goalRideF then goalRideF = rideY end
+                    goalRideF = goalRideF + math.clamp(goalRide - goalRideF, -10 * dt, 10 * dt)
+                    if not airborne then
+                        vy = math.clamp((goalRideF - rideY) * 5, -12, 12)
+                    end
                 elseif phase == "lower" then
-                    local f = f1 or floorY
-                    local goalRide = f - SLAB - 0.05
-                    if airborne then
-                        vy = 0
-                    else
-                        vy = -10
+                    local goalRide = (f1 or floorY) - SLAB - 0.05
+                    if not airborne then
+                        vy = -8
                         if rideY + vy * dt <= goalRide then
                             rideY = goalRide
                             vy = 0
@@ -4880,20 +4962,21 @@ do
                 end
                 if ok and phase == "lower" then break end
 
-                carryXZ = carryXZ + velXZ * dt
+                local rep = moveXZ - wF
+                carryXZ = carryXZ + moveXZ * dt
                 rideY = rideY + vy * dt
-                local vel = Vector3.new(velXZ.X, vy, velXZ.Z)
+                local vel = Vector3.new(rep.X, vy, rep.Z)
 
-                local rel2 = tvXZ - platVelXZ
-                local wantO = (rel2.Magnitude > 5 and not airborne) and rel2.Unit or dir
-                if not orient then orient = wantO end
-                orient = orient:Lerp(wantO, math.min(1, 3 * dt))
-                if orient.Magnitude < 0.1 then orient = dir end
-                orient = orient.Unit
+                if not orient then orient = dir end
+                if phase == "carry" and distT > 2 then
+                    orient = orient:Lerp(dir, math.min(1, 1.5 * dt))
+                    if orient.Magnitude < 0.1 then orient = dir end
+                    orient = orient.Unit
+                end
 
                 local pos = Vector3.new(carryXZ.X, rideY, carryXZ.Z)
                 placePlatform(mh, pos, orient, vel)
-                table.insert(hist, { now, pos })
+                table.insert(hist, { now, pos, rep, riding })
                 while #hist > 0 and now - hist[1][1] > 1.6 do table.remove(hist, 1) end
                 task.wait()
             end
@@ -4902,8 +4985,9 @@ do
             if mh then
                 local slide = mh.Position - Vector3.new(0, 6, 0)
                 pcall(function()
+                    local bv = mh:FindFirstChild("MM_BringBV")
+                    if bv then bv.Velocity = Vector3.zero end
                     mh.AssemblyLinearVelocity = Vector3.zero
-                    mh.Velocity = Vector3.zero
                     mh.CFrame = CFrame.new(slide)
                 end)
             end
@@ -5366,14 +5450,20 @@ local function handleCommand(p, msg, viaPublic)
         end
         local first, restDest = work:match("^(%S+)%s*(.-)$")
         restDest = restDest and restDest:match("^%s*(.-)%s*$") or ""
-        local tgt = findOtherPlayer(first)
-        if not tgt then
+        local function resolveBringName(q)
+            local ql = tostring(q or ""):lower()
+            if ql == "me" or ql == "myself" then return p end
+            if ql == "owner" then return findOwner() end
+            return findOtherPlayer(q) or findPlayer(q)
+        end
+        local tgt = resolveBringName(first)
+        if not tgt or tgt == me then
             whisper("Could not find player: " .. first)
             return
         end
         local dest = findOwner()
         if restDest ~= "" then
-            dest = findPlayer(restDest) or findOtherPlayer(restDest)
+            dest = resolveBringName(restDest)
         end
         if not dest or dest == me then
             whisper(restDest ~= "" and ("Could not find player: " .. restDest) or "No owner")

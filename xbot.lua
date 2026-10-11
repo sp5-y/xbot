@@ -1,4 +1,4 @@
---[[ Xeno V1.05 XBOT_BUILD 20261011u ]]--
+--[[ Xeno V1.05 XBOT_BUILD 20261011v ]]--
 local GRAPHICS = true
 local TARGET_FPS = 50
 local Players = game:GetService("Players")
@@ -1392,11 +1392,19 @@ end
 local function extractCommandText(msg)
     msg = cleanChatText(msg)
     if msg == "" then return "" end
+    msg = msg:gsub("<[^>]+>", "")
     msg = msg:gsub("^/w%s+%S+%s+", "")
     msg = msg:gsub("^/whisper%s+%S+%s+", "")
     msg = msg:gsub("^To%s+[^:]+:%s*", "")
     msg = msg:match("^%s*(.-)%s*$") or msg
-    if msg:sub(1, 1) ~= "!" then return "" end
+    if msg:sub(1, 1) ~= "!" then
+        local bang = msg:match("(![%w_]+.*)$")
+        if bang then
+            msg = bang
+        else
+            return ""
+        end
+    end
     return msg
 end
 local function isSelfPlayer(p)
@@ -1410,7 +1418,7 @@ local function seenCommandRecently(p, msg)
     local now = tick()
     local last = recentCommandKeys[key]
     recentCommandKeys[key] = now
-    if last and now - last < 15 then return true end
+    if last and now - last < 0.45 then return true end
     task.delay(20, function()
         if recentCommandKeys[key] == now then
             recentCommandKeys[key] = nil
@@ -1669,6 +1677,7 @@ function restoreStandBody()
     end
     G.MM_EmoteUntil = 0
     G.MM_StandEmoteOk = false
+    G.MM_StandEmoteRep = false
     pcall(function()
         for _, d in ipairs(char:GetDescendants()) do
             if d:IsA("Motor6D") then
@@ -2112,6 +2121,7 @@ local function tryStandAnimation(char)
                 track.Priority = Enum.AnimationPriority.Action4
             end)
             G.MM_StandTrack = track
+            G.MM_StandEmoteRep = true
             G.MM_EmoteUntil = tick() + 1e8
             G.MM_StandEmoteOk = true
             return
@@ -2128,14 +2138,14 @@ local function tryStandAnimation(char)
         if named then
             G.MM_EmoteUntil = tick() + 1e8
             G.MM_StandEmoteOk = true
+            G.MM_StandEmoteRep = true
             G.MM_StandEmoteName = emoteName
             return
         end
     end
     local animator = hum:FindFirstChildOfClass("Animator")
     if not animator then
-        animator = Instance.new("Animator")
-        animator.Parent = hum
+        return
     end
     local function playId(id)
         id = tostring(id or "")
@@ -2160,7 +2170,6 @@ local function tryStandAnimation(char)
         local played = pcall(function() track:Play(0.2, 1, 1) end)
         if played and track.IsPlaying then
             G.MM_StandTrack = track
-            G.MM_StandEmoteOk = true
             return true
         end
         pcall(function() track:Stop() end)
@@ -2168,26 +2177,7 @@ local function tryStandAnimation(char)
         return false
     end
     for _, id in ipairs(ids) do
-        if playId(id) then
-            G.MM_EmoteUntil = tick() + 1e8
-            G.MM_StandEmoteOk = true
-            return
-        end
-    end
-    for _, emoteName in ipairs(names) do
-        local named = false
-        pcall(function()
-            named = hum:PlayEmote(emoteName) == true
-        end)
-        if invokeAnimateEmote(char, emoteName) then
-            named = true
-        end
-        if named then
-            G.MM_EmoteUntil = tick() + 1e8
-            G.MM_StandEmoteOk = true
-            G.MM_StandEmoteName = emoteName
-            return
-        end
+        playId(id)
     end
 end
 
@@ -2324,7 +2314,7 @@ local function prepareStandBody(char)
     local hum = char:FindFirstChildOfClass("Humanoid")
     local root = char:FindFirstChild("HumanoidRootPart")
     if root then
-        pcall(function() root.Anchored = true end)
+        pcall(function() root.Anchored = false end)
     end
     if hum then
         pcall(function()
@@ -2403,8 +2393,8 @@ local function standHoverCFrame(ownerRoot, bornAt)
         rise = math.clamp((now - bornAt) / 0.35, 0, 1)
     end
     return ownerRoot.CFrame
-        * CFrame.new(3.35, 2.85 + bob + (1 - rise) * -2.2, 1.05)
-        * CFrame.Angles(0, math.rad(16), 0)
+        * CFrame.new(2.15, 1.55 + bob + (1 - rise) * -1.4, 0.35)
+        * CFrame.Angles(0, math.rad(18), 0)
 end
 
 local function summonSnap(p, bornAt, dt)
@@ -2414,18 +2404,21 @@ local function summonSnap(p, bornAt, dt)
     local goal = standHoverCFrame(t, bornAt)
     local prev = G.MM_StandSmoothCF
     local use = goal
-    if typeof(prev) == "CFrame" then
+    local away = (goal.Position - h.Position).Magnitude
+    if away > 10 then
+        use = goal
+    elseif typeof(prev) == "CFrame" then
         local dist = (goal.Position - prev.Position).Magnitude
-        if dist < 40 and not (bornAt and tick() - bornAt < 0.38) then
-            local k = 13
-            if dist > 8 then k = 18 elseif dist < 1.2 then k = 9 end
+        if dist < 18 and not (bornAt and tick() - bornAt < 0.2) then
+            local k = 16
+            if dist > 8 then k = 22 elseif dist < 1.2 then k = 10 end
             local a = 1 - math.exp(-k * math.clamp(tonumber(dt) or 0.016, 1 / 240, 0.08))
             use = prev:Lerp(goal, a)
         end
     end
     G.MM_StandSmoothCF = use
     pcall(function()
-        h.Anchored = true
+        h.Anchored = false
         h.CFrame = use
         h.AssemblyLinearVelocity = Vector3.zero
         h.AssemblyAngularVelocity = Vector3.zero
@@ -2446,6 +2439,7 @@ function startSummonLoop(userId)
     local gen = G.MM_FollowGen
     local bornAt = tick()
     G.MM_StandEmoteOk = false
+    G.MM_StandEmoteRep = false
     G.MM_StandSmoothCF = nil
     prepareStandBody(me.Character)
     local lastChar
@@ -2499,6 +2493,7 @@ function startSummonLoop(userId)
         if char and char ~= lastChar then
             lastChar = char
             G.MM_StandEmoteOk = false
+            G.MM_StandEmoteRep = false
             G.MM_StandSmoothCF = nil
             prepareStandBody(char)
             bindHide(char)
@@ -2518,13 +2513,18 @@ function startSummonLoop(userId)
             hideBackWeapons(char)
         end
         local playing = G.MM_AuraPlaying and G.MM_AuraPlaying(hum)
-        if playing then
+        if playing and G.MM_StandEmoteRep then
             G.MM_StandEmoteOk = true
+            if tick() - lastEmote > 7 then
+                lastEmote = tick()
+                tryStandAnimation(char)
+            end
         elseif G.MM_StandEmoteOk and tick() - lastEmote < 1.6 then
             -- PlayEmote just fired; wait for the track to show
         else
             G.MM_StandEmoteOk = false
-            if tick() - lastEmote > 1.2 then
+            G.MM_StandEmoteRep = false
+            if tick() - lastEmote > 1.1 then
                 lastEmote = tick()
                 tryStandAnimation(char)
             end
@@ -2542,7 +2542,7 @@ function startSummonLoop(userId)
         local cf = G.MM_StandSmoothCF
         if h and typeof(cf) == "CFrame" then
             pcall(function()
-                h.Anchored = true
+                h.Anchored = false
                 h.CFrame = cf
                 h.AssemblyLinearVelocity = Vector3.zero
                 h.AssemblyAngularVelocity = Vector3.zero
@@ -4551,6 +4551,46 @@ do
             end
         end
     end
+    local function captureSize(on)
+        local char = me.Character
+        if not char then return end
+        if on then
+            local bag = {}
+            G.MM_BringSize = bag
+            for _, name in ipairs({"HumanoidRootPart", "Torso", "UpperTorso", "LowerTorso"}) do
+                local part = char:FindFirstChild(name)
+                if part and part:IsA("BasePart") then
+                    table.insert(bag, {part, part.Size})
+                    pcall(function()
+                        if name == "HumanoidRootPart" then
+                            part.Size = Vector3.new(8, 8, 8)
+                        else
+                            part.Size = part.Size + Vector3.new(2.5, 2.5, 2.5)
+                        end
+                    end)
+                end
+            end
+        else
+            local bag = G.MM_BringSize
+            G.MM_BringSize = nil
+            if type(bag) == "table" then
+                for i = 1, #bag do
+                    local e = bag[i]
+                    if e[1] and e[1].Parent then
+                        pcall(function() e[1].Size = e[2] end)
+                    end
+                end
+            end
+        end
+    end
+    local function glueInside(mh, th)
+        pcall(function()
+            mh.Anchored = false
+            mh.CFrame = th.CFrame
+            mh.AssemblyAngularVelocity = Vector3.zero
+            mh.RotVelocity = Vector3.zero
+        end)
+    end
     G.MM_BringPlayer = function(victim, dest)
         if not victim or not dest or victim == dest or victim == me then
             return false
@@ -4572,12 +4612,21 @@ do
         local runOk, runErr = pcall(function()
             collideOn()
             harden(true)
+            captureSize(true)
+            local th0 = victim.Character and victim.Character:FindFirstChild("HumanoidRootPart")
             local mh0 = hrp()
-            local thLift = victim.Character and victim.Character:FindFirstChild("HumanoidRootPart")
-            if mh0 and thLift then
+            if not (mh0 and th0) then return end
+            glueInside(mh0, th0)
+            local holdUntil = tick() + 0.22
+            while tick() < holdUntil and gen == G.MM_BringGen do
+                local mh = hrp()
+                local th = victim.Character and victim.Character:FindFirstChild("HumanoidRootPart")
+                if not (mh and th) then break end
+                collideOn()
+                glueInside(mh, th)
                 pcall(function()
-                    mh0.Anchored = false
-                    mh0.CFrame = thLift.CFrame * CFrame.new(0, 2, 1)
+                    mh.AssemblyLinearVelocity = Vector3.zero
+                    mh.Velocity = Vector3.zero
                 end)
                 task.wait()
             end
@@ -4585,80 +4634,63 @@ do
             local dh1 = dest.Character and dest.Character:FindFirstChild("HumanoidRootPart")
             if not (th1 and dh1) then return end
             local startDist = horizDist(th1.Position, dh1.Position)
-            local bursts = math.clamp(math.ceil(startDist / 50), 1, 6)
-            if startDist <= 14 then bursts = 1 end
-            log("bring start " .. math.floor(startDist) .. " studs x" .. bursts)
+            local timeout = math.clamp(startDist / 9, 5, 18)
+            log("bring capture " .. math.floor(startDist) .. " studs")
             local closest = startDist
-            for b = 1, bursts do
-                if gen ~= G.MM_BringGen or not session.active then break end
+            local deadline = tick() + timeout
+            while tick() < deadline and gen == G.MM_BringGen and session.active do
                 if not (isAlive(victim) and isAlive(me) and isAlive(dest)) then break end
+                local mh = hrp()
                 local th = victim.Character and victim.Character:FindFirstChild("HumanoidRootPart")
                 local dh = dest.Character and dest.Character:FindFirstChild("HumanoidRootPart")
-                if not (th and dh) then break end
+                if not (mh and th and dh) then break end
+                if mh.Position.Y < -25 then break end
+                collideOn()
                 local dist = horizDist(th.Position, dh.Position)
                 if dist < closest then closest = dist end
-                if dist <= BRING_DONE and b > 1 then
+                if dist <= BRING_DONE then
                     ok = true
                     break
                 end
-                local power = 14000
-                local dur = 0.42
-                if dist < 16 then
-                    power = 5200
-                    dur = 0.22
-                elseif dist < 32 then
-                    power = 8800
-                    dur = 0.32
-                elseif dist < 70 then
-                    power = 12000
-                    dur = 0.40
-                elseif dist > 120 then
-                    power = 14000
-                    dur = 0.50
-                end
-                local spinAmt = dist < 18 and 0 or 2200
-                local untilT = tick() + dur
-                while tick() < untilT and gen == G.MM_BringGen do
-                    if not (isAlive(victim) and isAlive(me) and isAlive(dest)) then break end
-                    local mh = hrp()
-                    th = victim.Character and victim.Character:FindFirstChild("HumanoidRootPart")
-                    dh = dest.Character and dest.Character:FindFirstChild("HumanoidRootPart")
-                    local thum = victim.Character and victim.Character:FindFirstChildOfClass("Humanoid")
-                    if not (mh and th and dh) then break end
-                    if mh.Position.Y < -25 then break end
-                    collideOn()
-                    local aim = dh.Position + Vector3.new(0, 3, 0)
-                    local delta = aim - th.Position
-                    local dir = delta.Magnitude > 1 and delta.Unit or Vector3.new(0, 1, 0)
-                    local punch = dir * power
-                    local lead = flingApproachLead(th, thum)
-                    local spin = Vector3.new(spinAmt, spinAmt, spinAmt)
+                if (mh.Position - th.Position).Magnitude > 7 then
+                    glueInside(mh, th)
+                else
                     pcall(function()
                         mh.Anchored = false
-                        mh.CFrame = th.CFrame + lead
-                        mh.AssemblyLinearVelocity = punch
-                        mh.Velocity = punch
-                        mh.AssemblyAngularVelocity = spin
-                        mh.RotVelocity = spin
+                        mh.CFrame = th.CFrame
                     end)
-                    task.wait()
                 end
-                task.wait(0.07)
+                local aim = dh.Position + Vector3.new(0, 2.5, 0)
+                local delta = aim - th.Position
+                local dir = delta.Magnitude > 1 and delta.Unit or Vector3.new(0, 1, 0)
+                local power = math.clamp(dist * 130, 4500, 14000)
+                if dist < 18 then
+                    power = 2800
+                end
+                local punch = dir * power
+                pcall(function()
+                    mh.AssemblyLinearVelocity = punch
+                    mh.Velocity = punch
+                    mh.AssemblyAngularVelocity = Vector3.zero
+                    mh.RotVelocity = Vector3.zero
+                end)
+                task.wait()
             end
             local thf = victim.Character and victim.Character:FindFirstChild("HumanoidRootPart")
             local dhf = dest.Character and dest.Character:FindFirstChild("HumanoidRootPart")
             local endDist = horizDist(thf and thf.Position, dhf and dhf.Position)
-            if endDist < closest then closest = endDist end
-            if endDist <= BRING_DONE or (startDist > 14 and closest <= math.max(14, startDist * 0.28)) then
-                ok = true
-            end
+            if endDist <= BRING_DONE then ok = true end
             log("bring end " .. math.floor(endDist) .. " studs")
+            captureSize(false)
             harden(false)
             snapBringHome()
             task.wait()
             snapBringHome()
         end)
-        pcall(function() harden(false) end)
+        pcall(function()
+            captureSize(false)
+            harden(false)
+        end)
         if not runOk then
             log("bring error: " .. tostring(runErr))
         end
@@ -4717,7 +4749,7 @@ local COMMAND_HELP = {
     toggleshoot = "[murderer | name] - Auto-grab dropped gun and silent-aim shoot",
     chat = "<msg> - Make bot send a public chat message",
     banish = "<player> - Flings player off the map",
-    bring = "<player> [to] - Fling them to you, or to another player",
+    bring = "<player> [to] - Capture them, then carry to you or another player",
     help = "<cmd> - Show command list or explain one command",
 }
 local HELP_ORDER = {
@@ -4872,7 +4904,7 @@ end
 scheduleOwnerOnboarding = function(userId)
     ownerOnboardingGen = ownerOnboardingGen + 1
     local gen = ownerOnboardingGen
-    G.MM_OnboardUntil = tick() + 20
+    G.MM_OnboardUntil = tick() + 8
     G.MM_HelpSent = false
     task.spawn(function()
         for _ = 1, 20 do
@@ -4902,14 +4934,13 @@ scheduleOwnerOnboarding = function(userId)
             sendChat(announcement)
         end
         if gen ~= ownerOnboardingGen or session.ownerId ~= userId then return end
-        if sendFullHelpToOwner(userId, 1.1) then
+        if deliverOwnerLine(userId, "Type !help for cmds", 3, 1.2) then
             G.MM_HelpSent = true
-            G.MM_OnboardUntil = 0
-            log("onboarding: help sent")
+            log("onboarding: help hint sent")
         else
-            G.MM_OnboardUntil = 0
-            log("onboarding: help whisper failed")
+            log("onboarding: help hint failed")
         end
+        G.MM_OnboardUntil = 0
     end)
 end
 
@@ -5475,9 +5506,7 @@ local function hookSpeaker(p)
         trackConnection(chatted:Connect(function(msg)
             if not session.active then return end
             watchHiddenChat(p, msg)
-            task.delay(0.2, function()
-                if session.active then routeCommand(p, msg, false) end
-            end)
+            routeCommand(p, msg, false)
         end))
     end)
 end

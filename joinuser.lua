@@ -28,17 +28,7 @@ local d,c=web("https://gamejoin.roblox.com/v1/play-with-user",{userIdToFollow=ui
 local j=d and(d.jobId or d.joinScript and d.joinScript.GameId);say("play-with-user: http "..tostring(c).." status "..tostring(d and d.status).." "..tostring(d and d.message or""))
 if j and j~=""then return PLACE_ID,tostring(j)end
 end
-local m1=web("https://thumbnails.roblox.com/v1/users/avatar-headshot?userIds="..uid.."&size=150x150&format=Png&isCircular=false");local want=m1 and m1.data and m1.data[1]and m1.data[1].imageUrl
-local cur,n=nil,0
-for _=1,10 do
-local d=want and web("https://games.roblox.com/v1/games/"..PLACE_ID.."/servers/Public?limit=100"..(cur and"&cursor="..H:UrlEncode(cur)or""));if not d or not d.data then break end
-for _,s in ipairs(d.data)do n=n+1;local bt={}
-for _,t in ipairs(s.playerTokens or{})do table.insert(bt,{requestId=t,token=t,type="AvatarHeadShot",size="150x150",format="Png",isCircular=false})end
-local r=#bt>0 and web("https://thumbnails.roblox.com/v1/batch",bt);for _,t in ipairs(r and r.data or{})do if t.imageUrl==want then return PLACE_ID,s.id end end
-end
-cur=d.nextPageCursor;if not cur then break end
-end
-return nil,nil,"not found ("..n.." servers, only 5 players each are visible)"
+return nil,nil,authed and"Roblox gave no server"or"their server is hidden; use joinfriend.bat on this PC"
 end
 local ok,err=pcall(function()
 local uid=tonumber(TARGET)or P:GetUserIdFromNameAsync(TARGET)

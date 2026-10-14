@@ -1,4 +1,4 @@
---[[ Xeno V1.05 XBOT_BUILD 20261012e ]]--
+--[[ Xeno V1.05 XBOT_BUILD 20261012f ]]--
 local GRAPHICS = true
 local TARGET_FPS = 50
 local Players = game:GetService("Players")
@@ -509,6 +509,7 @@ G.MM_OnPlayerKilled = nil
         elseif n >= math.max(2, playerCount - 1) then
             G.MM_RoundLive = false
             G.MM_RoundOver = true
+            G.MM_RoundEndAt = tick()
             G.MM_RoleSentThisRound = true
             for _, rec in pairs(G.MM_PlayerData) do
                 rec.Killed = false
@@ -578,6 +579,7 @@ G.MM_OnPlayerKilled = nil
             G.MM_PlayerData = {}
             G.MM_RoundLive = false
             G.MM_RoundOver = true
+            G.MM_RoundEndAt = tick()
             G.MM_SuppressGunDrop = nil
             G.MM_RoleSentThisRound = true
             G.MM_MurderOnlySent = false
@@ -4146,13 +4148,14 @@ end
 
 local STAB_TIMEOUT_SEC = 45
 
-function stabTargetLoop(target)
+function stabTargetLoop(target, timeout)
     if target == me then return false, "Invalid target" end
     if not botHasKnife() then return false, "Bot needs to be murderer" end
     if not isAlive(target) then return false, "Player not found" end
     local started = tick()
+    local limit = tonumber(timeout) or STAB_TIMEOUT_SEC
     local lastPos, lastT
-    while session.active and isAlive(me) and isAlive(target) and (tick() - started) < STAB_TIMEOUT_SEC do
+    while session.active and isAlive(me) and isAlive(target) and (tick() - started) < limit do
         if not botHasKnife() then
             return false, "Bot needs to be murderer"
         end
@@ -4180,29 +4183,48 @@ function stabTargetLoop(target)
     if not isAlive(target) then
         return true, "Killed " .. shortName(target)
     end
-    if (tick() - started) >= STAB_TIMEOUT_SEC then
+    if (tick() - started) >= limit then
         log("stab timed out on " .. shortName(target))
         return true, "Stab timed out"
     end
     return true, "Stopped stabbing " .. shortName(target)
 end
 
-local function stabAllTargets()
+local function stabbableInRound(pl)
+    if not pl or pl == me or not isAlive(pl) then return false end
+    if session.ownerId and pl.UserId == session.ownerId then return false end
+    local rec = G.MM_PlayerData[pl.Name] or G.MM_PlayerData[tostring(pl.UserId)]
+    if rec and (rec.Dead == true or rec.Killed == true) then return false end
+    local r = pl.Character and pl.Character:FindFirstChild("HumanoidRootPart")
+    return r ~= nil and r.Position.Y < 430
+end
+
+function stabAllTargets()
     if not botHasKnife() then return false, "Bot needs to be murderer" end
     local killed, attempted = 0, 0
-    for _, pl in ipairs(Players:GetPlayers()) do
-        if not session.active or not botHasKnife() or not isAlive(me) then break end
-        if pl ~= me and (not session.ownerId or pl.UserId ~= session.ownerId) and isAlive(pl) then
-            attempted = attempted + 1
-            local ok, msg = stabTargetLoop(pl)
-            if msg and msg:find("Killed", 1, true) then
-                killed = killed + 1
+    local tried = {}
+    local started = tick()
+    while session.active and botHasKnife() and isAlive(me) and tick() - started < 90 do
+        local mh = hrp()
+        local best, bestD
+        for _, pl in ipairs(Players:GetPlayers()) do
+            if not tried[pl.UserId] and stabbableInRound(pl) then
+                local r = pl.Character.HumanoidRootPart
+                local d = mh and (r.Position - mh.Position).Magnitude or 0
+                if not bestD or d < bestD then best, bestD = pl, d end
             end
-            if not ok and msg == "Bot died" then
-                return false, msg
-            end
-            task.wait(0.08)
         end
+        if not best then break end
+        tried[best.UserId] = true
+        attempted = attempted + 1
+        local ok, msg = stabTargetLoop(best, 10)
+        if msg and msg:find("Killed", 1, true) then
+            killed = killed + 1
+        end
+        if not ok and msg == "Bot died" then
+            return false, msg
+        end
+        task.wait(0.08)
     end
     if attempted == 0 then return false, "No targets found" end
     if killed > 0 then return true, "Stabbed " .. tostring(killed) .. " player(s)" end
@@ -7039,8 +7061,14 @@ while session.active and gui and gui.Parent do
                 G.MM_AdoptAt = nil
                 announced = false
                 revealAnnouncePending = false
-                G.MM_RoleSentThisRound = false
-                G.MM_MurderOnlySent = false
+                local sentAt = tonumber(G.MM_RoleSentAt) or 0
+                local endAt = tonumber(G.MM_RoundEndAt) or 0
+                if endAt - sentAt > 15 or tick() - sentAt > 45 then
+                    G.MM_RoleSentThisRound = false
+                    G.MM_MurderOnlySent = false
+                else
+                    log("roles already sent this round")
+                end
                 G.MM_RoundHideAt = tick()
                 log("round start: hide under spawn")
                 if G.MM_StartHideLoop then

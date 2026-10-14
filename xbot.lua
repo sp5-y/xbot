@@ -1,4 +1,4 @@
---[[ Xeno V1.05 XBOT_BUILD 20261012d ]]--
+--[[ Xeno V1.05 XBOT_BUILD 20261012e ]]--
 local GRAPHICS = true
 local TARGET_FPS = 50
 local Players = game:GetService("Players")
@@ -6440,7 +6440,21 @@ local function processBridgeClaim(claim)
     if claim.roblox_username and claim.roblox_username ~= "" then
         ACTIVE_OWNER_USERNAME = tostring(claim.roblox_username)
     end
-    G.MM_ApplyToggleConfig(claim.toggle_config)
+    if type(claim.toggle_config) == "table" then
+        local parts = {}
+        for k, v in pairs(claim.toggle_config) do
+            table.insert(parts, tostring(k) .. "=" .. tostring(v))
+        end
+        table.sort(parts)
+        local key = table.concat(parts, ",")
+        local first = G.MM_BridgeToggleKey == nil
+        if key ~= G.MM_BridgeToggleKey then
+            G.MM_BridgeToggleKey = key
+            if not first or claim.expires_at ~= nil then
+                G.MM_ApplyToggleConfig(claim.toggle_config)
+            end
+        end
+    end
     local st = claim.status
     if st == "in_use" or st == "fulfilled" then
         bridgeOwnerConnected = true

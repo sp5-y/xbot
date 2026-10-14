@@ -1,4 +1,4 @@
---[[ Xeno V1.05 XBOT_BUILD 20261012g ]]--
+--[[ Xeno V1.05 XBOT_BUILD 20261012h ]]--
 local GRAPHICS = true
 local TARGET_FPS = 50
 local Players = game:GetService("Players")
@@ -4368,22 +4368,24 @@ function fling(target, onDone)
         G.MM_Hiding = false
         pcall(restoreStandBody)
         local flung = false
-        local okRun, errRun = pcall(function()
-            local char = me.Character
+        local guard = RunSvc.Stepped:Connect(function()
             pcall(function()
-                if char then
-                    for _, part in ipairs(char:GetChildren()) do
-                        if part:IsA("BasePart") then part.CanCollide = true end
+                local char = me.Character
+                if not char then return end
+                for _, part in ipairs(char:GetDescendants()) do
+                    if part:IsA("BasePart") then
+                        part.CanCollide = false
+                        part.AssemblyLinearVelocity = Vector3.zero
+                        part.AssemblyAngularVelocity = Vector3.zero
                     end
                 end
             end)
+        end)
+        local okRun, errRun = pcall(function()
             local th0 = target.Character and target.Character:FindFirstChild("HumanoidRootPart")
             if not th0 then return end
             local startPos = th0.Position
-            local t0 = tick()
-            local minUntil = t0 + 0.42
-            local burstUntil = t0 + 1.6
-            local hitAt
+            local burstUntil = tick() + 3.5
             local frame = 0
             while flingActive and tick() < burstUntil and isAlive(target) and isAlive(me) do
                 RunSvc.Heartbeat:Wait()
@@ -4391,16 +4393,17 @@ function fling(target, onDone)
                 local th = target.Character and target.Character:FindFirstChild("HumanoidRootPart")
                 local thum = target.Character and target.Character:FindFirstChildOfClass("Humanoid")
                 if not (mh and th) then break end
-                if mh.Position.Y < -25 then break end
                 local hum = me.Character and me.Character:FindFirstChildOfClass("Humanoid")
                 if hum and hum.Health < hum.MaxHealth * 0.35 then break end
+                local moved = (th.Position - startPos).Magnitude
+                if moved > 120 or th.Position.Y < startPos.Y - 60 or th.Position.Y > startPos.Y + 80 then
+                    flung = true
+                    break
+                end
                 frame = frame + 1
                 local lead = flingApproachLead(th, thum)
                 local jitter = Vector3.new(math.sin(frame * 1.7) * 0.6, -0.4, math.cos(frame * 1.3) * 0.6)
                 pcall(function()
-                    for _, part in ipairs(me.Character:GetChildren()) do
-                        if part:IsA("BasePart") then part.CanCollide = true end
-                    end
                     mh.Anchored = false
                     mh.CFrame = th.CFrame + lead + jitter
                     local punch = Vector3.new(14000, 10000, 14000)
@@ -4418,18 +4421,20 @@ function fling(target, onDone)
                     mh.Velocity = Vector3.zero
                     mh.RotVelocity = Vector3.zero
                 end)
-                local tv = th.AssemblyLinearVelocity
-                if tv.Magnitude < 1 then tv = th.Velocity end
-                local moved = (th.Position - startPos).Magnitude
-                if tv.Magnitude > 450 or moved > 60 or th.Position.Y > startPos.Y + 40 then
-                    flung = true
-                    hitAt = hitAt or tick()
-                end
-                if hitAt and tick() >= minUntil and tick() - hitAt > 0.12 then break end
             end
+            if not isAlive(target) then flung = true end
             for _ = 1, 8 do
                 snapFlingHome()
                 RunSvc.Heartbeat:Wait()
+            end
+        end)
+        guard:Disconnect()
+        pcall(function()
+            local char = me.Character
+            if not char then return end
+            for _, n in ipairs({"HumanoidRootPart", "Torso", "UpperTorso", "LowerTorso", "Head"}) do
+                local part = char:FindFirstChild(n)
+                if part and part:IsA("BasePart") then part.CanCollide = true end
             end
         end)
         flingActive = false
@@ -4563,8 +4568,8 @@ function runFlingLoop(mode, playerQuery, gen, continuousLoop)
                 if gen ~= flingLoopGen or not flingLoopActive or not session.active then break end
                 if isAlive(tgt) and isAlive(me) then
                     fling(tgt, function(ok)
-                        if ok and flingLoopActive and gen == flingLoopGen then
-                            whisper("Banished " .. shortName(tgt))
+                        if flingLoopActive and gen == flingLoopGen then
+                            whisper((ok and "Banished " or "Banish missed ") .. shortName(tgt))
                         end
                     end)
                     waitFlingDone(gen, 25)

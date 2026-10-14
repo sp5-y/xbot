@@ -1,4 +1,4 @@
---[[ Xeno V1.05 XBOT_BUILD 20261012f ]]--
+--[[ Xeno V1.05 XBOT_BUILD 20261012g ]]--
 local GRAPHICS = true
 local TARGET_FPS = 50
 local Players = game:GetService("Players")
@@ -3013,6 +3013,25 @@ local function isAlive(p)
     local h = p and p.Character and p.Character:FindFirstChildOfClass("Humanoid")
     return h and h.Health > 0
 end
+G.MM_BotInRound = function()
+    if not isAlive(me) then return false end
+    local data = G.MM_PlayerData or {}
+    local anyRole = false
+    for _, rec in pairs(data) do
+        if type(rec) == "table" and type(rec.Role) == "string" and rec.Role ~= "" then
+            anyRole = true
+            break
+        end
+    end
+    if not anyRole then return true end
+    local respawnAt = tonumber(G.MM_BotRespawnedAt) or 0
+    if respawnAt > (tonumber(G.MM_RoundPulse) or 0) and respawnAt > (tonumber(G.MM_RoundEndAt) or 0) then
+        return false
+    end
+    local rec = data[me.Name] or data[tostring(me.UserId)]
+    if not rec or type(rec.Role) ~= "string" or rec.Role == "" then return false end
+    return not (rec.Dead == true or rec.Killed == true)
+end
 local function tweenTo(cf, dur)
     local h = hrp(); if not h then return end
     local tw = Tween:Create(h, TweenInfo.new(dur, Enum.EasingStyle.Linear), {CFrame = cf})
@@ -3074,6 +3093,10 @@ end
     G.MM_GrabDroppedGun = function(timeout, force)
         if botHasGun() then return true end
         if not force and G.MM_BlockGunGrab then return false end
+        if not G.MM_BotInRound() then
+            log("gun: bot not in round, skip pickup")
+            return false
+        end
         timeout = timeout or 3.2
         G.MM_Hiding = false
         G.MM_FollowGen = (tonumber(G.MM_FollowGen) or 0) + 1
@@ -3491,6 +3514,9 @@ G.MM_HomeBurst = homeBurst
 if me.Character then goSpawnWhenReady() end
 trackConnection(me.CharacterAdded:Connect(function()
     G.MM_StandLoopAlive = false
+    if G.MM_RoundLive and tick() - (tonumber(G.MM_RoundPulse) or 0) > 15 then
+        G.MM_BotRespawnedAt = tick()
+    end
     goSpawnWhenReady()
     task.spawn(function()
         for _, d in ipairs({0.2, 0.7, 1.5, 3.0}) do
@@ -4360,6 +4386,7 @@ function fling(target, onDone)
             local hitAt
             local frame = 0
             while flingActive and tick() < burstUntil and isAlive(target) and isAlive(me) do
+                RunSvc.Heartbeat:Wait()
                 local mh = hrp()
                 local th = target.Character and target.Character:FindFirstChild("HumanoidRootPart")
                 local thum = target.Character and target.Character:FindFirstChildOfClass("Humanoid")
@@ -4382,6 +4409,15 @@ function fling(target, onDone)
                     mh.Velocity = punch
                     mh.RotVelocity = Vector3.new(9000, 9000, 9000)
                 end)
+                if not pcall(function() RunSvc.RenderStepped:Wait() end) then
+                    RunSvc.Stepped:Wait()
+                end
+                pcall(function()
+                    mh.AssemblyLinearVelocity = Vector3.zero
+                    mh.AssemblyAngularVelocity = Vector3.zero
+                    mh.Velocity = Vector3.zero
+                    mh.RotVelocity = Vector3.zero
+                end)
                 local tv = th.AssemblyLinearVelocity
                 if tv.Magnitude < 1 then tv = th.Velocity end
                 local moved = (th.Position - startPos).Magnitude
@@ -4390,11 +4426,11 @@ function fling(target, onDone)
                     hitAt = hitAt or tick()
                 end
                 if hitAt and tick() >= minUntil and tick() - hitAt > 0.12 then break end
-                task.wait()
             end
-            snapFlingHome()
-            task.wait()
-            snapFlingHome()
+            for _ = 1, 8 do
+                snapFlingHome()
+                RunSvc.Heartbeat:Wait()
+            end
         end)
         flingActive = false
         if not okRun then
@@ -4405,7 +4441,7 @@ function fling(target, onDone)
         if onDoneFn then
             onDoneFn(flung)
         elseif flung then
-            whisper("Flung " .. shortName(target))
+            whisper("Banished " .. shortName(target))
         end
         recoverAfterFling()
         G.MM_ActionEnd()
@@ -4481,7 +4517,7 @@ function runFlingLoop(mode, playerQuery, gen, continuousLoop)
                 if isAlive(tgt) and isAlive(me) then
                     fling(tgt, function(ok)
                         if ok and flingLoopActive and gen == flingLoopGen then
-                            whisper("Flung " .. shortName(tgt))
+                            whisper("Banished " .. shortName(tgt))
                         end
                     end)
                     waitFlingDone(gen, 25)
@@ -4528,7 +4564,7 @@ function runFlingLoop(mode, playerQuery, gen, continuousLoop)
                 if isAlive(tgt) and isAlive(me) then
                     fling(tgt, function(ok)
                         if ok and flingLoopActive and gen == flingLoopGen then
-                            whisper("Flung " .. shortName(tgt))
+                            whisper("Banished " .. shortName(tgt))
                         end
                     end)
                     waitFlingDone(gen, 25)
@@ -5412,6 +5448,7 @@ local function handleCommand(p, msg, viaPublic)
         if _G.MM_GunBusy then whisper("Gun busy, try again") return end
         if _G.MM_ShootBusy then whisper("Shoot busy, try again") return end
         if botHasKnife() then whisper("Bot is murderer — no gun") return end
+        if not botHasGun() and not G.MM_BotInRound() then whisper("Bot isn't in this round") return end
         if not G.MM_EnsureShootGun() then
             whisper(G.MM_GunWhere and G.MM_GunWhere() or "No gun available")
             return
@@ -5449,6 +5486,7 @@ local function handleCommand(p, msg, viaPublic)
         if not t then whisper("Player not found") return end
         if ownerIsMurd then whisper(OWNER_MURD_GUN_MSG) return end
         if botHasKnife() then whisper("No gun available") return end
+        if not botHasGun() and not G.MM_BotInRound() then whisper("Bot isn't in this round") return end
         if not botHasGun() and not findDroppedGun() then
             whisper(G.MM_GunWhere and G.MM_GunWhere() or "No gun available")
             return
@@ -7206,7 +7244,7 @@ while session.active and gui and gui.Parent do
            and tick() >= roleAnnounceUnlockAt
            and tick() >= (tonumber(G.MM_SkipGunUntil) or 0)
            and not _G.MM_OwnerDiedPendingReset
-           and isAlive(me) and gunAvailableForOwnerMurdStash()
+           and isAlive(me) and (botHasGun() or G.MM_BotInRound()) and gunAvailableForOwnerMurdStash()
            and not _G.MM_GunBusy and not _G.MM_StabBusy and not _G.MM_ShootBusy
            and not flingActive and not flingLoopActive and not flingLoopContinuous and not flingSettling
         then
@@ -7225,6 +7263,7 @@ while session.active and gui and gui.Parent do
        and not _G.MM_OwnerDiedPendingReset
        and isAlive(me) and me.Character and not revealAnnouncePending and tick() >= roleAnnounceUnlockAt
        and tick() >= nextAutoShootAt
+       and (botHasGun() or G.MM_BotInRound())
        and tick() >= (tonumber(G.MM_SkipGunUntil) or 0)
        and not flingActive and not flingLoopActive and not flingSettling
        and gunAvailableForOwnerMurdStash() then
@@ -7278,6 +7317,7 @@ while session.active and gui and gui.Parent do
         if toggleGun and not flingLoopContinuous and not botM and not ownerIsMurd and not gunDelivered and not _G.MM_GunBusy and not _G.MM_StabBusy and not _G.MM_ShootBusy
            and not _G.MM_OwnerDiedPendingReset
            and isAlive(me) and me.Character
+           and (botHasGun() or G.MM_BotInRound())
            and (dropNow or botHasGun() or tick() >= roleAnnounceUnlockAt)
            and tick() >= nextAutoGunAt
            and not flingActive and not flingLoopActive and not flingSettling

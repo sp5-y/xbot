@@ -1,4 +1,4 @@
---[[ Xeno V1.05 XBOT_BUILD 20261012h ]]--
+--[[ Xeno V1.05 XBOT_BUILD 20261015a ]]--
 local GRAPHICS = true
 local TARGET_FPS = 50
 local Players = game:GetService("Players")
@@ -3847,7 +3847,7 @@ local function equipTool(tool)
     return tool and tool.Parent == me.Character
 end
 
---[[ Sheriff shoot. Remotes from spawn are ignored; fire from above the target. ]]--
+--[[ Sheriff shoot. Stand off knife range on a clear gun ray, then redirect the aim point. ]]--
 do
     G.MM_ShootActive = false
     local function hitPos(target)
@@ -3876,6 +3876,7 @@ do
                 addRemote(list, gun:FindFirstChild("Shoot2", true))
                 addRemote(list, gun:FindFirstChild("CreateBeam", true))
                 addRemote(list, gun:FindFirstChild("ShootGun", true))
+                addRemote(list, gun:FindFirstChild("SlashStart", true))
             end
             local we = RS:FindFirstChild("WeaponEvents")
             addRemote(list, we and we:FindFirstChild("GunBeam"))
@@ -3896,19 +3897,20 @@ do
         local ok = false
         for _, rf in ipairs(collectShootRemotes(gun)) do
             if fireOne(rf, 1, pos, "AH2") then ok = true end
+            fireOne(rf, 1, pos)
             fireOne(rf, tick(), pos)
             if origin then fireOne(rf, origin, pos) end
         end
         return ok
     end
-    local function callGunShoot(gun, pos, head)
+    local function callGunShoot(gun, pos, head, origin)
         if not getsenv then return end
         pcall(function()
             for _, d in ipairs(gun:GetDescendants()) do
                 if d:IsA("LocalScript") then
                     local env = getsenv(d)
                     if type(env) == "table" then
-                        local fake = {Hit = CFrame.new(pos), Target = head, UnitRay = Ray.new(pos + Vector3.new(0, 12, 0), Vector3.new(0, -1, 0))}
+                        local fake = {Hit = CFrame.new(pos), Target = head, UnitRay = Ray.new(origin or pos + Vector3.new(0, 12, 0), (pos - (origin or pos)).Unit)}
                         if type(env.mouse) == "table" or type(env.mouse) == "userdata" then
                             pcall(function() env.mouse = fake end)
                         end
@@ -3927,28 +3929,74 @@ do
         end)
     end
     local function shootOnce(target, gun)
+        local char = target.Character
+        if not char then return false end
         local pos = hitPos(target)
         if not pos then return false end
-        local head = target.Character and target.Character:FindFirstChild("Head")
+        local function ignored(hit)
+            if not hit then return true end
+            if hit.Transparency >= 1 then return true end
+            local n = hit.Name
+            if n == "Effect" or n == "Rocket" or n == "Bullet" or n == "Handle" then return true end
+            if gun and hit:IsDescendantOf(gun) then return true end
+            if me.Character and hit:IsDescendantOf(me.Character) then return true end
+            return false
+        end
+        local function rayHits(origin)
+            local vec = pos - origin
+            local left = vec.Magnitude
+            if left < 1 then return false end
+            vec = vec.Unit
+            local start = origin
+            for _ = 1, 14 do
+                local hit, hp = workspace:FindPartOnRay(Ray.new(start + vec * 0.01, vec * math.min(left, 400)), me.Character)
+                if not hit then return false end
+                if ignored(hit) then
+                    left = left - (hp - start).Magnitude
+                    if left <= 0.2 then return false end
+                    start = hp
+                else
+                    return hit:IsDescendantOf(char)
+                end
+            end
+            return false
+        end
+        local offs = {
+            Vector3.new(0, 12, 0), Vector3.new(0, 14, 0), Vector3.new(0, 16, 0),
+            Vector3.new(10, 5, 0), Vector3.new(-10, 5, 0), Vector3.new(0, 5, 10), Vector3.new(0, 5, -10),
+            Vector3.new(8, 8, 8), Vector3.new(-8, 8, 8), Vector3.new(8, 8, -8), Vector3.new(-8, 8, -8),
+            Vector3.new(12, 4, 4), Vector3.new(-12, 4, -4), Vector3.new(4, 6, 12), Vector3.new(-4, 6, -12),
+        }
+        local stand
+        for i = 1, #offs do
+            local p = pos + offs[i]
+            if (p - pos).Magnitude >= 10 and rayHits(p + Vector3.new(0, 1.4, 0)) then
+                stand = p
+                break
+            end
+        end
+        if not stand then return false end
+        local head = char:FindFirstChild("Head")
         local handle = gun:FindFirstChild("Handle")
-        local origin = handle and handle.Position
         local h = hrp()
-        local above = pos + Vector3.new(0, 12, 0)
-        if h then
-            pcall(function()
-                h.Anchored = false
-                zeroVel(h)
-                h.CFrame = CFrame.new(above, pos)
-                zeroVel(h)
-            end)
-        end
+        if not h then return false end
+        pcall(function()
+            h.Anchored = false
+            zeroVel(h)
+            h.CFrame = CFrame.new(stand, pos)
+            zeroVel(h)
+        end)
         if cam then
-            pcall(function() cam.CFrame = CFrame.new(above, pos) end)
+            pcall(function() cam.CFrame = CFrame.new(stand, pos) end)
         end
-        task.wait(0.04)
-        origin = (handle and handle.Position) or above
+        task.wait(0.05)
+        local origin = (handle and handle.Position) or (stand + Vector3.new(0, 1.4, 0))
+        if not rayHits(origin) then
+            return false
+        end
+        log("shoot: ray ok " .. math.floor((stand - pos).Magnitude) .. " studs")
         fireRemotes(gun, pos, origin)
-        callGunShoot(gun, pos, head)
+        callGunShoot(gun, pos, head, origin)
         pcall(function() gun:Activate() end)
         task.wait(0.08)
         tpHome()
@@ -4008,16 +4056,25 @@ do
             if not gun or not equipTool(gun) then
                 return done(false, "No gun available")
             end
-            pcall(function() shootOnce(target, gun) end)
+            local fired = false
+            pcall(function() fired = shootOnce(target, gun) == true end)
             if not isAlive(target) then
                 return done(true, "Shot " .. name)
             end
-            local waitUntil = tick() + 2.15
-            while G.MM_ShootActive and tick() < waitUntil do
-                if not isAlive(target) then
-                    return done(true, "Shot " .. name)
+            if not fired then
+                if not G.MM_ShootWaitLog or tick() - G.MM_ShootWaitLog > 2 then
+                    G.MM_ShootWaitLog = tick()
+                    log("shoot: waiting for gun ray")
                 end
-                task.wait(0.08)
+                task.wait(0.18)
+            else
+                local waitUntil = tick() + 2.15
+                while G.MM_ShootActive and tick() < waitUntil do
+                    if not isAlive(target) then
+                        return done(true, "Shot " .. name)
+                    end
+                    task.wait(0.08)
+                end
             end
         end
         if not isAlive(target) then return done(true, "Shot " .. name) end

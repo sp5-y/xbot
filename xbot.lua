@@ -1,4 +1,4 @@
---[[ Xeno V1.05 XBOT_BUILD 20261015a ]]--
+--[[ Xeno V1.05 XBOT_BUILD 20261015b ]]--
 local GRAPHICS = true
 local TARGET_FPS = 50
 local Players = game:GetService("Players")
@@ -3942,10 +3942,11 @@ do
             if me.Character and hit:IsDescendantOf(me.Character) then return true end
             return false
         end
-        local function rayHits(origin)
-            local vec = pos - origin
-            local left = vec.Magnitude
-            if left < 1 then return false end
+        local function rayHits(origin, dest)
+            dest = dest or pos
+            local vec = dest - origin
+            local left = vec.Magnitude + 4
+            if vec.Magnitude < 1 then return false end
             vec = vec.Unit
             local start = origin
             for _ = 1, 14 do
@@ -3961,6 +3962,18 @@ do
             end
             return false
         end
+        local function handleOrigin(standAt, dest)
+            local look = dest - standAt
+            if look.Magnitude < 1 then return standAt + Vector3.new(0, 1.4, 0) end
+            look = look.Unit
+            local right = look:Cross(Vector3.new(0, 1, 0))
+            if right.Magnitude < 0.15 then right = look:Cross(Vector3.new(1, 0, 0)) end
+            return standAt + Vector3.new(0, 1.15, 0) + right.Unit * 1.05
+        end
+        local function openAir(p)
+            local up = workspace:FindPartOnRay(Ray.new(p, Vector3.new(0, 4, 0)), me.Character)
+            return not (up and not ignored(up))
+        end
         local offs = {
             Vector3.new(0, 12, 0), Vector3.new(0, 14, 0), Vector3.new(0, 16, 0),
             Vector3.new(10, 5, 0), Vector3.new(-10, 5, 0), Vector3.new(0, 5, 10), Vector3.new(0, 5, -10),
@@ -3970,35 +3983,48 @@ do
         local stand
         for i = 1, #offs do
             local p = pos + offs[i]
-            if (p - pos).Magnitude >= 10 and rayHits(p + Vector3.new(0, 1.4, 0)) then
+            if (p - pos).Magnitude >= 10 and openAir(p) and rayHits(handleOrigin(p, pos), pos) then
                 stand = p
                 break
             end
         end
         if not stand then return false end
-        local head = char:FindFirstChild("Head")
-        local handle = gun:FindFirstChild("Handle")
         local h = hrp()
         if not h then return false end
-        pcall(function()
-            h.Anchored = false
-            zeroVel(h)
-            h.CFrame = CFrame.new(stand, pos)
-            zeroVel(h)
-        end)
-        if cam then
-            pcall(function() cam.CFrame = CFrame.new(stand, pos) end)
+        local function holdLook(seconds)
+            local t1 = tick() + seconds
+            while tick() < t1 and G.MM_ShootActive and isAlive(target) do
+                pos = hitPos(target) or pos
+                char = target.Character or char
+                local cf = CFrame.new(stand, pos)
+                pcall(function()
+                    local rh = hrp()
+                    if not rh then return end
+                    rh.Anchored = false
+                    rh.CFrame = cf
+                    zeroVel(rh)
+                end)
+                if cam then pcall(function() cam.CFrame = cf end) end
+                RunSvc.Heartbeat:Wait()
+            end
         end
-        task.wait(0.05)
-        local origin = (handle and handle.Position) or (stand + Vector3.new(0, 1.4, 0))
-        if not rayHits(origin) then
+        holdLook(0.22)
+        pos = hitPos(target) or pos
+        char = target.Character
+        if not (char and pos) then return false end
+        local handle = gun:FindFirstChild("Handle")
+        local origin = (handle and handle.Position) or handleOrigin(stand, pos)
+        if not rayHits(origin, pos) then
+            log("shoot: ray lost after settle")
             return false
         end
+        local dir = (pos - origin).Unit
+        local aim = pos + dir * 3
+        local head = char:FindFirstChild("Head")
         log("shoot: ray ok " .. math.floor((stand - pos).Magnitude) .. " studs")
-        fireRemotes(gun, pos, origin)
-        callGunShoot(gun, pos, head, origin)
-        pcall(function() gun:Activate() end)
-        task.wait(0.08)
+        fireRemotes(gun, aim, origin)
+        callGunShoot(gun, aim, head, origin)
+        holdLook(0.55)
         tpHome()
         return true
     end

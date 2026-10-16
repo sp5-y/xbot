@@ -1,52 +1,112 @@
-local P,RS=game:GetService("Players"),game:GetService("ReplicatedStorage");local me=P.LocalPlayer
-local dec=decompile or(syn and syn.decompile);local gsb=getscriptbytecode
-local g=Instance.new("ScreenGui");g.ResetOnSpawn,g.DisplayOrder=false,999
-if not pcall(function()g.Parent=gethui and gethui() or game:GetService("CoreGui")end)or not g.Parent then g.Parent=me:WaitForChild("PlayerGui")end
-local b=Instance.new("TextLabel",g);b.Size,b.Position=UDim2.new(0,460,0,60),UDim2.new(0.5,-230,0,80);b.BackgroundColor3,b.TextColor3=Color3.new(0.07,0.07,0.1),Color3.new(1,1,1);b.Font,b.TextSize,b.TextWrapped=Enum.Font.Code,14,true
-local function st(m)b.Text="gundump: "..m;print("[gundump] "..m)end
-local out,seen={},{}
+local P=game:GetService("Players")
+local RS=game:GetService("ReplicatedStorage")
+local SPS=game:GetService("StarterPlayer")
+local SG=game:GetService("StarterGui")
+local SS=game:GetService("StarterPack")
+local LS=game:GetService("Lighting")
+local me=P.LocalPlayer
+local dec=decompile or(syn and syn.decompile)
+local gsb=getscriptbytecode
+local g=Instance.new("ScreenGui")
+g.ResetOnSpawn,g.DisplayOrder=false,999
+if not pcall(function()g.Parent=gethui and gethui() or game:GetService("CoreGui")end)or not g.Parent then
+g.Parent=me:WaitForChild("PlayerGui")
+end
+local b=Instance.new("TextLabel",g)
+b.Size,b.Position=UDim2.new(0,520,0,70),UDim2.new(0.5,-260,0,80)
+b.BackgroundColor3,b.TextColor3=Color3.new(0.07,0.07,0.1),Color3.new(1,1,1)
+b.Font,b.TextSize,b.TextWrapped=Enum.Font.Code,14,true
+local function st(m)b.Text="srcdump: "..m print("[srcdump] "..m)end
+local out,seen,nOK,nFail={},{},0,0
 local function add(s)out[#out+1]=tostring(s)end
-local KEY={"gun","shoot","beam","bullet","weapon","knife","throw","stab","raycast","hit","fire"}
-local function hot(n)n=n:lower()for _,k in ipairs(KEY)do if n:find(k,1,true)then return true end end end
-local function tree(i,p,d)if d>7 then return end add(p..i.ClassName.." "..i.Name)for _,c in ipairs(i:GetChildren())do tree(c,p.."  ",d+1)end end
+local SKIP={"CoreGui","Chat","BubbleChat","PlayerListManager","RbxCharacterSounds","PlayerModule","CameraModule","ControlModule"}
+local function skip(s)
+local n=s:GetFullName()
+for _,k in ipairs(SKIP)do if n:find(k,1,true)then return true end end
+end
+local function tree(i,p,d)
+if d>10 then return end
+add(p..i.ClassName.." "..i.Name)
+for _,c in ipairs(i:GetChildren())do tree(c,p.."  ",d+1)end
+end
 local function dump(s)
-if seen[s]then return end seen[s]=true
+if seen[s]or skip(s)then return end
+seen[s]=true
 add("\n-- ===== "..s.ClassName.." "..s:GetFullName().." =====")
+st("decompiling "..s:GetFullName())
 local ok,src=pcall(function()return dec(s)end)
-if ok and type(src)=="string"and#src>0 then add(src)return end
+if ok and type(src)=="string"and#src>20 then
+nOK=nOK+1
+add(src)
+return
+end
+nFail=nFail+1
 local okb,bc=pcall(function()return gsb and gsb(s)end)
-add("-- decompile failed: "..tostring(src).." | bytecode bytes: "..tostring(okb and bc and#bc))
+add("-- decompile failed: "..tostring(src).." | bytecode: "..tostring(okb and bc and#bc))
 end
-local function scripts(root,all)
+local function scripts(root)
+if not root then return end
+pcall(function()
 for _,d in ipairs(root:GetDescendants())do
-if(d:IsA("LocalScript")or d:IsA("ModuleScript"))and(all or hot(d:GetFullName()))then dump(d)end
+if d:IsA("LocalScript")or d:IsA("ModuleScript")then dump(d)end
+end
+end)
+end
+local function remotes(root,label)
+add("\n=== REMOTES "..label.." ===")
+if not root then add("(missing)")return end
+pcall(function()
+for _,d in ipairs(root:GetDescendants())do
+if d:IsA("RemoteEvent")or d:IsA("RemoteFunction")or d:IsA("UnreliableRemoteEvent")or d:IsA("BindableEvent")or d:IsA("BindableFunction")then
+add(d.ClassName.." "..d:GetFullName())
 end
 end
-local function findGun()
-for _,pl in ipairs(P:GetPlayers())do
-for _,bag in ipairs({pl.Character,pl:FindFirstChildOfClass("Backpack")})do
-if bag then for _,t in ipairs(bag:GetChildren())do if t:IsA("Tool")and t.Name:lower():find("gun")then return t,pl end end end
+end)
+end
+local function tools(bag,who)
+if not bag then return end
+for _,t in ipairs(bag:GetChildren())do
+if t:IsA("Tool")then
+add("\n=== TOOL "..who.." "..t:GetFullName().." ===")
+tree(t,"",0)
+scripts(t)
 end
 end
 end
-if not dec then st("no decompile() in this executor")return end
-st("waiting for someone to hold the gun...")
-local gun,holder
-for _=1,600 do gun,holder=findGun();if gun then break end task.wait(1)end
+if not dec then st("no decompile() on this executor")return end
 add("place="..game.PlaceId.." job="..game.JobId.." bot="..me.Name)
-if gun then
-add("=== GUN TOOL held by "..holder.Name.." ===");tree(gun,"",0)
-st("dumping gun from "..holder.Name);scripts(gun,true)
-else add("=== no gun seen in 10 min ===")end
-for _,pl in ipairs(P:GetPlayers())do
-local c=pl.Character;local k=c and c:FindFirstChild("Knife")
-if k and k:IsA("Tool")then add("=== KNIFE TOOL held by "..pl.Name.." ===");tree(k,"",0);scripts(k,true)break end
-end
-for _,n in ipairs({"WeaponEvents","ClientServices","SharedServices","Modules"})do
+add("decompile=true")
+add("\n=== RS TOP ===")
+pcall(function()for _,c in ipairs(RS:GetChildren())do add(c.ClassName.." "..c.Name)end end)
+remotes(RS,"ReplicatedStorage")
+remotes(me.Character,"Character")
+remotes(me:FindFirstChildOfClass("Backpack"),"Backpack")
+for _,n in ipairs({"Remotes","WeaponEvents","ClientServices","SharedServices","Modules","Resources"})do
 local f=RS:FindFirstChild(n)
-if f then add("\n=== RS."..n.." TREE ===");tree(f,"",0);st("dumping RS."..n);scripts(f,n=="WeaponEvents")end
+if f then add("\n=== TREE RS."..n.." ===")tree(f,"",0)end
 end
-local ps=me:FindFirstChild("PlayerScripts");if ps then scripts(ps,false)end
+st("dumping ReplicatedStorage")
+scripts(RS)
+st("dumping StarterPlayer")
+scripts(SPS)
+st("dumping StarterGui")
+scripts(SG)
+st("dumping StarterPack")
+scripts(SS)
+st("dumping Lighting")
+scripts(LS)
+st("dumping PlayerScripts")
+scripts(me:FindFirstChild("PlayerScripts"))
+st("dumping PlayerGui")
+scripts(me:FindFirstChild("PlayerGui"))
+st("dumping character/backpack")
+scripts(me.Character)
+scripts(me:FindFirstChildOfClass("Backpack"))
+for _,pl in ipairs(P:GetPlayers())do
+tools(pl.Character,pl.Name)
+tools(pl:FindFirstChildOfClass("Backpack"),pl.Name)
+end
 local txt=table.concat(out,"\n")
-pcall(function()writefile("mm2-gun.txt",txt)end);pcall(function()setclipboard(txt)end)
-st("done: "..#txt.." chars -> mm2-gun.txt (also on clipboard)")
+pcall(function()writefile("mm2-src.txt",txt)end)
+pcall(function()setclipboard(txt)end)
+st("done "..nOK.." ok / "..nFail.." fail / "..#txt.." chars -> mm2-src.txt")

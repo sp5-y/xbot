@@ -1,4 +1,4 @@
---[[ Xeno V1.05 XBOT_BUILD 20261018f ]]--
+--[[ Xeno V1.05 XBOT_BUILD 20261018g ]]--
 local GRAPHICS = true
 local TARGET_FPS = 50
 local Players = game:GetService("Players")
@@ -52,6 +52,7 @@ G.MM_BootReady = false
 G.MM_ForceHide = false
 G.MM_HoldMove = false
 G.MM_HoldStand = false
+G.MM_FlingEpoch = tonumber(G.MM_FlingEpoch) or 0
 G.MM_InMapTransit = function()
     return tick() < (tonumber(G.MM_MapTransitUntil) or 0)
 end
@@ -4468,9 +4469,15 @@ end
 function fling(target, onDone, kind)
     local onDoneFn = onDone
     local isAir = kind == "air"
-    if flingActive then
-        if onDoneFn then onDoneFn(false) end
-        return
+    if flingActive or flingSettling then
+        local tWait = tick()
+        while (flingActive or flingSettling) and tick() - tWait < 2.5 do
+            task.wait(0.03)
+        end
+        if flingActive then
+            if onDoneFn then onDoneFn(false) end
+            return
+        end
     end
     if not isAlive(target) or not isAlive(me) then
         if onDoneFn then onDoneFn(false) end
@@ -4499,6 +4506,8 @@ function fling(target, onDone, kind)
     flingActive = true
     G.MM_FlingBusy = true
     G.MM_StandPaused = true
+    G.MM_FlingEpoch = (tonumber(G.MM_FlingEpoch) or 0) + 1
+    local epoch = G.MM_FlingEpoch
     log((isAir and "air-fling " or "banish ") .. target.DisplayName)
     task.spawn(function()
         G.MM_ActionBegin()
@@ -4506,7 +4515,9 @@ function fling(target, onDone, kind)
         G.MM_StandLoopAlive = false
         G.MM_SummonUserId = nil
         G.MM_Hiding = false
-        pcall(restoreStandBody)
+        if not flingLoopActive then
+            pcall(restoreStandBody)
+        end
         local flung = false
         local killY = -500
         pcall(function()
@@ -4579,11 +4590,34 @@ function fling(target, onDone, kind)
             end)
         end)
         local okRun, errRun = pcall(function()
-            local th0 = target.Character and target.Character:FindFirstChild("HumanoidRootPart")
+            local th0
+            for _ = 1, 12 do
+                th0 = target.Character and target.Character:FindFirstChild("HumanoidRootPart")
+                if th0 then break end
+                RunSvc.Heartbeat:Wait()
+            end
             if not th0 then return end
             local startPos = th0.Position
             local tStart = tick()
-            local deadline = tStart + (isAir and (flingLoopContinuous and 14 or 8) or 4)
+            local airHeldAt = nil
+            local deadline = tStart + (isAir and (flingLoopContinuous and 10 or 5) or 4)
+            local function targetAirborne(th, thum)
+                if not th then return false end
+                if th.Position.Y > startPos.Y + 5 then return true end
+                local tv = th.AssemblyLinearVelocity
+                if tv.Magnitude < 1 then tv = th.Velocity end
+                if tv.Y > 30 or tv.Magnitude > 55 then return true end
+                if thum then
+                    local fm = thum.FloorMaterial
+                    if fm == Enum.Material.Air then return true end
+                    local st = thum:GetState()
+                    if st == Enum.HumanoidStateType.Freefall or st == Enum.HumanoidStateType.Flying
+                        or st == Enum.HumanoidStateType.Physics then
+                        return true
+                    end
+                end
+                return false
+            end
             local hum0 = me.Character and me.Character:FindFirstChildOfClass("Humanoid")
             if hum0 then
                 pcall(function()
@@ -4630,10 +4664,14 @@ function fling(target, onDone, kind)
                 if isAir then
                     punchLin = Vector3.new(0, 4200, 0)
                     punchParts(char, punchLin, spin)
-                    if th.Position.Y > startPos.Y + 8 then flung = true end
-                    local tv = th.AssemblyLinearVelocity
-                    if tv.Magnitude < 1 then tv = th.Velocity end
-                    if tv.Y > 40 or tv.Magnitude > 80 then flung = true end
+                    local thum = target.Character and target.Character:FindFirstChildOfClass("Humanoid")
+                    if targetAirborne(th, thum) then
+                        flung = true
+                        airHeldAt = airHeldAt or tick()
+                        if tick() - airHeldAt > 2.2 then
+                            break
+                        end
+                    end
                 else
                     local tv = th.AssemblyLinearVelocity
                     if tv.Magnitude < 1 then tv = th.Velocity end
@@ -4657,7 +4695,8 @@ function fling(target, onDone, kind)
                 end
             elseif isAir then
                 local thf = target.Character and target.Character:FindFirstChild("HumanoidRootPart")
-                if thf and thf.Position.Y > startPos.Y + 6 then flung = true end
+                local thum = target.Character and target.Character:FindFirstChildOfClass("Humanoid")
+                if targetAirborne(thf, thum) then flung = true end
             end
             pcall(function()
                 if bav then bav:Destroy() end
@@ -4705,7 +4744,7 @@ function fling(target, onDone, kind)
         end
         recoverAfterFling()
         G.MM_ActionEnd()
-        if flingLoopContinuous then
+        if flingLoopActive then
             G.MM_FlingBusy = true
             G.MM_StandPaused = true
         else
@@ -4714,9 +4753,11 @@ function fling(target, onDone, kind)
             if G.MM_EnsureAutoStand then
                 G.MM_EnsureAutoStand()
                 task.delay(0.35, function()
+                    if epoch ~= G.MM_FlingEpoch or flingActive or flingLoopActive then return end
                     if G.MM_EnsureAutoStand then G.MM_EnsureAutoStand() end
                 end)
                 task.delay(1.1, function()
+                    if epoch ~= G.MM_FlingEpoch or flingActive or flingLoopActive then return end
                     if G.MM_EnsureAutoStand then G.MM_EnsureAutoStand() end
                 end)
             end
@@ -4813,7 +4854,7 @@ function runFlingLoop(mode, playerQuery, gen, continuousLoop, kind)
                     end, kind)
                     waitFlingDone(gen, 25)
                     if i < #targets and gen == flingLoopGen and flingLoopActive then
-                        task.wait(0.5)
+                        task.wait(0.12)
                     end
                 end
             end

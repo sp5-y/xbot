@@ -1,4 +1,4 @@
---[[ Xeno V1.05 XBOT_BUILD 20261018k ]]--
+--[[ Xeno V1.05 XBOT_BUILD 20261018l ]]--
 local GRAPHICS = true
 local TARGET_FPS = 50
 local Players = game:GetService("Players")
@@ -589,6 +589,8 @@ G.MM_OnPlayerKilled = nil
             G.MM_RoundLive = false
             G.MM_RoundOver = true
             G.MM_AwaitMapTp = false
+            G.MM_FlingOnce = {}
+            G.MM_FlingHitAt = {}
             G.MM_RoundEndAt = tick()
             G.MM_SuppressGunDrop = nil
             G.MM_RoleSentThisRound = true
@@ -4475,18 +4477,8 @@ function fling(target, onDone, kind)
             return
         end
     end
-    local hits0 = G.MM_FlingHitAt
-    local recentHit = hits0 and target and hits0[target.UserId] and (tick() - hits0[target.UserId] < 8)
-    if not isAlive(target) then
-        if onDoneFn then onDoneFn(recentHit == true) end
-        return
-    end
-    if not isAlive(me) then
+    if not isAlive(target) or not isAlive(me) then
         if onDoneFn then onDoneFn(false) end
-        return
-    end
-    if recentHit and kind ~= "air" then
-        if onDoneFn then onDoneFn(true) end
         return
     end
     local mh0 = hrp()
@@ -4614,7 +4606,22 @@ function fling(target, onDone, kind)
             local startPos = th0.Position
             local tStart = tick()
             local airHeldAt = nil
-            local deadline = tStart + (isAir and (flingLoopContinuous and 10 or 5) or 5)
+            local missingTh = 0
+            local deadline = tStart + (isAir and (flingLoopContinuous and 10 or 5) or 8)
+            local function isVoided()
+                if not isAlive(target) then return true end
+                local rec = G.MM_PlayerData[target.Name] or G.MM_PlayerData[tostring(target.UserId)]
+                if rec and (rec.Dead == true or rec.Killed == true) then return true end
+                local thv = target.Character and target.Character:FindFirstChild("HumanoidRootPart")
+                if not thv then return false end
+                if thv.Position.Y <= killY + 80 or thv.Position.Y < 40 then return true end
+                if thv.Position.Y < startPos.Y - 80 then
+                    local tv = thv.AssemblyLinearVelocity
+                    if tv.Magnitude < 1 then tv = thv.Velocity end
+                    if tv.Y < -80 then return true end
+                end
+                return false
+            end
             local function targetAirborne(th, thum)
                 if not th then return false end
                 if th.Position.Y > startPos.Y + 2 then return true end
@@ -4651,7 +4658,7 @@ function fling(target, onDone, kind)
                 end
             end)
             while flingActive and tick() < deadline and isAlive(me) do
-                if not isAlive(target) then
+                if isVoided() then
                     flung = true
                     break
                 end
@@ -4661,81 +4668,51 @@ function fling(target, onDone, kind)
                 local th = target.Character and target.Character:FindFirstChild("HumanoidRootPart")
                 if not mh or not char then break end
                 if not th then
-                    if not isAir then flung = true end
-                    lockCF = nil
-                    break
-                end
-                collideHit()
-                if th.Position.Y <= killY + 80 then
-                    flung = true
-                    lockCF = nil
-                    break
-                end
-                local thum = target.Character and target.Character:FindFirstChildOfClass("Humanoid")
-                local lead = flingApproachLead(th, thum)
-                lockCF = th.CFrame + Vector3.new(lead.X, 0, lead.Z)
-                pcall(function()
-                    mh.Anchored = false
-                    mh.CFrame = lockCF
-                end)
-                if isAir then
-                    punchLin = Vector3.new(0, 4200, 0)
-                    punchParts(char, punchLin, spin)
-                    if targetAirborne(th, thum) then
-                        flung = true
-                        airHeldAt = airHeldAt or tick()
-                        if tick() - airHeldAt > 2.2 then
-                            break
-                        end
+                    missingTh = missingTh + 1
+                    if missingTh >= 12 then
+                        flung = isVoided() or not isAlive(target)
+                        if flung then break end
                     end
                 else
-                    local tv = th.AssemblyLinearVelocity
-                    if tv.Magnitude < 1 then tv = th.Velocity end
-                    punchParts(char, punchLin, yawSpin)
-                    if tv.Y < -40 or th.Position.Y < startPos.Y - 8 then
+                    missingTh = 0
+                    if th.Position.Y <= killY + 80 or th.Position.Y < 40 then
                         flung = true
-                    end
-                    if th.Position.Y <= killY + 80 or th.Position.Y < 35 or (flung and th.Position.Y < startPos.Y - 55 and tv.Y < -40) then
-                        flung = true
-                        lockCF = nil
                         break
+                    end
+                    collideHit()
+                    local thum = target.Character and target.Character:FindFirstChildOfClass("Humanoid")
+                    local lead = flingApproachLead(th, thum)
+                    lockCF = th.CFrame + Vector3.new(lead.X, 0, lead.Z)
+                    pcall(function()
+                        mh.Anchored = false
+                        mh.CFrame = lockCF
+                    end)
+                    if isAir then
+                        punchLin = Vector3.new(0, 4200, 0)
+                        punchParts(char, punchLin, spin)
+                        if targetAirborne(th, thum) then
+                            flung = true
+                            airHeldAt = airHeldAt or tick()
+                            if tick() - airHeldAt > 2.2 then
+                                break
+                            end
+                        end
+                    else
+                        punchParts(char, punchLin, yawSpin)
                     end
                 end
             end
-            lockCF = nil
-            if not isAlive(target) then
-                flung = true
-            elseif not isAir then
-                local watch = tick()
-                while tick() - watch < 1.1 and not flung do
-                    if not isAlive(target) then
-                        flung = true
-                        break
-                    end
-                    local thf = target.Character and target.Character:FindFirstChild("HumanoidRootPart")
-                    if not thf then
-                        flung = true
-                        break
-                    end
-                    if thf.Position.Y <= killY + 80 or thf.Position.Y < 40 or thf.Position.Y < startPos.Y - 20 then
-                        flung = true
-                        break
-                    end
-                    local rec = G.MM_PlayerData[target.Name]
-                    if rec and (rec.Dead == true or rec.Killed == true) then
-                        flung = true
-                        break
-                    end
-                    RunSvc.Heartbeat:Wait()
-                end
-            elseif isAir then
+            if not isAir then
+                flung = isVoided()
+            elseif not flung then
                 local thf = target.Character and target.Character:FindFirstChild("HumanoidRootPart")
                 local thum = target.Character and target.Character:FindFirstChildOfClass("Humanoid")
                 if targetAirborne(thf, thum) then flung = true end
             end
-            if flung and target then
-                G.MM_FlingHitAt = G.MM_FlingHitAt or {}
-                G.MM_FlingHitAt[target.UserId] = tick()
+            lockCF = nil
+            if flung and target and not isAir then
+                G.MM_FlingOnce = G.MM_FlingOnce or {}
+                G.MM_FlingOnce[target.UserId] = true
             end
             pcall(function()
                 if bav then bav:Destroy() end
@@ -4754,10 +4731,12 @@ function fling(target, onDone, kind)
         pcall(function()
             local char = me.Character
             if not char then return end
+            if G.MM_StandNoclip then
+                G.MM_StandNoclip(char)
+            end
             for _, n in ipairs({"HumanoidRootPart", "Torso", "UpperTorso", "LowerTorso", "Head"}) do
                 local part = char:FindFirstChild(n)
                 if part and part:IsA("BasePart") then
-                    part.CanCollide = true
                     pcall(function()
                         part.CustomPhysicalProperties = PhysicalProperties.new(0.7, 0.3, 0.5)
                     end)
@@ -4855,13 +4834,15 @@ function runFlingLoop(mode, playerQuery, gen, continuousLoop, kind)
             if session.ownerId and pl.UserId == session.ownerId then return false end
             local rec = G.MM_PlayerData[pl.Name] or G.MM_PlayerData[tostring(pl.UserId)]
             if rec and (rec.Dead == true or rec.Killed == true) then return false end
-            local hits = G.MM_FlingHitAt
-            local hitAt = hits and hits[pl.UserId]
-            if hitAt and tick() - hitAt < 6 then return false end
+            if not continuousLoop then
+                local once = G.MM_FlingOnce
+                if once and once[pl.UserId] then return false end
+            end
             local r = pl.Character and pl.Character:FindFirstChild("HumanoidRootPart")
             if not r then return false end
             if r.Position.Y < 40 then return false end
-            return r.Position.Y < 430
+            if mode == "all" then return r.Position.Y < 430 end
+            return true
         end
         local loopTargetUserId = nil
         local function collectTargets()
@@ -4877,12 +4858,18 @@ function runFlingLoop(mode, playerQuery, gen, continuousLoop, kind)
                 local murd = findHolder({"Knife"})
                 if murd and murd ~= me and flingable(murd) then table.insert(targets, murd) end
             else
+                local t
                 if loopTargetUserId then
-                    local pl = Players:GetPlayerByUserId(loopTargetUserId)
-                    if pl and pl ~= me then table.insert(targets, pl) end
+                    t = Players:GetPlayerByUserId(loopTargetUserId)
                 else
-                    local t = findOtherPlayer(playerQuery)
-                    if t then table.insert(targets, t) end
+                    t = findOtherPlayer(playerQuery)
+                end
+                if t and t ~= me then
+                    if continuousLoop then
+                        table.insert(targets, t)
+                    elseif flingable(t) then
+                        table.insert(targets, t)
+                    end
                 end
             end
             return targets
@@ -5488,8 +5475,10 @@ local function handleCommand(p, msg, viaPublic)
     local args = splitChatArgs(msg)
     if not args[1] or args[1]:sub(1, 1) ~= "!" then return end
     local cmd, rest = args[1]:sub(2):lower(), msg:sub(#args[1] + 2)
-    if cmd == "" or (cmd ~= "dethrone" and not COMMAND_HELP[cmd]) then
-        return
+    if cmd == "bansh" or cmd == "banih" or cmd == "bansih" or cmd == "bnsh" or cmd == "ban" or cmd == "banesh" or cmd == "banishh" then
+        cmd = "banish"
+    elseif cmd == "flng" or cmd == "flin" then
+        cmd = "fling"
     end
     local privateWhisper = whisper
     local function whisper(m, target)
@@ -5500,6 +5489,14 @@ local function handleCommand(p, msg, viaPublic)
         privateWhisper(m, target or p)
         return true
     end
+    if cmd == "" or (cmd ~= "dethrone" and not COMMAND_HELP[cmd]) then
+        log("ignored cmd " .. p.Name .. ": " .. msg)
+        if session.ownerId and p.UserId == session.ownerId then
+            whisper("Unknown")
+        end
+        return
+    end
+    log("cmd " .. p.Name .. ": !" .. cmd .. (rest ~= "" and (" " .. rest) or ""))
     if cmd == "owner" then
         local cur = findOwner()
         if cur then
@@ -5966,7 +5963,6 @@ local function routeCommand(p, msg, viaPublic, src, mid)
         if bangs > 1 then return end
     end
     if seenCommandRecently(p, msg, src, mid) then return end
-    log("cmd " .. p.Name .. ": " .. msg)
     handleCommand(p, msg, viaPublic == true)
 end
 local function watchHiddenChat(p, msg)

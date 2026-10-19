@@ -1,4 +1,4 @@
---[[ Xeno V1.05 XBOT_BUILD 20261018a ]]--
+--[[ Xeno V1.05 XBOT_BUILD 20261018c ]]--
 local GRAPHICS = true
 local TARGET_FPS = 50
 local Players = game:GetService("Players")
@@ -779,7 +779,7 @@ G.MM_OwnerPrefs = G.MM_OwnerPrefs or {}
 G.MM_TipLines = {
     "❓ Tip: Whisper commands so the lobby doesn't see them",
     "❓ Tip: !help reveal  ·  !help gun  ·  !help hide",
-    "❓ Tip: Add loop after !banish to keep going (!banish ... loop)",
+    "❓ Tip: !fling keeps them in the air, !banish throws them into the void",
     "❓ Tip: Use !reveal (player) to reveal the round roles to someone",
     "❓ Tip: Use !hide to keep the bot hidden",
     "❓ Tip: !reset respawns the bot if it's stuck",
@@ -4409,8 +4409,9 @@ local function recoverAfterFling()
     flingSettling = false
 end
 
-function fling(target, onDone)
+function fling(target, onDone, kind)
     local onDoneFn = onDone
+    local isAir = kind == "air"
     if flingActive then
         if onDoneFn then onDoneFn(false) end
         return
@@ -4442,7 +4443,7 @@ function fling(target, onDone)
     flingActive = true
     G.MM_FlingBusy = true
     G.MM_StandPaused = true
-    log("flinging " .. target.DisplayName)
+    log((isAir and "air-fling " or "banish ") .. target.DisplayName)
     task.spawn(function()
         G.MM_ActionBegin()
         G.MM_FollowGen = (tonumber(G.MM_FollowGen) or 0) + 1
@@ -4451,6 +4452,27 @@ function fling(target, onDone)
         G.MM_Hiding = false
         pcall(restoreStandBody)
         local flung = false
+        local killY = -500
+        pcall(function()
+            local h = workspace.FallenPartsDestroyHeight
+            if typeof(h) == "number" and h == h then killY = h end
+        end)
+        local safeFloor = killY + 130
+        local spin = Vector3.new(0, 9e4, 9e4)
+        local function punchParts(char, lin, ang)
+            pcall(function()
+                for _, n in ipairs({"HumanoidRootPart", "Torso", "UpperTorso", "LowerTorso"}) do
+                    local p = char:FindFirstChild(n)
+                    if p and p:IsA("BasePart") then
+                        p.Anchored = false
+                        p.AssemblyLinearVelocity = lin
+                        p.Velocity = lin
+                        p.AssemblyAngularVelocity = ang
+                        p.RotVelocity = ang
+                    end
+                end
+            end)
+        end
         local guard = RunSvc.Stepped:Connect(function()
             pcall(function()
                 local char = me.Character
@@ -4458,9 +4480,11 @@ function fling(target, onDone)
                 for _, part in ipairs(char:GetDescendants()) do
                     if part:IsA("BasePart") then
                         part.CanCollide = false
-                        part.AssemblyLinearVelocity = Vector3.zero
-                        part.AssemblyAngularVelocity = Vector3.zero
                     end
+                end
+                local mh = char:FindFirstChild("HumanoidRootPart")
+                if mh and mh.Position.Y < safeFloor then
+                    mh.CFrame = CFrame.new(mh.Position.X, safeFloor, mh.Position.Z)
                 end
             end)
         end)
@@ -4468,63 +4492,102 @@ function fling(target, onDone)
             local th0 = target.Character and target.Character:FindFirstChild("HumanoidRootPart")
             if not th0 then return end
             local startPos = th0.Position
-            local killY = -220
-            pcall(function()
-                local h = workspace.FallenPartsDestroyHeight
-                if typeof(h) == "number" then killY = math.max(h + 80, -400) end
-            end)
-            local burstUntil = tick() + 1.1
-            local watchUntil = tick() + 4.2
-            local launched = false
-            while flingActive and tick() < watchUntil and isAlive(me) do
+            local away0 = Vector3.new(startPos.X, 0, startPos.Z)
+            if away0.Magnitude < 4 then away0 = Vector3.new(1, 0, 0.4) end
+            away0 = away0.Unit
+            local tStart = tick()
+            local deadline = tStart + (isAir and (flingLoopContinuous and 14 or 8) or 12)
+            local hum0 = me.Character and me.Character:FindFirstChildOfClass("Humanoid")
+            if hum0 then
+                pcall(function()
+                    hum0.PlatformStand = true
+                    hum0:SetStateEnabled(Enum.HumanoidStateType.FallingDown, false)
+                    hum0:SetStateEnabled(Enum.HumanoidStateType.Ragdoll, false)
+                end)
+            end
+            while flingActive and tick() < deadline and isAlive(me) do
                 if not isAlive(target) then
                     flung = true
                     break
                 end
                 RunSvc.Heartbeat:Wait()
                 local mh = hrp()
+                local char = me.Character
                 local th = target.Character and target.Character:FindFirstChild("HumanoidRootPart")
-                if not mh then break end
-                local hum = me.Character and me.Character:FindFirstChildOfClass("Humanoid")
-                if hum and hum.Health < hum.MaxHealth * 0.35 then break end
-                if th and (th.Position.Y < killY or th.Position.Y < startPos.Y - 140 or (th.Position - startPos).Magnitude > 250) then
-                    flung = true
+                if not mh or not char then break end
+                if mh.Position.Y < killY + 50 then
+                    snapFlingHome()
+                end
+                if not th then
+                    if not isAir then flung = true end
+                    snapFlingHome()
                     break
                 end
-                if launched or tick() >= burstUntil then
-                    snapFlingHome()
-                elseif th then
+                if isAir then
                     local thum = target.Character:FindFirstChildOfClass("Humanoid")
                     local lead = flingApproachLead(th, thum)
+                    local oy = math.max(th.Position.Y + 1.5, startPos.Y + 8, safeFloor)
                     pcall(function()
                         mh.Anchored = false
-                        mh.CFrame = th.CFrame * CFrame.new(0, 0.15, 0) + lead
-                        local punch = Vector3.new(0, 85000, 0)
-                        mh.AssemblyLinearVelocity = punch
-                        mh.Velocity = punch
-                        mh.AssemblyAngularVelocity = Vector3.new(0, 12000, 9000)
-                        mh.RotVelocity = Vector3.new(0, 12000, 9000)
+                        mh.CFrame = CFrame.new(th.Position.X + lead.X, oy, th.Position.Z + lead.Z)
                     end)
-                    if not pcall(function() RunSvc.RenderStepped:Wait() end) then
-                        RunSvc.Stepped:Wait()
+                    punchParts(char, Vector3.new(0, 1.1e5, 0), spin)
+                    if th.Position.Y > startPos.Y + 10 then flung = true end
+                else
+                    if th.Position.Y <= killY + 40 then
+                        flung = true
+                        snapFlingHome()
+                        break
                     end
-                    pcall(function()
-                        mh.AssemblyLinearVelocity = Vector3.zero
-                        mh.AssemblyAngularVelocity = Vector3.zero
-                        mh.Velocity = Vector3.zero
-                        mh.RotVelocity = Vector3.zero
-                    end)
                     local tv = th.AssemblyLinearVelocity
                     if tv.Magnitude < 1 then tv = th.Velocity end
-                    if tv.Y > 55 or tv.Magnitude > 90 then
-                        launched = true
+                    if th.Position.Y < -140 and tv.Y < -40 then
+                        flung = true
                         snapFlingHome()
+                        local tWatch = tick()
+                        local recovered = false
+                        while flingActive and tick() - tWatch < 3.2 do
+                            if not isAlive(target) then break end
+                            local thw = target.Character and target.Character:FindFirstChild("HumanoidRootPart")
+                            if not thw or thw.Position.Y <= killY + 40 then break end
+                            local wv = thw.AssemblyLinearVelocity
+                            if wv.Magnitude < 1 then wv = thw.Velocity end
+                            if thw.Position.Y > 30 and wv.Y > -20 then
+                                recovered = true
+                                flung = false
+                                break
+                            end
+                            snapFlingHome()
+                            RunSvc.Heartbeat:Wait()
+                        end
+                        if not recovered then break end
+                        tStart = tick()
+                    else
+                        local away = Vector3.new(th.Position.X, 0, th.Position.Z)
+                        if away.Magnitude < 3 then away = away0 else away = away.Unit end
+                        local oy = math.max(th.Position.Y, safeFloor)
+                        pcall(function()
+                            mh.Anchored = false
+                            mh.CFrame = CFrame.new(th.Position.X, oy, th.Position.Z)
+                        end)
+                        local punch
+                        if tick() - tStart < 0.2 then
+                            punch = Vector3.new(0, 9.5e4, 0)
+                        else
+                            punch = Vector3.new(away.X * 2.2e5, -1.2e6, away.Z * 2.2e5)
+                        end
+                        punchParts(char, punch, spin)
                     end
-                else
-                    snapFlingHome()
                 end
             end
-            if not isAlive(target) then flung = true end
+            if not isAlive(target) then
+                flung = true
+            elseif not isAir then
+                local thf = target.Character and target.Character:FindFirstChild("HumanoidRootPart")
+                if not thf or thf.Position.Y <= killY + 40 or thf.Position.Y < -140 then
+                    flung = true
+                end
+            end
             for _ = 1, 10 do
                 snapFlingHome()
                 RunSvc.Heartbeat:Wait()
@@ -4538,6 +4601,12 @@ function fling(target, onDone)
                 local part = char:FindFirstChild(n)
                 if part and part:IsA("BasePart") then part.CanCollide = true end
             end
+            local hum = char:FindFirstChildOfClass("Humanoid")
+            if hum then
+                hum.PlatformStand = false
+                hum:SetStateEnabled(Enum.HumanoidStateType.FallingDown, true)
+                hum:SetStateEnabled(Enum.HumanoidStateType.Ragdoll, true)
+            end
         end)
         flingActive = false
         if not okRun then
@@ -4548,7 +4617,7 @@ function fling(target, onDone)
         if onDoneFn then
             onDoneFn(flung)
         elseif flung then
-            whisper("Banished " .. shortName(target))
+            whisper((isAir and "Flung " or "Banished ") .. shortName(target))
         end
         recoverAfterFling()
         G.MM_ActionEnd()
@@ -4610,7 +4679,9 @@ local function waitAfterLoopFling(target, gen, loopBegan, hadSuccess)
     end
 end
 
-function runFlingLoop(mode, playerQuery, gen, continuousLoop)
+function runFlingLoop(mode, playerQuery, gen, continuousLoop, kind)
+    kind = kind or "void"
+    local isAir = kind == "air"
     task.spawn(function()
         local function flingable(pl)
             if not pl or pl == me or not isAlive(pl) then return false end
@@ -4652,9 +4723,10 @@ function runFlingLoop(mode, playerQuery, gen, continuousLoop)
                 if isAlive(tgt) and isAlive(me) then
                     fling(tgt, function(ok)
                         if flingLoopActive and gen == flingLoopGen then
-                            whisper((ok and "Banished " or "Banish missed ") .. shortName(tgt))
+                            local word = isAir and "Flung " or "Banished "
+                            whisper((ok and word or ((isAir and "Fling missed ") or "Banish missed ")) .. shortName(tgt))
                         end
-                    end)
+                    end, kind)
                     waitFlingDone(gen, 25)
                     if i < #targets and gen == flingLoopGen and flingLoopActive then
                         task.wait(0.5)
@@ -4674,7 +4746,7 @@ function runFlingLoop(mode, playerQuery, gen, continuousLoop)
         local loopBegan = tick()
         while session.active and gen == flingLoopGen and flingLoopActive do
             if flingLoopTimedOut(loopBegan) then
-                whisper("Fling loop stopped")
+                whisper((isAir and "Fling" or "Banish") .. " loop stopped")
                 cancelFlingWork()
                 return
             end
@@ -4699,7 +4771,7 @@ function runFlingLoop(mode, playerQuery, gen, continuousLoop)
                             local lastOk = false
                             fling(tgt, function(ok)
                                 lastOk = ok
-                            end)
+                            end, kind)
                             waitFlingDone(gen, 25)
                             if gen ~= flingLoopGen or not flingLoopActive then break end
                             waitAfterLoopFling(tgt, gen, loopBegan, lastOk)
@@ -4991,12 +5063,13 @@ local COMMAND_HELP = {
     togglegun = "<player> - Auto-deliver gun to a player",
     toggleshoot = "[murderer | name] - Auto-grab dropped gun and silent-aim shoot",
     chat = "<msg> - Make bot send a public chat message",
-    banish = "all | sheriff | murder | <name> — add loop to repeat, !banish alone stops",
+    banish = "all | sheriff | murder | <name> — throw into the void (kills). Add loop; !banish alone stops",
+    fling = "all | sheriff | murder | <name> — keep them in the air. Add loop; !fling alone stops",
     bring = "<player> [to] - Carry them to you, or to another player",
     help = "<cmd> - Show command list or explain one command",
 }
 local HELP_ORDER = {
-    "owner", "adopt", "unadopt", "tp", "tpmurd", "tpsher", "reveal", "stab", "shoot", "gun", "drop", "banish",
+    "owner", "adopt", "unadopt", "tp", "tpmurd", "tpsher", "reveal", "stab", "shoot", "gun", "drop", "banish", "fling",
     "bring",
     "togglegun", "toggleshoot", "togglereveal", "togglealerts", "togglereset", "toggledrop",
     "reset", "spawn", "hide", "summon", "unsummon", "emote", "chat", "help",
@@ -5009,6 +5082,7 @@ local PREMIUM_ONLY_COMMANDS = {
     togglereveal = true,
     togglealerts = true,
     banish = true,
+    fling = true,
     bring = true,
     chat = true,
 }
@@ -5235,7 +5309,6 @@ local function handleCommand(p, msg, viaPublic)
     local args = splitChatArgs(msg)
     if not args[1] or args[1]:sub(1, 1) ~= "!" then return end
     local cmd, rest = args[1]:sub(2):lower(), msg:sub(#args[1] + 2)
-    if cmd == "fling" then cmd = "banish" end
     if cmd == "" or (cmd ~= "dethrone" and not COMMAND_HELP[cmd]) then
         return
     end
@@ -5290,11 +5363,13 @@ local function handleCommand(p, msg, viaPublic)
     if not authorizeCommand(p) then
         return
     end
-    if flingLoopContinuous and cmd ~= "banish" then
-        whisper('You need to toggle off banish loop using "!banish"')
+    if flingLoopContinuous and cmd ~= "banish" and cmd ~= "fling" then
+        whisper('You need to toggle off the loop with !banish or !fling')
         return
     end
-    if cmd == "banish" then
+    if cmd == "banish" or cmd == "fling" then
+        local kind = cmd == "fling" and "air" or "void"
+        local verb = kind == "air" and "Fling" or "Banish"
         local raw = restOfChatArgs(args)
         local trimmed = (raw:match("^%s*(.-)%s*$") or "")
         local wl = trimmed:lower()
@@ -5307,15 +5382,15 @@ local function handleCommand(p, msg, viaPublic)
         if q == "" then
             if flingLoopActive or flingActive or flingSettling then
                 cancelFlingWork()
-                whisper("Banish loop stopped")
-        return
-    end
-            whisper("!banish all | sheriff | murder | <name> — add loop to repeat, !banish alone stops")
-        return
+                whisper(verb .. " stopped")
+                return
+            end
+            whisper("!" .. cmd .. " all | sheriff | murder | <name> — add loop to repeat, !" .. cmd .. " alone stops")
+            return
         end
 
         if flingLoopContinuous then
-            whisper('You need to toggle off banish loop using "!banish"')
+            whisper("You need to toggle off the loop with !" .. cmd)
             return
         end
         if flingLoopActive or flingActive or flingSettling or G.MM_BringBusy then
@@ -5341,7 +5416,7 @@ local function handleCommand(p, msg, viaPublic)
                 return
             end
             matchLabel = matchedPlayerLabel(tgt)
-            log("banish: \"" .. work .. "\" -> " .. tgt.Name)
+            log(cmd .. ": \"" .. work .. "\" -> " .. tgt.Name)
         end
 
         flingActive = false
@@ -5350,15 +5425,15 @@ local function handleCommand(p, msg, viaPublic)
         flingLoopActive = true
 
         flingLoopContinuous = continuousLoop
-        runFlingLoop(mode, playerQuery, gen, continuousLoop)
+        runFlingLoop(mode, playerQuery, gen, continuousLoop, kind)
         if continuousLoop then
-            whisper("Say !banish alone to stop the loop")
+            whisper("Say !" .. cmd .. " alone to stop the loop")
             task.wait(0.3)
             whisper("Looping on: " .. (mode == "all" and "everyone" or matchLabel))
         elseif mode == "all" then
-            whisper("Banishing everyone")
+            whisper(verb .. "ing everyone")
         else
-            whisper("Banishing " .. matchLabel)
+            whisper(verb .. "ing " .. matchLabel)
         end
         return
     end
@@ -5994,7 +6069,7 @@ local function bridgeHelpMessage(topic)
         return "error", "No help for !" .. topic .. " — use /help for the full list"
     end
     local lines = {
-        "Discord: /help /gun /stab /shoot /fling /tp /reveal /reset /chat /alerts",
+        "Discord: /help /gun /stab /shoot /fling /banish /tp /reveal /reset /chat /alerts",
         "",
     }
     table.insert(lines, "In-game: !help and the same commands with !")
@@ -6213,7 +6288,9 @@ local function bridgeParseFlingQuery(query)
     return mode, playerQuery, nil
 end
 
-local function bridgeRunFlingOnce(mode, playerQuery, gen)
+local function bridgeRunFlingOnce(mode, playerQuery, gen, kind)
+    kind = kind or "void"
+    local isAir = kind == "air"
     if mode == "all" then
         local n = 0
         for _, pl in ipairs(Players:GetPlayers()) do
@@ -6222,16 +6299,16 @@ local function bridgeRunFlingOnce(mode, playerQuery, gen)
                 local r = pl.Character and pl.Character:FindFirstChild("HumanoidRootPart")
                 if r and r.Position.Y < 430 then
                     local flung = false
-                    fling(pl, function(ok) flung = ok end)
+                    fling(pl, function(ok) flung = ok end, kind)
                     waitFlingDone(gen, 25)
                     if flung then n = n + 1 end
                 end
             end
         end
         if n > 0 then
-            return "ok", "Banished " .. tostring(n) .. " player(s)"
+            return "ok", (isAir and "Flung " or "Banished ") .. tostring(n) .. " player(s)"
         end
-        return "ok", "Banish finished (no hits)"
+        return "ok", (isAir and "Fling" or "Banish") .. " finished (no hits)"
     end
 
     local tgt
@@ -6247,12 +6324,12 @@ local function bridgeRunFlingOnce(mode, playerQuery, gen)
     end
     if not isAlive(tgt) or not isAlive(me) then return "error", "Target or bot not alive" end
     local flung = false
-    fling(tgt, function(ok) flung = ok end)
+    fling(tgt, function(ok) flung = ok end, kind)
     waitFlingDone(gen, 25)
     if flung then
-        return "ok", "Banished " .. bridgeTargetLabel(tgt)
+        return "ok", (isAir and "Flung " or "Banished ") .. bridgeTargetLabel(tgt)
     end
-    return "ok", "Banish finished"
+    return "ok", (isAir and "Fling" or "Banish") .. " finished"
 end
 
 local function bridgeBringMessage(targetQuery)
@@ -6380,12 +6457,13 @@ local function bridgeShootMessage(targetQuery)
     return "ok", status
 end
 
-local function bridgeFlingMessage(query)
+local function bridgeFlingMessage(query, kind)
+    kind = kind or "void"
     if not session.ownerId then
         return "error", "No owner — join your reserved server first"
     end
     if flingLoopContinuous then
-        return "error", "Stop the in-game banish loop with !banish first"
+        return "error", "Stop the in-game loop with !banish or !fling first"
     end
     local mode, playerQuery, err = bridgeParseFlingQuery(query)
     if err then return "error", err end
@@ -6396,7 +6474,7 @@ local function bridgeFlingMessage(query)
     flingLoopGen = flingLoopGen + 1
     local gen = flingLoopGen
     flingLoopActive = true
-    local st, msg = bridgeRunFlingOnce(mode, playerQuery, gen)
+    local st, msg = bridgeRunFlingOnce(mode, playerQuery, gen, kind)
     if gen == flingLoopGen then
         flingLoopActive = false
     end
@@ -6548,8 +6626,8 @@ local function processBridgeCommands(jobId, commands)
         drop = bridgeDropMessage,
         stab = bridgeStabMessage,
         shoot = bridgeShootMessage,
-        fling = bridgeFlingMessage,
-        banish = bridgeFlingMessage,
+        fling = function(arg) return bridgeFlingMessage(arg, "air") end,
+        banish = function(arg) return bridgeFlingMessage(arg, "void") end,
         bring = bridgeBringMessage,
         tp = bridgeTpMessage,
         reveal = bridgeRevealMessage,

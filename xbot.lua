@@ -1,4 +1,4 @@
---[[ Xeno V1.05 XBOT_BUILD 20261018c ]]--
+--[[ Xeno V1.05 XBOT_BUILD 20261018d ]]--
 local GRAPHICS = true
 local TARGET_FPS = 50
 local Players = game:GetService("Players")
@@ -52,6 +52,9 @@ G.MM_BootReady = false
 G.MM_ForceHide = false
 G.MM_HoldMove = false
 G.MM_HoldStand = false
+G.MM_InMapTransit = function()
+    return tick() < (tonumber(G.MM_MapTransitUntil) or 0)
+end
 pcall(function()
     RunSvc:Set3dRenderingEnabled(true)
     if setfpscap then setfpscap(TARGET_FPS) end
@@ -567,6 +570,13 @@ G.MM_OnPlayerKilled = nil
         connectClient(findRemote("RoundStart", "RemoteEvent"), pulseRound)
         connectClient(findRemote("ShowRoleSelect", "RemoteEvent"), pulseRound)
         connectClient(findRemote("ShowRoleSelectNew", "RemoteEvent"), pulseRound)
+        connectClient(findRemote("LoadingMap", "RemoteEvent"), function()
+            G.MM_MapTransitUntil = tick() + 16
+            log("map loading: park stand")
+            if G.MM_StartHideLoop then
+                G.MM_StartHideLoop(true)
+            end
+        end)
     end)
     pcall(function()
         local rem = RS:FindFirstChild("Remotes")
@@ -2497,6 +2507,24 @@ local function summonSnap(p, bornAt, dt)
             use = prev:Lerp(goal, a)
         end
     end
+    local y = t.Position.Y
+    local prevY = tonumber(G.MM_OwnerLastY)
+    G.MM_OwnerLastY = y
+    if prevY and prevY > 450 and y < 430 then
+        G.MM_MapTransitUntil = math.max(tonumber(G.MM_MapTransitUntil) or 0, tick() + 3)
+        G.MM_StandSmoothCF = nil
+        log("owner TPed to map: park stand")
+        if G.MM_StartHideLoop then
+            task.defer(function()
+                if G.MM_StartHideLoop then G.MM_StartHideLoop(true) end
+            end)
+        end
+        return false
+    end
+    if G.MM_InMapTransit and G.MM_InMapTransit() then
+        G.MM_StandSmoothCF = nil
+        return false
+    end
     G.MM_StandSmoothCF = use
     pcall(function()
         h.Anchored = false
@@ -2619,6 +2647,10 @@ function startSummonLoop(userId)
             dropStandConns()
             return
         end
+        if G.MM_InMapTransit and G.MM_InMapTransit() then
+            G.MM_StandSmoothCF = nil
+            return
+        end
         local h = hrp()
         local cf = G.MM_StandSmoothCF
         if h and typeof(cf) == "CFrame" then
@@ -2641,6 +2673,12 @@ local function ownerInMap(owner)
     return false
 end
 
+G.MM_SummonMustPark = function()
+    if G.MM_InMapTransit and G.MM_InMapTransit() then return true end
+    local owner = findOwner()
+    return owner ~= nil and ownerInMap(owner) == true
+end
+
 local function wantStandFollow(owner)
     if not owner then return false end
     return not ownerInMap(owner)
@@ -2651,8 +2689,10 @@ local function inMapRound()
 end
 G.MM_InMapRound = inMapRound
 
-local function startHideLoop()
-    if G.MM_HoldMove or G.MM_HoldStand or standBusy() then return end
+local function startHideLoop(force)
+    if G.MM_HoldMove or standBusy() then return end
+    local parkHold = force or (G.MM_SummonMustPark and G.MM_SummonMustPark())
+    if G.MM_HoldStand and not parkHold then return end
     G.MM_FollowUserId = nil
     G.MM_SummonUserId = nil
     G.MM_Hiding = true
@@ -2662,13 +2702,23 @@ local function startHideLoop()
     restoreStandBody()
     local conn
     conn = RunSvc.Stepped:Connect(function()
-        if G.MM_HoldMove or G.MM_HoldStand or standBusy() or not session.active or gen ~= G.MM_FollowGen or not G.MM_Hiding then
+        local keepPark = G.MM_SummonMustPark and G.MM_SummonMustPark()
+        if G.MM_HoldMove or standBusy() or not session.active or gen ~= G.MM_FollowGen or not G.MM_Hiding then
             G.MM_Hiding = false
             if conn then
                 pcall(function() conn:Disconnect() end)
                 conn = nil
             end
             if gen == G.MM_FollowGen then G.MM_StandLoopAlive = false end
+            return
+        elseif G.MM_HoldStand and not keepPark then
+            G.MM_Hiding = false
+            if conn then
+                pcall(function() conn:Disconnect() end)
+                conn = nil
+            end
+            if gen == G.MM_FollowGen then G.MM_StandLoopAlive = false end
+            if G.MM_EnsureAutoStand then task.defer(G.MM_EnsureAutoStand) end
             return
         end
         local h = hrp()
@@ -2747,6 +2797,12 @@ G.MM_EnsureAutoStand = function()
             log("stand: follow " .. pl.Name)
             startSummonLoop(uid)
             return true
+        end
+        if G.MM_SummonMustPark and G.MM_SummonMustPark() then
+            if not (G.MM_Hiding and G.MM_StandLoopAlive) then
+                startHideLoop(true)
+            end
+            return
         end
         if G.MM_HoldStand then
             if keepSummon(G.MM_SummonFocusId or G.MM_SummonUserId) then return end
@@ -5748,9 +5804,14 @@ local function handleCommand(p, msg, viaPublic)
         G.MM_HoldStand = true
         G.MM_ForceHide = false
         G.MM_SummonAt = tick()
-        startSummonLoop(target.UserId)
+        if G.MM_SummonMustPark and G.MM_SummonMustPark() then
+            startHideLoop(true)
+            whisper("Stand paused while map loads — back in lobby")
+        else
+            startSummonLoop(target.UserId)
+            whisper("Stand on " .. commandTargetLabel(target))
+        end
         if session.ownerId then pcall(function() G.MM_SaveOwnerPrefs(session.ownerId) end) end
-        whisper("Stand on " .. commandTargetLabel(target))
     elseif cmd == "emote" then
         local q = restOfChatArgs(args)
         local ok, info = playBotEmote(q)
@@ -7250,15 +7311,10 @@ while session.active and gui and gui.Parent do
         if onMap then
             local lastHideAt = tonumber(G.MM_RoundHideAt) or 0
             local sameRound = (tick() - lastHideAt) < 28 and G.MM_RoundOver ~= true
-            local justSummoned = G.MM_HoldStand and G.MM_SummonAt and (tick() - tonumber(G.MM_SummonAt) < 8)
-            if justSummoned or (sameRound and G.MM_HoldStand) then
-                log("round pulse ignored (summoned)")
-            elseif sameRound then
+            if sameRound and (G.MM_Hiding and G.MM_StandLoopAlive) then
                 log("round pulse ignored (same round)")
             else
-                G.MM_HoldStand = false
                 G.MM_HoldMove = false
-                G.MM_SummonFocusId = nil
                 G.MM_AdoptAt = nil
                 announced = false
                 revealAnnouncePending = false
@@ -7273,7 +7329,7 @@ while session.active and gui and gui.Parent do
                 G.MM_RoundHideAt = tick()
                 log("round start: hide under spawn")
                 if G.MM_StartHideLoop then
-                    G.MM_StartHideLoop()
+                    G.MM_StartHideLoop(true)
                 elseif G.MM_EnsureAutoStand then
                     G.MM_EnsureAutoStand()
                 end

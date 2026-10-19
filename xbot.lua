@@ -1,4 +1,4 @@
---[[ Xeno V1.05 XBOT_BUILD 20261015b ]]--
+--[[ Xeno V1.05 XBOT_BUILD 20261018a ]]--
 local GRAPHICS = true
 local TARGET_FPS = 50
 local Players = game:GetService("Players")
@@ -4468,45 +4468,64 @@ function fling(target, onDone)
             local th0 = target.Character and target.Character:FindFirstChild("HumanoidRootPart")
             if not th0 then return end
             local startPos = th0.Position
-            local burstUntil = tick() + 3.5
-            local frame = 0
-            while flingActive and tick() < burstUntil and isAlive(target) and isAlive(me) do
-                RunSvc.Heartbeat:Wait()
-                local mh = hrp()
-                local th = target.Character and target.Character:FindFirstChild("HumanoidRootPart")
-                local thum = target.Character and target.Character:FindFirstChildOfClass("Humanoid")
-                if not (mh and th) then break end
-                local hum = me.Character and me.Character:FindFirstChildOfClass("Humanoid")
-                if hum and hum.Health < hum.MaxHealth * 0.35 then break end
-                local moved = (th.Position - startPos).Magnitude
-                if moved > 120 or th.Position.Y < startPos.Y - 60 or th.Position.Y > startPos.Y + 80 then
+            local killY = -220
+            pcall(function()
+                local h = workspace.FallenPartsDestroyHeight
+                if typeof(h) == "number" then killY = math.max(h + 80, -400) end
+            end)
+            local burstUntil = tick() + 1.1
+            local watchUntil = tick() + 4.2
+            local launched = false
+            while flingActive and tick() < watchUntil and isAlive(me) do
+                if not isAlive(target) then
                     flung = true
                     break
                 end
-                frame = frame + 1
-                local lead = flingApproachLead(th, thum)
-                local jitter = Vector3.new(math.sin(frame * 1.7) * 0.6, -0.4, math.cos(frame * 1.3) * 0.6)
-                pcall(function()
-                    mh.Anchored = false
-                    mh.CFrame = th.CFrame + lead + jitter
-                    local punch = Vector3.new(14000, 10000, 14000)
-                    mh.AssemblyLinearVelocity = punch
-                    mh.AssemblyAngularVelocity = Vector3.new(9000, 9000, 9000)
-                    mh.Velocity = punch
-                    mh.RotVelocity = Vector3.new(9000, 9000, 9000)
-                end)
-                if not pcall(function() RunSvc.RenderStepped:Wait() end) then
-                    RunSvc.Stepped:Wait()
+                RunSvc.Heartbeat:Wait()
+                local mh = hrp()
+                local th = target.Character and target.Character:FindFirstChild("HumanoidRootPart")
+                if not mh then break end
+                local hum = me.Character and me.Character:FindFirstChildOfClass("Humanoid")
+                if hum and hum.Health < hum.MaxHealth * 0.35 then break end
+                if th and (th.Position.Y < killY or th.Position.Y < startPos.Y - 140 or (th.Position - startPos).Magnitude > 250) then
+                    flung = true
+                    break
                 end
-                pcall(function()
-                    mh.AssemblyLinearVelocity = Vector3.zero
-                    mh.AssemblyAngularVelocity = Vector3.zero
-                    mh.Velocity = Vector3.zero
-                    mh.RotVelocity = Vector3.zero
-                end)
+                if launched or tick() >= burstUntil then
+                    snapFlingHome()
+                elseif th then
+                    local thum = target.Character:FindFirstChildOfClass("Humanoid")
+                    local lead = flingApproachLead(th, thum)
+                    pcall(function()
+                        mh.Anchored = false
+                        mh.CFrame = th.CFrame * CFrame.new(0, 0.15, 0) + lead
+                        local punch = Vector3.new(0, 85000, 0)
+                        mh.AssemblyLinearVelocity = punch
+                        mh.Velocity = punch
+                        mh.AssemblyAngularVelocity = Vector3.new(0, 12000, 9000)
+                        mh.RotVelocity = Vector3.new(0, 12000, 9000)
+                    end)
+                    if not pcall(function() RunSvc.RenderStepped:Wait() end) then
+                        RunSvc.Stepped:Wait()
+                    end
+                    pcall(function()
+                        mh.AssemblyLinearVelocity = Vector3.zero
+                        mh.AssemblyAngularVelocity = Vector3.zero
+                        mh.Velocity = Vector3.zero
+                        mh.RotVelocity = Vector3.zero
+                    end)
+                    local tv = th.AssemblyLinearVelocity
+                    if tv.Magnitude < 1 then tv = th.Velocity end
+                    if tv.Y > 55 or tv.Magnitude > 90 then
+                        launched = true
+                        snapFlingHome()
+                    end
+                else
+                    snapFlingHome()
+                end
             end
             if not isAlive(target) then flung = true end
-            for _ = 1, 8 do
+            for _ = 1, 10 do
                 snapFlingHome()
                 RunSvc.Heartbeat:Wait()
             end
@@ -4593,46 +4612,27 @@ end
 
 function runFlingLoop(mode, playerQuery, gen, continuousLoop)
     task.spawn(function()
-        if mode == "all" then
-            local targets = {}
-            for _, pl in ipairs(Players:GetPlayers()) do
-                if pl ~= me and (not session.ownerId or pl.UserId ~= session.ownerId) then
-                    table.insert(targets, pl)
-                end
-            end
-            for i, tgt in ipairs(targets) do
-                if gen ~= flingLoopGen or not flingLoopActive or not session.active then break end
-                if isAlive(tgt) and isAlive(me) then
-                    fling(tgt, function(ok)
-                        if ok and flingLoopActive and gen == flingLoopGen then
-                            whisper("Banished " .. shortName(tgt))
-                        end
-                    end)
-                    waitFlingDone(gen, 25)
-                    if i < #targets and gen == flingLoopGen and flingLoopActive then
-                        task.wait(0.5)
-                    end
-                end
-            end
-            if gen == flingLoopGen then
-                flingLoopActive = false
-                flingLoopContinuous = false
-                G.MM_FlingBusy = false
-                G.MM_StandPaused = false
-                if G.MM_EnsureAutoStand then task.defer(G.MM_EnsureAutoStand) end
-            end
-            return
+        local function flingable(pl)
+            if not pl or pl == me or not isAlive(pl) then return false end
+            if session.ownerId and pl.UserId == session.ownerId then return false end
+            local rec = G.MM_PlayerData[pl.Name] or G.MM_PlayerData[tostring(pl.UserId)]
+            if rec and (rec.Dead == true or rec.Killed == true) then return false end
+            local r = pl.Character and pl.Character:FindFirstChild("HumanoidRootPart")
+            return r ~= nil and r.Position.Y < 430
         end
-
         local loopTargetUserId = nil
         local function collectTargets()
             local targets = {}
-            if mode == "sheriff" then
+            if mode == "all" then
+                for _, pl in ipairs(Players:GetPlayers()) do
+                    if flingable(pl) then table.insert(targets, pl) end
+                end
+            elseif mode == "sheriff" then
                 local s = findHolder(G.MM_GunNames)
-                if s and s ~= me then table.insert(targets, s) end
+                if s and s ~= me and flingable(s) then table.insert(targets, s) end
             elseif mode == "murder" then
                 local murd = findHolder({"Knife"})
-                if murd and murd ~= me then table.insert(targets, murd) end
+                if murd and murd ~= me and flingable(murd) then table.insert(targets, murd) end
             else
                 if loopTargetUserId then
                     local pl = Players:GetPlayerByUserId(loopTargetUserId)
@@ -4991,7 +4991,7 @@ local COMMAND_HELP = {
     togglegun = "<player> - Auto-deliver gun to a player",
     toggleshoot = "[murderer | name] - Auto-grab dropped gun and silent-aim shoot",
     chat = "<msg> - Make bot send a public chat message",
-    banish = "<player> - Flings player off the map",
+    banish = "all | sheriff | murder | <name> — add loop to repeat, !banish alone stops",
     bring = "<player> [to] - Carry them to you, or to another player",
     help = "<cmd> - Show command list or explain one command",
 }
@@ -5333,11 +5333,6 @@ local function handleCommand(p, msg, viaPublic)
             mode, playerQuery = "murder", ""
         end
 
-        if continuousLoop and mode == "all" then
-            whisper("Use !banish all only")
-            return
-        end
-
         local matchLabel = mode
         if mode == "player" then
             local tgt = findOtherPlayer(work)
@@ -5354,15 +5349,14 @@ local function handleCommand(p, msg, viaPublic)
         local gen = flingLoopGen
         flingLoopActive = true
 
-        local loopArg = continuousLoop and mode ~= "all"
-        flingLoopContinuous = loopArg
-        runFlingLoop(mode, playerQuery, gen, loopArg)
-        if mode == "all" then
-            whisper("Banishing everyone")
-        elseif loopArg then
+        flingLoopContinuous = continuousLoop
+        runFlingLoop(mode, playerQuery, gen, continuousLoop)
+        if continuousLoop then
             whisper("Say !banish alone to stop the loop")
             task.wait(0.3)
-            whisper("Looping on: " .. matchLabel)
+            whisper("Looping on: " .. (mode == "all" and "everyone" or matchLabel))
+        elseif mode == "all" then
+            whisper("Banishing everyone")
         else
             whisper("Banishing " .. matchLabel)
         end
@@ -6225,10 +6219,13 @@ local function bridgeRunFlingOnce(mode, playerQuery, gen)
         for _, pl in ipairs(Players:GetPlayers()) do
             if gen ~= flingLoopGen or not flingLoopActive or not session.active then break end
             if pl ~= me and (not session.ownerId or pl.UserId ~= session.ownerId) and isAlive(pl) and isAlive(me) then
-                local flung = false
-                fling(pl, function(ok) flung = ok end)
-                waitFlingDone(gen, 25)
-                if flung then n = n + 1 end
+                local r = pl.Character and pl.Character:FindFirstChild("HumanoidRootPart")
+                if r and r.Position.Y < 430 then
+                    local flung = false
+                    fling(pl, function(ok) flung = ok end)
+                    waitFlingDone(gen, 25)
+                    if flung then n = n + 1 end
+                end
             end
         end
         if n > 0 then

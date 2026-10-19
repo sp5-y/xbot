@@ -1,4 +1,4 @@
---[[ Xeno V1.05 XBOT_BUILD 20261018d ]]--
+--[[ Xeno V1.05 XBOT_BUILD 20261018e ]]--
 local GRAPHICS = true
 local TARGET_FPS = 50
 local Players = game:GetService("Players")
@@ -4513,8 +4513,24 @@ function fling(target, onDone, kind)
             local h = workspace.FallenPartsDestroyHeight
             if typeof(h) == "number" and h == h then killY = h end
         end)
-        local safeFloor = killY + 130
-        local spin = Vector3.new(0, 9e4, 9e4)
+        local spin = Vector3.new(9e4, 9e4, 9e4)
+        local lockCF = nil
+        local punchLin = Vector3.zero
+        local bav
+        local function collideHit()
+            local char = me.Character
+            if not char then return end
+            pcall(function()
+                for _, n in ipairs({"HumanoidRootPart", "Torso", "UpperTorso", "LowerTorso", "Head"}) do
+                    local p = char:FindFirstChild(n)
+                    if p and p:IsA("BasePart") then
+                        p.CanCollide = true
+                        p.CanTouch = true
+                        p.Massless = false
+                    end
+                end
+            end)
+        end
         local function punchParts(char, lin, ang)
             pcall(function()
                 for _, n in ipairs({"HumanoidRootPart", "Torso", "UpperTorso", "LowerTorso"}) do
@@ -4529,18 +4545,43 @@ function fling(target, onDone, kind)
                 end
             end)
         end
+        local function voidDir(fromPos, fallback)
+            local params = RaycastParams.new()
+            params.FilterType = Enum.RaycastFilterType.Exclude
+            local ignore = {}
+            if me.Character then table.insert(ignore, me.Character) end
+            if target.Character then table.insert(ignore, target.Character) end
+            params.FilterDescendantsInstances = ignore
+            local best, bestDist = fallback, 0
+            for i = 0, 7 do
+                local a = i * math.pi / 4
+                local d = Vector3.new(math.cos(a), 0, math.sin(a))
+                local hit = workspace:Raycast(fromPos + Vector3.new(0, 3, 0), d * 500, params)
+                local dist = hit and hit.Distance or 500
+                if dist > bestDist then
+                    bestDist = dist
+                    best = d
+                end
+            end
+            return best
+        end
+        pcall(function()
+            local mh = hrp()
+            if not mh then return end
+            bav = Instance.new("BodyAngularVelocity")
+            bav.MaxTorque = Vector3.new(1e9, 1e9, 1e9)
+            bav.P = 1e9
+            bav.AngularVelocity = Vector3.new(0, 9e4, 9e4)
+            bav.Parent = mh
+        end)
         local guard = RunSvc.Stepped:Connect(function()
             pcall(function()
-                local char = me.Character
-                if not char then return end
-                for _, part in ipairs(char:GetDescendants()) do
-                    if part:IsA("BasePart") then
-                        part.CanCollide = false
-                    end
-                end
-                local mh = char:FindFirstChild("HumanoidRootPart")
-                if mh and mh.Position.Y < safeFloor then
-                    mh.CFrame = CFrame.new(mh.Position.X, safeFloor, mh.Position.Z)
+                collideHit()
+                local mh = hrp()
+                if mh and typeof(lockCF) == "CFrame" then
+                    mh.Anchored = false
+                    mh.CFrame = lockCF
+                    punchParts(me.Character, punchLin, spin)
                 end
             end)
         end)
@@ -4561,6 +4602,7 @@ function fling(target, onDone, kind)
                     hum0:SetStateEnabled(Enum.HumanoidStateType.Ragdoll, false)
                 end)
             end
+            collideHit()
             while flingActive and tick() < deadline and isAlive(me) do
                 if not isAlive(target) then
                     flung = true
@@ -4571,83 +4613,67 @@ function fling(target, onDone, kind)
                 local char = me.Character
                 local th = target.Character and target.Character:FindFirstChild("HumanoidRootPart")
                 if not mh or not char then break end
-                if mh.Position.Y < killY + 50 then
-                    snapFlingHome()
-                end
                 if not th then
                     if not isAir then flung = true end
-                    snapFlingHome()
+                    lockCF = nil
                     break
                 end
+                collideHit()
+                lockCF = th.CFrame
+                pcall(function()
+                    mh.Anchored = false
+                    mh.CFrame = lockCF
+                end)
                 if isAir then
-                    local thum = target.Character:FindFirstChildOfClass("Humanoid")
-                    local lead = flingApproachLead(th, thum)
-                    local oy = math.max(th.Position.Y + 1.5, startPos.Y + 8, safeFloor)
-                    pcall(function()
-                        mh.Anchored = false
-                        mh.CFrame = CFrame.new(th.Position.X + lead.X, oy, th.Position.Z + lead.Z)
-                    end)
-                    punchParts(char, Vector3.new(0, 1.1e5, 0), spin)
-                    if th.Position.Y > startPos.Y + 10 then flung = true end
+                    punchLin = Vector3.new(0, 4200, 0)
+                    punchParts(char, punchLin, spin)
+                    if th.Position.Y > startPos.Y + 8 then flung = true end
+                    local tv = th.AssemblyLinearVelocity
+                    if tv.Magnitude < 1 then tv = th.Velocity end
+                    if tv.Y > 40 or tv.Magnitude > 80 then flung = true end
                 else
                     if th.Position.Y <= killY + 40 then
                         flung = true
-                        snapFlingHome()
+                        lockCF = nil
                         break
                     end
                     local tv = th.AssemblyLinearVelocity
                     if tv.Magnitude < 1 then tv = th.Velocity end
-                    if th.Position.Y < -140 and tv.Y < -40 then
+                    local mapFloor = math.min(startPos.Y, 80)
+                    if th.Position.Y < mapFloor - 90 and tv.Y < -25 then
                         flung = true
-                        snapFlingHome()
-                        local tWatch = tick()
-                        local recovered = false
-                        while flingActive and tick() - tWatch < 3.2 do
-                            if not isAlive(target) then break end
-                            local thw = target.Character and target.Character:FindFirstChild("HumanoidRootPart")
-                            if not thw or thw.Position.Y <= killY + 40 then break end
-                            local wv = thw.AssemblyLinearVelocity
-                            if wv.Magnitude < 1 then wv = thw.Velocity end
-                            if thw.Position.Y > 30 and wv.Y > -20 then
-                                recovered = true
-                                flung = false
-                                break
-                            end
-                            snapFlingHome()
-                            RunSvc.Heartbeat:Wait()
-                        end
-                        if not recovered then break end
-                        tStart = tick()
-                    else
-                        local away = Vector3.new(th.Position.X, 0, th.Position.Z)
-                        if away.Magnitude < 3 then away = away0 else away = away.Unit end
-                        local oy = math.max(th.Position.Y, safeFloor)
-                        pcall(function()
-                            mh.Anchored = false
-                            mh.CFrame = CFrame.new(th.Position.X, oy, th.Position.Z)
-                        end)
-                        local punch
-                        if tick() - tStart < 0.2 then
-                            punch = Vector3.new(0, 9.5e4, 0)
-                        else
-                            punch = Vector3.new(away.X * 2.2e5, -1.2e6, away.Z * 2.2e5)
-                        end
-                        punchParts(char, punch, spin)
+                        lockCF = nil
+                        break
                     end
+                    local away = voidDir(th.Position, away0)
+                    punchLin = Vector3.new(away.X * 9000, -2200, away.Z * 9000)
+                    punchParts(char, punchLin, spin)
                 end
             end
+            lockCF = nil
             if not isAlive(target) then
                 flung = true
             elseif not isAir then
                 local thf = target.Character and target.Character:FindFirstChild("HumanoidRootPart")
-                if not thf or thf.Position.Y <= killY + 40 or thf.Position.Y < -140 then
+                if not thf or thf.Position.Y <= killY + 40 or thf.Position.Y < startPos.Y - 90 then
                     flung = true
                 end
+            elseif isAir then
+                local thf = target.Character and target.Character:FindFirstChild("HumanoidRootPart")
+                if thf and thf.Position.Y > startPos.Y + 6 then flung = true end
             end
+            pcall(function()
+                if bav then bav:Destroy() end
+            end)
+            bav = nil
             for _ = 1, 10 do
                 snapFlingHome()
                 RunSvc.Heartbeat:Wait()
             end
+        end)
+        lockCF = nil
+        pcall(function()
+            if bav then bav:Destroy() end
         end)
         guard:Disconnect()
         pcall(function()

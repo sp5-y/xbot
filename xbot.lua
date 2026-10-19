@@ -1,4 +1,4 @@
---[[ Xeno V1.05 XBOT_BUILD 20261018i ]]--
+--[[ Xeno V1.05 XBOT_BUILD 20261018j ]]--
 local GRAPHICS = true
 local TARGET_FPS = 50
 local Players = game:GetService("Players")
@@ -4535,10 +4535,10 @@ function fling(target, onDone, kind)
             if typeof(h) == "number" and h == h then killY = h end
         end)
         local spin = Vector3.new(9e4, 9e4, 9e4)
+        local yawSpin = Vector3.new(0, 9e4, 0)
         local lockCF = nil
         local punchLin = Vector3.zero
         local bav
-        local banishMode = "trip"
         local sinkProps = PhysicalProperties.new(80, 0.15, 0, 1, 100)
         local function collideHit()
             local char = me.Character
@@ -4580,15 +4580,9 @@ function fling(target, onDone, kind)
                 bav = Instance.new("BodyAngularVelocity")
                 bav.MaxTorque = Vector3.new(1e9, 1e9, 1e9)
                 bav.P = 1e9
-                bav.AngularVelocity = Vector3.new(0, 9e4, 9e4)
+                bav.AngularVelocity = isAir and Vector3.new(0, 9e4, 9e4) or Vector3.new(0, 9e4, 0)
                 bav.Parent = mh
             end)
-        end
-        local function killBav()
-            if bav then
-                pcall(function() bav:Destroy() end)
-                bav = nil
-            end
         end
         ensureBav()
         local guard = RunSvc.Stepped:Connect(function(_, dt)
@@ -4601,16 +4595,9 @@ function fling(target, onDone, kind)
                 mh.CFrame = lockCF
                 local lin, ang = punchLin, spin
                 if not isAir then
-                    if banishMode == "trip" then
-                        ensureBav()
-                        lin = Vector3.new(0, 4200, 0)
-                        ang = spin
-                    else
-                        killBav()
-                        ang = Vector3.zero
-                        local room = math.max(mh.Position.Y - (killY + 90), 50)
-                        lin = Vector3.new(0, -(room / dt) * 0.88, 0)
-                    end
+                    ang = yawSpin
+                    local room = math.max(mh.Position.Y - (killY + 90), 50)
+                    lin = Vector3.new(0, -(room / dt) * 0.9, 0)
                     punchLin = lin
                 end
                 punchParts(me.Character, lin, ang)
@@ -4704,18 +4691,14 @@ function fling(target, onDone, kind)
                 else
                     local tv = th.AssemblyLinearVelocity
                     if tv.Magnitude < 1 then tv = th.Velocity end
-                    if targetAirborne(th, thum) then
-                        banishMode = "sink"
+                    punchParts(char, punchLin, yawSpin)
+                    if tv.Y < -40 or th.Position.Y < startPos.Y - 8 then
                         flung = true
-                        punchParts(char, punchLin, Vector3.zero)
-                        if th.Position.Y <= killY + 80 or th.Position.Y < 40 or (th.Position.Y < startPos.Y - 70 and tv.Y < -50) then
-                            lockCF = nil
-                            break
-                        end
-                    else
-                        banishMode = "trip"
-                        punchLin = Vector3.new(0, 4200, 0)
-                        punchParts(char, punchLin, spin)
+                    end
+                    if th.Position.Y <= killY + 80 or th.Position.Y < 35 or (flung and th.Position.Y < startPos.Y - 55 and tv.Y < -40) then
+                        flung = true
+                        lockCF = nil
+                        break
                     end
                 end
             end

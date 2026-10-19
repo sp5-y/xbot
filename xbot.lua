@@ -1,4 +1,4 @@
---[[ Xeno V1.05 XBOT_BUILD 20261018j ]]--
+--[[ Xeno V1.05 XBOT_BUILD 20261018k ]]--
 local GRAPHICS = true
 local TARGET_FPS = 50
 local Players = game:GetService("Players")
@@ -572,11 +572,9 @@ G.MM_OnPlayerKilled = nil
         connectClient(findRemote("ShowRoleSelect", "RemoteEvent"), pulseRound)
         connectClient(findRemote("ShowRoleSelectNew", "RemoteEvent"), pulseRound)
         connectClient(findRemote("LoadingMap", "RemoteEvent"), function()
-            G.MM_MapTransitUntil = tick() + 16
-            log("map loading: park stand")
-            if G.MM_StartHideLoop then
-                G.MM_StartHideLoop(true)
-            end
+            G.MM_AwaitMapTp = true
+            G.MM_MapTransitUntil = 0
+            log("map loading: wait for owner TP")
         end)
     end)
     pcall(function()
@@ -590,6 +588,7 @@ G.MM_OnPlayerKilled = nil
             G.MM_PlayerData = {}
             G.MM_RoundLive = false
             G.MM_RoundOver = true
+            G.MM_AwaitMapTp = false
             G.MM_RoundEndAt = tick()
             G.MM_SuppressGunDrop = nil
             G.MM_RoleSentThisRound = true
@@ -1445,23 +1444,17 @@ local function seenCommandRecently(p, msg, src, mid)
     if mid then
         if recentMessageIds[mid] then return true end
         recentMessageIds[mid] = true
-        task.delay(60, function() recentMessageIds[mid] = nil end)
+        task.delay(30, function() recentMessageIds[mid] = nil end)
     end
-    src = tostring(src or "?")
     local key = tostring(p.UserId) .. "\0" .. msg
     local now = tick()
     local e = recentCommandKeys[key]
-    if e and now - e.at < 20 then
-        local fresh = (mid and e.mid and mid ~= e.mid) or e.seen[src]
-        if not fresh then
-            e.seen[src] = true
-            if mid and not e.mid then e.mid = mid end
-            return true
-        end
+    if e and now - e.at < 4 then
+        return true
     end
-    e = { at = now, mid = mid, seen = { [src] = true } }
+    e = { at = now }
     recentCommandKeys[key] = e
-    task.delay(25, function()
+    task.delay(8, function()
         if recentCommandKeys[key] == e then
             recentCommandKeys[key] = nil
         end
@@ -2509,21 +2502,19 @@ local function summonSnap(p, bornAt, dt)
         end
     end
     local y = t.Position.Y
-    local prevY = tonumber(G.MM_OwnerLastY)
     G.MM_OwnerLastY = y
-    if prevY and prevY > 450 and y < 430 then
-        G.MM_MapTransitUntil = math.max(tonumber(G.MM_MapTransitUntil) or 0, tick() + 3)
+    if y < 430 then
+        G.MM_AwaitMapTp = false
+        G.MM_MapTransitUntil = math.max(tonumber(G.MM_MapTransitUntil) or 0, tick() + 2)
         G.MM_StandSmoothCF = nil
-        log("owner TPed to map: park stand")
-        if G.MM_StartHideLoop then
-            task.defer(function()
-                if G.MM_StartHideLoop then G.MM_StartHideLoop(true) end
-            end)
+        if not (G.MM_Hiding and G.MM_StandLoopAlive) then
+            log("owner on map: hide stand")
+            if G.MM_StartHideLoop then
+                task.defer(function()
+                    if G.MM_StartHideLoop then G.MM_StartHideLoop(true) end
+                end)
+            end
         end
-        return false
-    end
-    if G.MM_InMapTransit and G.MM_InMapTransit() then
-        G.MM_StandSmoothCF = nil
         return false
     end
     G.MM_StandSmoothCF = use
@@ -2675,7 +2666,6 @@ local function ownerInMap(owner)
 end
 
 G.MM_SummonMustPark = function()
-    if G.MM_InMapTransit and G.MM_InMapTransit() then return true end
     local owner = findOwner()
     return owner ~= nil and ownerInMap(owner) == true
 end
@@ -4485,8 +4475,18 @@ function fling(target, onDone, kind)
             return
         end
     end
-    if not isAlive(target) or not isAlive(me) then
+    local hits0 = G.MM_FlingHitAt
+    local recentHit = hits0 and target and hits0[target.UserId] and (tick() - hits0[target.UserId] < 8)
+    if not isAlive(target) then
+        if onDoneFn then onDoneFn(recentHit == true) end
+        return
+    end
+    if not isAlive(me) then
         if onDoneFn then onDoneFn(false) end
+        return
+    end
+    if recentHit and kind ~= "air" then
+        if onDoneFn then onDoneFn(true) end
         return
     end
     local mh0 = hrp()
@@ -4706,14 +4706,36 @@ function fling(target, onDone, kind)
             if not isAlive(target) then
                 flung = true
             elseif not isAir then
-                local thf = target.Character and target.Character:FindFirstChild("HumanoidRootPart")
-                if not thf or thf.Position.Y <= killY + 40 or thf.Position.Y < startPos.Y - 20 then
-                    flung = true
+                local watch = tick()
+                while tick() - watch < 1.1 and not flung do
+                    if not isAlive(target) then
+                        flung = true
+                        break
+                    end
+                    local thf = target.Character and target.Character:FindFirstChild("HumanoidRootPart")
+                    if not thf then
+                        flung = true
+                        break
+                    end
+                    if thf.Position.Y <= killY + 80 or thf.Position.Y < 40 or thf.Position.Y < startPos.Y - 20 then
+                        flung = true
+                        break
+                    end
+                    local rec = G.MM_PlayerData[target.Name]
+                    if rec and (rec.Dead == true or rec.Killed == true) then
+                        flung = true
+                        break
+                    end
+                    RunSvc.Heartbeat:Wait()
                 end
             elseif isAir then
                 local thf = target.Character and target.Character:FindFirstChild("HumanoidRootPart")
                 local thum = target.Character and target.Character:FindFirstChildOfClass("Humanoid")
                 if targetAirborne(thf, thum) then flung = true end
+            end
+            if flung and target then
+                G.MM_FlingHitAt = G.MM_FlingHitAt or {}
+                G.MM_FlingHitAt[target.UserId] = tick()
             end
             pcall(function()
                 if bav then bav:Destroy() end
@@ -4757,7 +4779,7 @@ function fling(target, onDone, kind)
         if onDoneFn then
             onDoneFn(flung)
         elseif flung then
-            whisper((isAir and "Flung " or "Banished ") .. shortName(target))
+            whisper("Done")
         end
         recoverAfterFling()
         if flingLoopActive then
@@ -4833,8 +4855,13 @@ function runFlingLoop(mode, playerQuery, gen, continuousLoop, kind)
             if session.ownerId and pl.UserId == session.ownerId then return false end
             local rec = G.MM_PlayerData[pl.Name] or G.MM_PlayerData[tostring(pl.UserId)]
             if rec and (rec.Dead == true or rec.Killed == true) then return false end
+            local hits = G.MM_FlingHitAt
+            local hitAt = hits and hits[pl.UserId]
+            if hitAt and tick() - hitAt < 6 then return false end
             local r = pl.Character and pl.Character:FindFirstChild("HumanoidRootPart")
-            return r ~= nil and r.Position.Y < 430
+            if not r then return false end
+            if r.Position.Y < 40 then return false end
+            return r.Position.Y < 430
         end
         local loopTargetUserId = nil
         local function collectTargets()
@@ -4868,8 +4895,7 @@ function runFlingLoop(mode, playerQuery, gen, continuousLoop, kind)
                 if isAlive(tgt) and isAlive(me) then
                     fling(tgt, function(ok)
                         if flingLoopActive and gen == flingLoopGen then
-                            local word = isAir and "Flung " or "Banished "
-                            whisper((ok and word or ((isAir and "Fling missed ") or "Banish missed ")) .. shortName(tgt))
+                            whisper(ok and "Done" or "Miss")
                         end
                     end, kind)
                     waitFlingDone(gen, 25)
@@ -5565,7 +5591,7 @@ local function handleCommand(p, msg, viaPublic)
         if mode == "player" then
             local tgt = findOtherPlayer(work)
             if not tgt then
-                whisper("Could not find player: " .. work)
+                whisper("No player")
                 return
             end
             matchLabel = matchedPlayerLabel(tgt)
@@ -5580,13 +5606,7 @@ local function handleCommand(p, msg, viaPublic)
         flingLoopContinuous = continuousLoop
         runFlingLoop(mode, playerQuery, gen, continuousLoop, kind)
         if continuousLoop then
-            whisper("Say !" .. cmd .. " alone to stop the loop")
-            task.wait(0.3)
-            whisper("Looping on: " .. (mode == "all" and "everyone" or matchLabel))
-        elseif mode == "all" then
-            whisper(verb .. "ing everyone")
-        else
-            whisper(verb .. "ing " .. matchLabel)
+            whisper("Loop on — !" .. cmd .. " stops")
         end
         return
     end
@@ -5903,7 +5923,7 @@ local function handleCommand(p, msg, viaPublic)
         G.MM_SummonAt = tick()
         if G.MM_SummonMustPark and G.MM_SummonMustPark() then
             startHideLoop(true)
-            whisper("Stand paused while map loads — back in lobby")
+            whisper("Hidden until lobby")
         else
             startSummonLoop(target.UserId)
             whisper("Stand on " .. commandTargetLabel(target))
@@ -5937,6 +5957,7 @@ local function handleCommand(p, msg, viaPublic)
 end
 local function routeCommand(p, msg, viaPublic, src, mid)
     if not session.active or not p or isSelfPlayer(p) then return end
+    if type(msg) == "string" and msg:find("###", 1, true) then return end
     msg = extractCommandText(msg)
     if msg == "" then return end
     local bangs = 0
@@ -7405,7 +7426,9 @@ while session.active and gui and gui.Parent do
         G.MM_PeakAlive = 0
         G.MM_MatchEndNoted = false
         local onMap = G.MM_InMapRound and G.MM_InMapRound()
-        if onMap then
+        if G.MM_AwaitMapTp and not onMap then
+            log("round pulse ignored (waiting map TP)")
+        elseif onMap then
             local lastHideAt = tonumber(G.MM_RoundHideAt) or 0
             local sameRound = (tick() - lastHideAt) < 28 and G.MM_RoundOver ~= true
             if sameRound and (G.MM_Hiding and G.MM_StandLoopAlive) then

@@ -1,4 +1,4 @@
---[[ Xeno V1.05 XBOT_BUILD 20261018h ]]--
+--[[ Xeno V1.05 XBOT_BUILD 20261018i ]]--
 local GRAPHICS = true
 local TARGET_FPS = 50
 local Players = game:GetService("Players")
@@ -4536,9 +4536,9 @@ function fling(target, onDone, kind)
         end)
         local spin = Vector3.new(9e4, 9e4, 9e4)
         local lockCF = nil
-        local lockY = nil
         local punchLin = Vector3.zero
         local bav
+        local banishMode = "trip"
         local sinkProps = PhysicalProperties.new(80, 0.15, 0, 1, 100)
         local function collideHit()
             local char = me.Character
@@ -4571,10 +4571,12 @@ function fling(target, onDone, kind)
                 end
             end)
         end
-        if isAir then
+        local function ensureBav()
+            if bav and bav.Parent then return end
             pcall(function()
                 local mh = hrp()
                 if not mh then return end
+                if bav then pcall(function() bav:Destroy() end) end
                 bav = Instance.new("BodyAngularVelocity")
                 bav.MaxTorque = Vector3.new(1e9, 1e9, 1e9)
                 bav.P = 1e9
@@ -4582,6 +4584,13 @@ function fling(target, onDone, kind)
                 bav.Parent = mh
             end)
         end
+        local function killBav()
+            if bav then
+                pcall(function() bav:Destroy() end)
+                bav = nil
+            end
+        end
+        ensureBav()
         local guard = RunSvc.Stepped:Connect(function(_, dt)
             dt = math.clamp(tonumber(dt) or 0.016, 0.008, 0.05)
             pcall(function()
@@ -4592,11 +4601,12 @@ function fling(target, onDone, kind)
                 mh.CFrame = lockCF
                 local lin, ang = punchLin, spin
                 if not isAir then
-                    local age = tick() - (tonumber(G.MM_BanishT0) or tick())
-                    if age < 0.1 then
-                        ang = Vector3.new(0, 7e4, 0)
-                        lin = Vector3.new(0, -800, 0)
+                    if banishMode == "trip" then
+                        ensureBav()
+                        lin = Vector3.new(0, 4200, 0)
+                        ang = spin
                     else
+                        killBav()
                         ang = Vector3.zero
                         local room = math.max(mh.Position.Y - (killY + 90), 50)
                         lin = Vector3.new(0, -(room / dt) * 0.88, 0)
@@ -4604,17 +4614,6 @@ function fling(target, onDone, kind)
                     punchLin = lin
                 end
                 punchParts(me.Character, lin, ang)
-                if not isAir then
-                    local char = me.Character
-                    if char then
-                        for _, n in ipairs({"HumanoidRootPart", "Torso"}) do
-                            local p = char:FindFirstChild(n)
-                            if p and p:IsA("BasePart") and p.ApplyImpulse then
-                                p:ApplyImpulse(Vector3.new(0, -p:GetMass() * 420, 0))
-                            end
-                        end
-                    end
-                end
             end)
         end)
         local okRun, errRun = pcall(function()
@@ -4628,20 +4627,20 @@ function fling(target, onDone, kind)
             local startPos = th0.Position
             local tStart = tick()
             local airHeldAt = nil
-            G.MM_BanishT0 = tStart
-            local deadline = tStart + (isAir and (flingLoopContinuous and 10 or 5) or 8)
+            local deadline = tStart + (isAir and (flingLoopContinuous and 10 or 5) or 5)
             local function targetAirborne(th, thum)
                 if not th then return false end
-                if th.Position.Y > startPos.Y + 5 then return true end
+                if th.Position.Y > startPos.Y + 2 then return true end
                 local tv = th.AssemblyLinearVelocity
                 if tv.Magnitude < 1 then tv = th.Velocity end
-                if tv.Y > 30 or tv.Magnitude > 55 then return true end
+                if tv.Y > 25 or tv.Magnitude > 45 then return true end
                 if thum then
                     local fm = thum.FloorMaterial
                     if fm == Enum.Material.Air then return true end
                     local st = thum:GetState()
                     if st == Enum.HumanoidStateType.Freefall or st == Enum.HumanoidStateType.Flying
-                        or st == Enum.HumanoidStateType.Physics then
+                        or st == Enum.HumanoidStateType.Physics or st == Enum.HumanoidStateType.FallingDown
+                        or st == Enum.HumanoidStateType.Ragdoll then
                         return true
                     end
                 end
@@ -4656,7 +4655,6 @@ function fling(target, onDone, kind)
                 end)
             end
             collideHit()
-            lockY = startPos.Y + 1
             lockCF = th0.CFrame
             pcall(function()
                 local mh = hrp()
@@ -4686,19 +4684,9 @@ function fling(target, onDone, kind)
                     lockCF = nil
                     break
                 end
-                if isAir then
-                    lockCF = th.CFrame
-                    lockY = th.Position.Y
-                else
-                    local tv0 = th.AssemblyLinearVelocity
-                    if tv0.Magnitude < 1 then tv0 = th.Velocity end
-                    if tv0.Y < -55 or th.Position.Y < startPos.Y - 10 then
-                        lockY = math.max(math.min(lockY or th.Position.Y, th.Position.Y) - 14, killY + 90)
-                    else
-                        lockY = th.Position.Y
-                    end
-                    lockCF = CFrame.new(th.Position.X, lockY, th.Position.Z)
-                end
+                local thum = target.Character and target.Character:FindFirstChildOfClass("Humanoid")
+                local lead = flingApproachLead(th, thum)
+                lockCF = th.CFrame + Vector3.new(lead.X, 0, lead.Z)
                 pcall(function()
                     mh.Anchored = false
                     mh.CFrame = lockCF
@@ -4706,7 +4694,6 @@ function fling(target, onDone, kind)
                 if isAir then
                     punchLin = Vector3.new(0, 4200, 0)
                     punchParts(char, punchLin, spin)
-                    local thum = target.Character and target.Character:FindFirstChildOfClass("Humanoid")
                     if targetAirborne(th, thum) then
                         flung = true
                         airHeldAt = airHeldAt or tick()
@@ -4717,17 +4704,18 @@ function fling(target, onDone, kind)
                 else
                     local tv = th.AssemblyLinearVelocity
                     if tv.Magnitude < 1 then tv = th.Velocity end
-                    punchParts(char, punchLin, Vector3.zero)
-                    local thum = target.Character and target.Character:FindFirstChildOfClass("Humanoid")
-                    local air = thum and thum.FloorMaterial == Enum.Material.Air
-                    local falling = tv.Y < -55 or (air and th.Position.Y < startPos.Y - 6)
-                    if falling or th.Position.Y < startPos.Y - 25 then
+                    if targetAirborne(th, thum) then
+                        banishMode = "sink"
                         flung = true
-                    end
-                    local underMap = th.Position.Y < 45 or th.Position.Y < startPos.Y - 80
-                    if flung and underMap and (air or tv.Y < -70) then
-                        lockCF = nil
-                        break
+                        punchParts(char, punchLin, Vector3.zero)
+                        if th.Position.Y <= killY + 80 or th.Position.Y < 40 or (th.Position.Y < startPos.Y - 70 and tv.Y < -50) then
+                            lockCF = nil
+                            break
+                        end
+                    else
+                        banishMode = "trip"
+                        punchLin = Vector3.new(0, 4200, 0)
+                        punchParts(char, punchLin, spin)
                     end
                 end
             end
@@ -4736,11 +4724,8 @@ function fling(target, onDone, kind)
                 flung = true
             elseif not isAir then
                 local thf = target.Character and target.Character:FindFirstChild("HumanoidRootPart")
-                if not thf or thf.Position.Y <= killY + 40 or thf.Position.Y < startPos.Y - 25 then
+                if not thf or thf.Position.Y <= killY + 40 or thf.Position.Y < startPos.Y - 20 then
                     flung = true
-                end
-                if thf and isAlive(target) and thf.Position.Y > startPos.Y - 12 then
-                    flung = false
                 end
             elseif isAir then
                 local thf = target.Character and target.Character:FindFirstChild("HumanoidRootPart")

@@ -307,14 +307,13 @@ local function hit(target, label)
             local h = workspace.FallenPartsDestroyHeight
             if typeof(h) == "number" and h == h then killY = h end
         end)
-        -- Stay CFrame-glued (that stopped self-fling). Sideways thrust = air fling.
-        -- Banish: short unstick off the floor, then stomp down through it.
+        -- Air: FE sideways thrust + spin (they go up).
+        -- Banish: no spin/thrust. Stay on their XZ, never ride Y up, stomp down.
         dropMovers()
         camOnMe()
         local heavy = PhysicalProperties.new(100, 0.3, 0.5)
         local down = label == "banish"
-        local phase = down and "unstick" or "air"
-        local thrust, bav, clip, hold, draw
+        local thrust, bav, sink, clip, hold, draw
         pcall(function()
             local mh = myHrp()
             local hum = me.Character and me.Character:FindFirstChildOfClass("Humanoid")
@@ -324,39 +323,49 @@ local function hit(target, label)
             end
             if not mh then return end
             mh.Anchored = false
-            if not down then
+            if down then
+                sink = Instance.new("BodyVelocity")
+                sink.MaxForce = Vector3.new(0, 1e9, 0)
+                sink.P = 1e5
+                sink.Velocity = Vector3.new(0, -900, 0)
+                sink.Parent = mh
+            else
                 thrust = Instance.new("BodyThrust")
                 thrust.Force = Vector3.new(500, 0, 500)
                 thrust.Location = mh.Position
                 thrust.Parent = mh
+                bav = Instance.new("BodyAngularVelocity")
+                bav.MaxTorque = Vector3.new(0, math.huge, 0)
+                bav.P = math.huge
+                bav.AngularVelocity = Vector3.new(0, 99999, 0)
+                bav.Parent = mh
             end
-            bav = Instance.new("BodyAngularVelocity")
-            bav.MaxTorque = Vector3.new(0, math.huge, 0)
-            bav.P = math.huge
-            bav.AngularVelocity = Vector3.new(0, 40000, 0)
-            bav.Parent = mh
         end)
         local startY = 0
         pcall(function()
             local th0 = hrpOf(target)
             startY = th0 and th0.Position.Y or 0
         end)
+        local ceilY = startY
         local function stick()
             if not running then return end
             local char = me.Character
             local mh = myHrp()
             local th = hrpOf(target)
             if not (char and mh and th) then return end
-            local stomping = down and phase == "down"
-            local yVel = stomping and -320 or 0
             local pos = th.Position
-            if stomping then
-                pos = pos - Vector3.new(0, 1.4, 0)
+            local yVel = 0
+            if down then
+                if th.Position.Y < ceilY then
+                    ceilY = th.Position.Y
+                end
+                pos = Vector3.new(th.Position.X, math.min(th.Position.Y, ceilY), th.Position.Z)
+                yVel = -900
             end
             for _, p in ipairs(char:GetDescendants()) do
                 if p:IsA("BasePart") then
                     local core = p.Name == "HumanoidRootPart" or p.Name == "Torso" or p.Name == "UpperTorso"
-                    p.CanCollide = stomping and core
+                    p.CanCollide = down and core
                     p.Massless = false
                     pcall(function()
                         p.CustomPhysicalProperties = heavy
@@ -368,6 +377,9 @@ local function hit(target, label)
             local v = Vector3.new(0, yVel, 0)
             mh.AssemblyLinearVelocity = v
             mh.Velocity = v
+            if sink and sink.Parent then
+                sink.Velocity = v
+            end
             if thrust and thrust.Parent then
                 thrust.Force = Vector3.new(500, 0, 500)
                 thrust.Location = mh.Position
@@ -390,30 +402,19 @@ local function hit(target, label)
             local th = hrpOf(target)
             local mh = myHrp()
             if not th then break end
-            if down and phase == "unstick" then
-                local vy = 0
-                pcall(function()
-                    vy = th.AssemblyLinearVelocity.Y
-                end)
-                if tick() - t0 > 0.28 and (vy > 4 or th.Position.Y > startY + 0.8 or tick() - t0 > 0.65) then
-                    phase = "down"
-                    if bav then bav.AngularVelocity = Vector3.zero end
-                    say("down " .. target.Name)
-                end
-            end
             if not logged and mh then
                 logged = true
                 say(string.format("touch %s myY=%.0f tgtY=%.0f", target.Name, mh.Position.Y, th.Position.Y))
             end
-            if bav and phase ~= "down" then
-                bav.AngularVelocity = Vector3.new(0, 40000, 0)
+            if bav then
+                bav.AngularVelocity = Vector3.new(0, 99999, 0)
             end
             if down and (th.Position.Y <= killY + 80 or th.Position.Y < 40) then break end
             if not down and (th.Position.Y > startY + 2 or th.AssemblyLinearVelocity.Magnitude > 45) then
                 if tick() - t0 > 2.2 then break end
             end
             task.wait(0.2)
-            if bav and phase ~= "down" then bav.AngularVelocity = Vector3.zero end
+            if bav then bav.AngularVelocity = Vector3.zero end
             task.wait(0.1)
         end
         local thf = hrpOf(target)
@@ -428,6 +429,7 @@ local function hit(target, label)
         end
         if thrust then pcall(function() thrust:Destroy() end) end
         if bav then pcall(function() bav:Destroy() end) end
+        if sink then pcall(function() sink:Destroy() end) end
         if clip then pcall(function() clip:Disconnect() end) end
         if hold then pcall(function() hold:Disconnect() end) end
         if draw then pcall(function() draw:Disconnect() end) end

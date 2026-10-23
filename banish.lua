@@ -145,9 +145,9 @@ local function cleanup(home)
         end
     end)
     pcall(function()
-        _G.MM_FlingBusy = false
-        _G.MM_StandPaused = false
-        if _G.MM_ActionEnd then _G.MM_ActionEnd() end
+        env.MM_FlingBusy = false
+        env.MM_StandPaused = false
+        if env.MM_ActionEnd then env.MM_ActionEnd() end
     end)
     busy = false
 end
@@ -192,14 +192,16 @@ local function hit(target, label)
         return
     end
     busy = true
+    local oldNoclip = env.MM_StandNoclip
     pcall(function()
-        if _G.MM_PauseStand then _G.MM_PauseStand() end
-        _G.MM_StandPaused = true
-        _G.MM_FlingBusy = true
-        _G.MM_FollowGen = (tonumber(_G.MM_FollowGen) or 0) + 1
-        _G.MM_StandLoopAlive = false
-        if _G.MM_DisableAntiFling then _G.MM_DisableAntiFling() end
-        if _G.MM_ActionBegin then _G.MM_ActionBegin() end
+        if env.MM_PauseStand then env.MM_PauseStand() end
+        env.MM_StandPaused = true
+        env.MM_FlingBusy = true
+        env.MM_FollowGen = (tonumber(env.MM_FollowGen) or 0) + 1
+        env.MM_StandLoopAlive = false
+        env.MM_StandNoclip = function() end
+        if env.MM_DisableAntiFling then env.MM_DisableAntiFling() end
+        if env.MM_ActionBegin then env.MM_ActionBegin() end
     end)
     say(label .. " " .. target.Name)
     task.spawn(function()
@@ -208,6 +210,17 @@ local function hit(target, label)
         pcall(function()
             local h = workspace.FallenPartsDestroyHeight
             if typeof(h) == "number" and h == h then killY = h end
+        end)
+        -- Stand hides under the map. Flinging from there just yeets us into the sky.
+        pcall(function()
+            local mh = myHrp()
+            local th = hrpOf(target)
+            if mh and th and mh.Position.Y < 50 then
+                say(string.format("lift from y=%.0f", mh.Position.Y))
+                mh.Anchored = false
+                mh.CFrame = th.CFrame * CFrame.new(0, 2, 2)
+                RunSvc.Heartbeat:Wait()
+            end
         end)
         camOnMe()
         local spin = Vector3.new(9e4, 9e4, 9e4)
@@ -284,6 +297,9 @@ local function hit(target, label)
         end
         if bav then pcall(function() bav:Destroy() end) end
         if guard then pcall(function() guard:Disconnect() end) end
+        pcall(function()
+            env.MM_StandNoclip = oldNoclip
+        end)
         if not running then return end
         cleanup(home)
         spectate(target, true)

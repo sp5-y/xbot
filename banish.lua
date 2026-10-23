@@ -133,7 +133,8 @@ local function dropMovers()
         local char = me.Character
         if not char then return end
         for _, d in ipairs(char:GetDescendants()) do
-            if d:IsA("BodyAngularVelocity") or d:IsA("BodyVelocity") or d:IsA("BodyPosition") then
+            if d:IsA("BodyAngularVelocity") or d:IsA("BodyVelocity") or d:IsA("BodyPosition")
+                or d:IsA("BodyThrust") or d:IsA("BodyForce") then
                 d:Destroy()
             end
         end
@@ -143,6 +144,18 @@ end
 local function cleanup(home)
     dropMovers()
     pcall(function()
+        local char = me.Character
+        if char then
+            for _, p in ipairs(char:GetDescendants()) do
+                if p:IsA("BasePart") then
+                    p.CanCollide = true
+                    p.Massless = false
+                    pcall(function()
+                        p.CustomPhysicalProperties = PhysicalProperties.new(0.7, 0.3, 0.5)
+                    end)
+                end
+            end
+        end
         local mh = myHrp()
         if mh then
             mh.Anchored = false
@@ -294,22 +307,12 @@ local function hit(target, label)
             local h = workspace.FallenPartsDestroyHeight
             if typeof(h) == "number" and h == h then killY = h end
         end)
-        -- Get ON them first. Do not start the punch from under the map.
-        for _ = 1, 8 do
-            local mh = myHrp()
-            local th = hrpOf(target)
-            if mh and th then
-                mh.Anchored = false
-                mh.CFrame = th.CFrame
-                say(string.format("on them myY=%.0f tgtY=%.0f", mh.Position.Y, th.Position.Y))
-                break
-            end
-            RunSvc.Heartbeat:Wait()
-        end
+        -- FE Fling / IY: noclip US, zero our vel, BAV + BodyThrust. +4200 is what
+        -- launched the bot into the sky. https://github.com/retpirato/Roblox-Scripts
+        dropMovers()
         camOnMe()
-        local spin = Vector3.new(9e4, 9e4, 9e4)
-        local up = Vector3.new(0, 4200, 0)
-        local bav, guard
+        local heavy = PhysicalProperties.new(100, 0.3, 0.5)
+        local thrust, bav, clip
         pcall(function()
             local mh = myHrp()
             local hum = me.Character and me.Character:FindFirstChildOfClass("Humanoid")
@@ -319,10 +322,14 @@ local function hit(target, label)
             end
             if not mh then return end
             mh.Anchored = false
+            thrust = Instance.new("BodyThrust")
+            thrust.Force = label == "banish" and Vector3.new(2000, -4000, 2000) or Vector3.new(2000, 2000, 2000)
+            thrust.Location = mh.Position
+            thrust.Parent = mh
             bav = Instance.new("BodyAngularVelocity")
-            bav.MaxTorque = Vector3.new(1e9, 1e9, 1e9)
-            bav.P = 1e9
-            bav.AngularVelocity = Vector3.new(0, 9e4, 9e4)
+            bav.MaxTorque = Vector3.new(0, math.huge, 0)
+            bav.P = math.huge
+            bav.AngularVelocity = Vector3.new(0, 99999, 0)
             bav.Parent = mh
         end)
         local startY = 0
@@ -330,44 +337,55 @@ local function hit(target, label)
             local th0 = hrpOf(target)
             startY = th0 and th0.Position.Y or 0
         end)
-        guard = track(RunSvc.Stepped:Connect(function()
+        clip = track(RunSvc.Stepped:Connect(function()
             pcall(function()
                 if not running then return end
+                local char = me.Character
                 local mh = myHrp()
                 local th = hrpOf(target)
-                local char = me.Character
-                if not (mh and th and char) then return end
-                mh.Anchored = false
-                mh.CFrame = th.CFrame
-                for _, n in ipairs({"HumanoidRootPart", "Torso", "UpperTorso", "LowerTorso"}) do
-                    local p = char:FindFirstChild(n)
-                    if p and p:IsA("BasePart") then
-                        p.CanCollide = true
-                        p.Anchored = false
-                        p.Massless = false
-                        if n == "HumanoidRootPart" then
-                            p.CFrame = th.CFrame
-                        end
-                        p.AssemblyLinearVelocity = up
-                        p.Velocity = up
-                        p.AssemblyAngularVelocity = spin
-                        p.RotVelocity = spin
+                if not (char and mh) then return end
+                for _, p in ipairs(char:GetDescendants()) do
+                    if p:IsA("BasePart") then
+                        p.CanCollide = false
+                        p.Massless = true
+                        pcall(function()
+                            p.CustomPhysicalProperties = heavy
+                        end)
                     end
                 end
-                mh.CFrame = th.CFrame
+                mh.Anchored = false
+                mh.AssemblyLinearVelocity = Vector3.zero
+                mh.Velocity = Vector3.zero
+                if th then
+                    mh.CFrame = CFrame.new(th.Position) * (mh.CFrame - mh.CFrame.Position)
+                end
+                if thrust and thrust.Parent then
+                    thrust.Location = mh.Position
+                end
             end)
         end))
         local t0 = tick()
         local hold = label == "banish" and 8 or 5
+        local logged = false
         while running and tick() - t0 < hold and alive(me) do
             if not target.Parent or not alive(target) then break end
             local th = hrpOf(target)
+            local mh = myHrp()
             if not th then break end
+            if not logged and mh then
+                logged = true
+                say(string.format("touch %s myY=%.0f tgtY=%.0f", target.Name, mh.Position.Y, th.Position.Y))
+            end
+            if bav then
+                bav.AngularVelocity = Vector3.new(0, 99999, 0)
+            end
             if label == "banish" and (th.Position.Y <= killY + 80 or th.Position.Y < 40) then break end
             if label ~= "banish" and (th.Position.Y > startY + 2 or th.AssemblyLinearVelocity.Magnitude > 45) then
                 if tick() - t0 > 2.2 then break end
             end
-            RunSvc.Heartbeat:Wait()
+            task.wait(0.2)
+            if bav then bav.AngularVelocity = Vector3.zero end
+            task.wait(0.1)
         end
         local thf = hrpOf(target)
         local y = thf and math.floor(thf.Position.Y + 0.5) or 0
@@ -379,8 +397,9 @@ local function hit(target, label)
             win = thf and thf.Position.Y > startY + 2
             say((win and "flung " or "miss ") .. target.Name .. " y=" .. tostring(y))
         end
+        if thrust then pcall(function() thrust:Destroy() end) end
         if bav then pcall(function() bav:Destroy() end) end
-        if guard then pcall(function() guard:Disconnect() end) end
+        if clip then pcall(function() clip:Disconnect() end) end
         pcall(function()
             env.MM_StandNoclip = oldNoclip
         end)

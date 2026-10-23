@@ -164,6 +164,10 @@ local function cleanup(home)
         for _, p in ipairs(char:GetDescendants()) do
             if p:IsA("BasePart") then
                 p.CanCollide = true
+                p.Massless = false
+                pcall(function()
+                    p.CustomPhysicalProperties = PhysicalProperties.new(0.7, 0.3, 0.5)
+                end)
                 p.AssemblyLinearVelocity = Vector3.zero
                 p.AssemblyAngularVelocity = Vector3.zero
                 p.Velocity = Vector3.zero
@@ -245,8 +249,31 @@ local function collideAll()
     end
 end
 
--- Stay glued to their CFrame. Velocity is only a hit; we never ride it
--- into the void (that resets us, not them).
+local function widenSim()
+    pcall(function()
+        local sh = sethiddenproperty or set_hidden_property or set_hidden_prop
+        if sh then
+            sh(me, "SimulationRadius", 1e6)
+            sh(me, "MaximumSimulationRadius", 1e6)
+        end
+        me.MaximumSimulationRadius = 1e6
+        me.SimulationRadius = 1e6
+    end)
+end
+
+local function eachBody(fn)
+    local char = me.Character
+    if not char then return end
+    for _, n in ipairs({"HumanoidRootPart", "Torso", "UpperTorso", "LowerTorso", "Head"}) do
+        local p = char:FindFirstChild(n)
+        if p and p:IsA("BasePart") then
+            fn(p)
+        end
+    end
+end
+
+-- Replicate a downward slam (Heartbeat), zero it before our physics (Stepped)
+-- so they get the hit and we do not ride it into the void.
 local function banish(target)
     if busy then return end
     if not target or target == me then
@@ -273,11 +300,12 @@ local function banish(target)
             if typeof(h) == "number" and h == h then killY = h end
         end)
         protectVoid(true)
+        widenSim()
         camOnMe()
-        local spin = Vector3.new(9e4, 9e4, 9e4)
-        local up = Vector3.new(0, 4200, 0)
-        local bav, guard, hold
-        local abort = false
+        local slam = Vector3.new(0, -8e4, 0)
+        local yaw = Vector3.new(0, 99999, 0)
+        local heavy = PhysicalProperties.new(100, 0.3, 0.5)
+        local bav, pre, post, draw
         local ok, err = pcall(function()
             local th0
             for _ = 1, 12 do
@@ -289,7 +317,6 @@ local function banish(target)
                 say("no hrp")
                 return
             end
-            local startY = th0.Position.Y
             local hum0 = me.Character and me.Character:FindFirstChildOfClass("Humanoid")
             if hum0 then
                 pcall(function()
@@ -305,118 +332,96 @@ local function banish(target)
                 local mh = myHrp()
                 if not mh then return end
                 bav = Instance.new("BodyAngularVelocity")
-                bav.MaxTorque = Vector3.new(1e9, 1e9, 1e9)
+                bav.Name = "banishSpin"
+                bav.MaxTorque = Vector3.new(0, 1e9, 0)
                 bav.P = 1e9
-                bav.AngularVelocity = Vector3.new(0, 9e4, 9e4)
+                bav.AngularVelocity = yaw
                 bav.Parent = mh
             end)
-            local phase = "pop"
-            local t0 = tick()
-            local function loose(th, thum)
-                if not th then return false end
-                if th.Position.Y > startY + 1.1 then return true end
-                if th.Position.Y < startY - 3 then return true end
-                local tv = th.AssemblyLinearVelocity
-                if tv.Magnitude < 1 then tv = th.Velocity end
-                if tv.Y > 18 or tv.Y < -22 then return true end
-                if thum then
-                    if thum.FloorMaterial == Enum.Material.Air then return true end
-                    local st = thum:GetState()
-                    if st == Enum.HumanoidStateType.Freefall
-                        or st == Enum.HumanoidStateType.Flying
-                        or st == Enum.HumanoidStateType.Physics
-                        or st == Enum.HumanoidStateType.FallingDown
-                        or st == Enum.HumanoidStateType.Ragdoll then
-                        return true
-                    end
-                end
-                return false
-            end
-            local function stick(th)
+            local function stick(th, keepSpin)
                 local mh = myHrp()
                 if not (mh and th) then return mh end
                 mh.Anchored = false
-                mh.CFrame = th.CFrame
+                if keepSpin then
+                    mh.CFrame = CFrame.new(th.Position) * (mh.CFrame - mh.CFrame.Position)
+                else
+                    mh.CFrame = th.CFrame
+                end
                 return mh
             end
-            local function punch(lin)
-                local char = me.Character
-                if not char then return end
-                for _, n in ipairs({"HumanoidRootPart", "Torso", "UpperTorso", "LowerTorso"}) do
-                    local p = char:FindFirstChild(n)
-                    if p and p:IsA("BasePart") then
-                        p.CanCollide = true
-                        p.Anchored = false
-                        p.Massless = false
-                        p.AssemblyLinearVelocity = lin
-                        p.Velocity = lin
-                        p.AssemblyAngularVelocity = spin
-                        p.RotVelocity = spin
-                    end
-                end
+            local function zeroVel()
+                eachBody(function(p)
+                    p.Anchored = false
+                    p.Massless = true
+                    p.CanCollide = false
+                    pcall(function()
+                        p.CustomPhysicalProperties = heavy
+                    end)
+                    p.AssemblyLinearVelocity = Vector3.zero
+                    p.Velocity = Vector3.zero
+                end)
             end
-            local function unsafe(mh, th)
-                if not mh then return true end
-                if mh.Position.Y < 80 then return true end
-                if th and (mh.Position - th.Position).Magnitude > 40 then return true end
-                return false
+            local function slamVel()
+                eachBody(function(p)
+                    p.Anchored = false
+                    p.Massless = true
+                    p.CanCollide = false
+                    pcall(function()
+                        p.CustomPhysicalProperties = heavy
+                    end)
+                    p.AssemblyLinearVelocity = slam
+                    p.Velocity = slam
+                    p.AssemblyAngularVelocity = yaw
+                    p.RotVelocity = yaw
+                end)
             end
-            guard = track(RunSvc.Stepped:Connect(function(_, dt)
+            -- Before our physics: sit on them, zero vel so we do not fall.
+            pre = track(RunSvc.Stepped:Connect(function()
                 pcall(function()
-                    if not running or abort then return end
-                    dt = math.clamp(tonumber(dt) or 0.016, 0.008, 0.05)
+                    if not running then return end
+                    widenSim()
                     local th = hrpOf(target)
-                    local mh = stick(th)
-                    if not (mh and th) then return end
-                    if unsafe(mh, th) then
-                        stick(th)
-                        if unsafe(mh, th) then
-                            abort = true
-                            snapHome(home)
-                            say("aborted — kept us, not the void")
-                        end
-                        return
-                    end
-                    local thum = target.Character and target.Character:FindFirstChildOfClass("Humanoid")
-                    if phase == "pop" and loose(th, thum) then
-                        phase = "sink"
-                        say(string.format("sink t=%.2f tgtY=%.0f", tick() - t0, th.Position.Y))
-                    elseif phase == "sink" then
-                        local tv = th.AssemblyLinearVelocity
-                        if tv.Magnitude < 1 then tv = th.Velocity end
-                        local glued = th.Position.Y > startY - 1.2 and math.abs(tv.Y) < 8
-                        if thum and thum.FloorMaterial == Enum.Material.Air then
-                            glued = false
-                        end
-                        if glued and not loose(th, thum) then
-                            phase = "pop"
-                        end
-                    end
-                    -- Cap so one physics step cannot throw US through the map.
-                    local down = Vector3.new(0, -math.min(1800, 28 / dt), 0)
-                    punch(phase == "sink" and down or up)
-                    stick(th)
+                    stick(th, true)
+                    zeroVel()
+                    if bav then bav.AngularVelocity = yaw end
                 end)
             end))
-            hold = track(RunSvc.Heartbeat:Connect(function()
+            -- After our physics: pulse the slam so it replicates onto them.
+            post = track(RunSvc.Heartbeat:Connect(function()
                 pcall(function()
-                    if not running or abort then return end
+                    if not running then return end
                     local th = hrpOf(target)
-                    local mh = stick(th)
-                    if mh and unsafe(mh, th) then
-                        stick(th)
-                        if unsafe(mh, th) then
-                            abort = true
-                            snapHome(home)
-                        end
-                    end
+                    stick(th, true)
+                    slamVel()
                 end)
             end))
-            while running and not abort and tick() - t0 < 10 and alive(me) do
+            draw = track(RunSvc.RenderStepped:Connect(function()
+                pcall(function()
+                    if not running then return end
+                    local th = hrpOf(target)
+                    stick(th, true)
+                    zeroVel()
+                end)
+            end))
+            local t0 = tick()
+            local logged = false
+            while running and tick() - t0 < 8 and alive(me) do
                 if not target.Parent or not alive(target) then break end
                 local th = hrpOf(target)
                 if not th or th.Position.Y <= killY + 80 or th.Position.Y < 40 then break end
-                RunSvc.Heartbeat:Wait()
+                if not logged then
+                    logged = true
+                    local mh = myHrp()
+                    say(string.format("slam myY=%.0f tgtY=%.0f", mh and mh.Position.Y or 0, th.Position.Y))
+                end
+                if bav then
+                    bav.AngularVelocity = yaw
+                    task.wait(0.2)
+                    if bav then bav.AngularVelocity = Vector3.zero end
+                    task.wait(0.08)
+                else
+                    RunSvc.Heartbeat:Wait()
+                end
             end
             local thf = hrpOf(target)
             local y = thf and math.floor(thf.Position.Y + 0.5) or 0
@@ -425,8 +430,9 @@ local function banish(target)
         end)
         if not ok then say("error " .. tostring(err)) end
         if bav then pcall(function() bav:Destroy() end) end
-        if guard then pcall(function() guard:Disconnect() end) end
-        if hold then pcall(function() hold:Disconnect() end) end
+        if pre then pcall(function() pre:Disconnect() end) end
+        if post then pcall(function() post:Disconnect() end) end
+        if draw then pcall(function() draw:Disconnect() end) end
         snapHome(home)
         if not running then
             protectVoid(false)

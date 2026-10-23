@@ -299,13 +299,11 @@ local function banish(target)
             local h = workspace.FallenPartsDestroyHeight
             if typeof(h) == "number" and h == h then killY = h end
         end)
-        protectVoid(true)
         widenSim()
         camOnMe()
-        local slam = Vector3.new(0, -8e4, 0)
-        local yaw = Vector3.new(0, 99999, 0)
-        local heavy = PhysicalProperties.new(100, 0.3, 0.5)
-        local bav, pre, post, draw
+        local slam = Vector3.new(0, -4200, 0)
+        local spin = Vector3.new(9e4, 9e4, 9e4)
+        local bav, guard
         local ok, err = pcall(function()
             local th0
             for _ = 1, 12 do
@@ -322,85 +320,42 @@ local function banish(target)
                 pcall(function()
                     hum0.PlatformStand = true
                     hum0.AutoRotate = false
-                    hum0.BreakJointsOnDeath = false
                     hum0:SetStateEnabled(Enum.HumanoidStateType.FallingDown, false)
                     hum0:SetStateEnabled(Enum.HumanoidStateType.Ragdoll, false)
-                    hum0:SetStateEnabled(Enum.HumanoidStateType.Dead, false)
                 end)
             end
             pcall(function()
                 local mh = myHrp()
                 if not mh then return end
                 bav = Instance.new("BodyAngularVelocity")
-                bav.Name = "banishSpin"
-                bav.MaxTorque = Vector3.new(0, 1e9, 0)
+                bav.MaxTorque = Vector3.new(1e9, 1e9, 1e9)
                 bav.P = 1e9
-                bav.AngularVelocity = yaw
+                bav.AngularVelocity = Vector3.new(0, 9e4, 9e4)
                 bav.Parent = mh
             end)
-            local function stick(th, keepSpin)
+            local function putOn(th)
                 local mh = myHrp()
-                if not (mh and th) then return mh end
+                if not (mh and th) then return end
                 mh.Anchored = false
-                if keepSpin then
-                    mh.CFrame = CFrame.new(th.Position) * (mh.CFrame - mh.CFrame.Position)
-                else
-                    mh.CFrame = th.CFrame
-                end
-                return mh
-            end
-            local function zeroVel()
+                mh.CFrame = th.CFrame
                 eachBody(function(p)
                     p.Anchored = false
-                    p.Massless = true
-                    p.CanCollide = false
-                    pcall(function()
-                        p.CustomPhysicalProperties = heavy
-                    end)
-                    p.AssemblyLinearVelocity = Vector3.zero
-                    p.Velocity = Vector3.zero
-                end)
-            end
-            local function slamVel()
-                eachBody(function(p)
-                    p.Anchored = false
-                    p.Massless = true
-                    p.CanCollide = false
-                    pcall(function()
-                        p.CustomPhysicalProperties = heavy
-                    end)
+                    p.Massless = false
+                    p.CanCollide = true
+                    p.CanTouch = true
                     p.AssemblyLinearVelocity = slam
                     p.Velocity = slam
-                    p.AssemblyAngularVelocity = yaw
-                    p.RotVelocity = yaw
+                    p.AssemblyAngularVelocity = spin
+                    p.RotVelocity = spin
                 end)
+                mh.CFrame = th.CFrame
             end
-            -- Before our physics: sit on them, zero vel so we do not fall.
-            pre = track(RunSvc.Stepped:Connect(function()
-                pcall(function()
-                    if not running then return end
-                    widenSim()
-                    local th = hrpOf(target)
-                    stick(th, true)
-                    zeroVel()
-                    if bav then bav.AngularVelocity = yaw end
-                end)
-            end))
-            -- After our physics: pulse the slam so it replicates onto them.
-            post = track(RunSvc.Heartbeat:Connect(function()
+            -- Stepped CFrame is what other clients actually see.
+            guard = track(RunSvc.Stepped:Connect(function()
                 pcall(function()
                     if not running then return end
                     local th = hrpOf(target)
-                    stick(th, true)
-                    slamVel()
-                end)
-            end))
-            draw = track(RunSvc.RenderStepped:Connect(function()
-                pcall(function()
-                    if not running then return end
-                    local th = hrpOf(target)
-                    stick(th, true)
-                    zeroVel()
+                    if th then putOn(th) end
                 end)
             end))
             local t0 = tick()
@@ -412,16 +367,9 @@ local function banish(target)
                 if not logged then
                     logged = true
                     local mh = myHrp()
-                    say(string.format("slam myY=%.0f tgtY=%.0f", mh and mh.Position.Y or 0, th.Position.Y))
+                    say(string.format("on them dist=%.2f myY=%.0f tgtY=%.0f", mh and (mh.Position - th.Position).Magnitude or -1, mh and mh.Position.Y or 0, th.Position.Y))
                 end
-                if bav then
-                    bav.AngularVelocity = yaw
-                    task.wait(0.2)
-                    if bav then bav.AngularVelocity = Vector3.zero end
-                    task.wait(0.08)
-                else
-                    RunSvc.Heartbeat:Wait()
-                end
+                RunSvc.Heartbeat:Wait()
             end
             local thf = hrpOf(target)
             local y = thf and math.floor(thf.Position.Y + 0.5) or 0
@@ -430,14 +378,9 @@ local function banish(target)
         end)
         if not ok then say("error " .. tostring(err)) end
         if bav then pcall(function() bav:Destroy() end) end
-        if pre then pcall(function() pre:Disconnect() end) end
-        if post then pcall(function() post:Disconnect() end) end
-        if draw then pcall(function() draw:Disconnect() end) end
+        if guard then pcall(function() guard:Disconnect() end) end
         snapHome(home)
-        if not running then
-            protectVoid(false)
-            return
-        end
+        if not running then return end
         cleanup(home)
         spectate(target, true)
     end)
@@ -463,7 +406,6 @@ local function airFling(target)
     say("air-fling " .. target.Name)
     task.spawn(function()
         local home = myHrp() and myHrp().CFrame
-        protectVoid(true)
         camOnMe()
         local spin = Vector3.new(9e4, 9e4, 9e4)
         local bav, guard, hold

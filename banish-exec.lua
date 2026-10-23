@@ -1,15 +1,43 @@
 -- paste this on any device — fetches latest banish.lua
+local Players = game:GetService("Players")
 local CoreGui = game:GetService("CoreGui")
+local me = Players.LocalPlayer
+
+local function uiParent()
+    local ok, h
+    if type(gethui) == "function" then
+        ok, h = pcall(gethui)
+        if ok and typeof(h) == "Instance" then return h end
+    end
+    if type(get_hidden_ui) == "function" then
+        ok, h = pcall(get_hidden_ui)
+        if ok and typeof(h) == "Instance" then return h end
+    end
+    local pg = me:FindFirstChildOfClass("PlayerGui")
+    if not pg then
+        pcall(function()
+            pg = me:WaitForChild("PlayerGui", 3)
+        end)
+    end
+    return pg or CoreGui
+end
+
 local gui = Instance.new("ScreenGui")
 gui.Name, gui.ResetOnSpawn = "BanishLoader", false
+gui.IgnoreGuiInset = true
+gui.Enabled = true
 pcall(function()
-    gui.Parent = CoreGui
+    gui.DisplayOrder = 100000
 end)
-if not gui.Parent then
-    gui.Parent = game:GetService("Players").LocalPlayer:WaitForChild("PlayerGui")
-end
+pcall(function()
+    if syn and syn.protect_gui then
+        syn.protect_gui(gui)
+    end
+end)
+gui.Parent = uiParent()
+
 local box = Instance.new("Frame", gui)
-box.Size, box.Position = UDim2.new(0, 420, 0, 120), UDim2.new(1, -440, 0, 20)
+box.Size, box.Position = UDim2.new(0, 420, 0, 120), UDim2.new(0.5, -210, 0, 80)
 box.BackgroundColor3, box.BorderSizePixel = Color3.fromRGB(18, 18, 24), 0
 Instance.new("UICorner", box).CornerRadius = UDim.new(0, 8)
 local title = Instance.new("TextLabel", box)
@@ -49,7 +77,7 @@ if not src then
     src = httpGet("https://cdn.jsdelivr.net/gh/sp5-y/xbot@main/banish.lua?v=" .. nonce)
 end
 if not src then
-    status.Text = "Download failed"
+    status.Text = "Download failed — panel stays so you can see this"
     return
 end
 status.Text = "Starting"
@@ -59,7 +87,10 @@ if not fn then
     return
 end
 local ok, runErr = pcall(fn)
-gui:Destroy()
 if not ok then
-    warn("[banish] runtime: " .. tostring(runErr))
+    status.Text = "Runtime failed:\n" .. tostring(runErr)
+    return
 end
+pcall(function()
+    gui:Destroy()
+end)

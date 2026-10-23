@@ -167,11 +167,65 @@ local function cleanup(home)
 end
 
 local gui
+local function uiParent()
+    local ok, h
+    if type(gethui) == "function" then
+        ok, h = pcall(gethui)
+        if ok and typeof(h) == "Instance" then return h end
+    end
+    if type(get_hidden_ui) == "function" then
+        ok, h = pcall(get_hidden_ui)
+        if ok and typeof(h) == "Instance" then return h end
+    end
+    local pg = me:FindFirstChildOfClass("PlayerGui")
+    if not pg then
+        pcall(function()
+            pg = me:WaitForChild("PlayerGui", 3)
+        end)
+    end
+    if pg then return pg end
+    return CoreGui
+end
+
+local function parentGui(g)
+    pcall(function()
+        if syn and syn.protect_gui then
+            syn.protect_gui(g)
+        end
+    end)
+    g.ResetOnSpawn = false
+    g.IgnoreGuiInset = true
+    g.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+    pcall(function()
+        g.DisplayOrder = 100000
+    end)
+    g.Enabled = true
+    g.Parent = uiParent()
+    if not g.Parent then
+        g.Parent = CoreGui
+    end
+    print("[banish] panel parent=" .. tostring(g.Parent))
+end
+
 local function killGui()
     pcall(function()
         if gui then gui:Destroy() end
-        local old = CoreGui:FindFirstChild("BanishPanel")
-        if old then old:Destroy() end
+        for _, name in ipairs({"BanishPanel", "BanishLoader"}) do
+            local old = CoreGui:FindFirstChild(name)
+            if old then old:Destroy() end
+            local pg = me:FindFirstChildOfClass("PlayerGui")
+            if pg then
+                old = pg:FindFirstChild(name)
+                if old then old:Destroy() end
+            end
+            if type(gethui) == "function" then
+                local ok, h = pcall(gethui)
+                if ok and h then
+                    old = h:FindFirstChild(name)
+                    if old then old:Destroy() end
+                end
+            end
+        end
     end)
     gui, statusLbl, targetLbl, nameBox = nil, nil, nil, nil
 end
@@ -363,17 +417,10 @@ local function makePanel()
     killGui()
     gui = Instance.new("ScreenGui")
     gui.Name = "BanishPanel"
-    gui.ResetOnSpawn = false
-    gui.IgnoreGuiInset = true
-    pcall(function()
-        gui.Parent = CoreGui
-    end)
-    if not gui.Parent then
-        gui.Parent = me:FindFirstChildOfClass("PlayerGui") or me:WaitForChild("PlayerGui")
-    end
+    parentGui(gui)
     local box = Instance.new("Frame", gui)
     box.Size = UDim2.new(0, 420, 0, 168)
-    box.Position = UDim2.new(1, -440, 0, 20)
+    box.Position = UDim2.new(0.5, -210, 0, 80)
     box.BackgroundColor3 = Color3.fromRGB(18, 18, 24)
     box.BorderSizePixel = 0
     Instance.new("UICorner", box).CornerRadius = UDim.new(0, 8)

@@ -1,6 +1,6 @@
 --[[ banish.lua ]]--
 -- .s <name>   spectate
--- .b [name]   void (same hit as .f, down)
+-- .b [name]   same working fling, held until void
 -- .f [name]   air-fling
 local env = _G
 pcall(function()
@@ -176,7 +176,7 @@ local function unload()
 end
 env.__banish_unload = unload
 
--- Sit on them. No spin, no slam — those fling US into the sky.
+-- The hit that actually worked: on their CFrame, collide, +Y 4200, 3-axis spin.
 local function hit(target, label)
     if busy then return end
     if not target or target == me then
@@ -204,49 +204,89 @@ local function hit(target, label)
     say(label .. " " .. target.Name)
     task.spawn(function()
         local home = myHrp() and myHrp().CFrame
-        dropMovers()
-        camOnMe()
+        local killY = -500
         pcall(function()
+            local h = workspace.FallenPartsDestroyHeight
+            if typeof(h) == "number" and h == h then killY = h end
+        end)
+        camOnMe()
+        local spin = Vector3.new(9e4, 9e4, 9e4)
+        local up = Vector3.new(0, 4200, 0)
+        local bav, guard
+        pcall(function()
+            local mh = myHrp()
             local hum = me.Character and me.Character:FindFirstChildOfClass("Humanoid")
             if hum then
                 hum.PlatformStand = true
                 hum.AutoRotate = false
             end
+            if not mh then return end
+            mh.Anchored = false
+            bav = Instance.new("BodyAngularVelocity")
+            bav.MaxTorque = Vector3.new(1e9, 1e9, 1e9)
+            bav.P = 1e9
+            bav.AngularVelocity = Vector3.new(0, 9e4, 9e4)
+            bav.Parent = mh
         end)
-        local guard = track(RunSvc.Stepped:Connect(function()
+        local startY = 0
+        pcall(function()
+            local th0 = hrpOf(target)
+            startY = th0 and th0.Position.Y or 0
+        end)
+        guard = track(RunSvc.Stepped:Connect(function()
             pcall(function()
                 if not running then return end
-                camOnMe()
-                dropMovers()
                 local mh = myHrp()
                 local th = hrpOf(target)
                 local char = me.Character
                 if not (mh and th and char) then return end
-                local at = th.CFrame * CFrame.new(0, 2, 0)
-                mh.AssemblyLinearVelocity = Vector3.zero
-                mh.AssemblyAngularVelocity = Vector3.zero
-                mh.Velocity = Vector3.zero
-                mh.RotVelocity = Vector3.zero
-                mh.Anchored = true
-                pcall(function()
-                    char:PivotTo(at)
-                end)
-                mh.CFrame = at
+                mh.Anchored = false
+                mh.CFrame = th.CFrame
+                for _, n in ipairs({"HumanoidRootPart", "Torso", "UpperTorso", "LowerTorso"}) do
+                    local p = char:FindFirstChild(n)
+                    if p and p:IsA("BasePart") then
+                        p.CanCollide = true
+                        p.Anchored = false
+                        p.Massless = false
+                        if n == "HumanoidRootPart" then
+                            p.CFrame = th.CFrame
+                        end
+                        p.AssemblyLinearVelocity = up
+                        p.Velocity = up
+                        p.AssemblyAngularVelocity = spin
+                        p.RotVelocity = spin
+                    end
+                end
+                mh.CFrame = th.CFrame
             end)
         end))
         local t0 = tick()
-        while running and tick() - t0 < 6 and alive(me) do
+        local hold = label == "banish" and 8 or 5
+        while running and tick() - t0 < hold and alive(me) do
+            if not target.Parent or not alive(target) then break end
             local th = hrpOf(target)
-            if not (th and target.Parent and alive(target)) then break end
+            if not th then break end
+            if label == "banish" and (th.Position.Y <= killY + 80 or th.Position.Y < 40) then break end
+            if label ~= "banish" and (th.Position.Y > startY + 2 or th.AssemblyLinearVelocity.Magnitude > 45) then
+                if tick() - t0 > 2.2 then break end
+            end
             RunSvc.Heartbeat:Wait()
         end
-        local mh, th = myHrp(), hrpOf(target)
-        local dist = (mh and th) and (mh.Position - th.Position).Magnitude or -1
-        say(string.format("lock dist=%.1f myY=%.0f tgtY=%.0f", dist, mh and mh.Position.Y or 0, th and th.Position.Y or 0))
+        local thf = hrpOf(target)
+        local y = thf and math.floor(thf.Position.Y + 0.5) or 0
+        local win
+        if label == "banish" then
+            win = (not alive(target)) or (thf and (thf.Position.Y <= killY + 80 or thf.Position.Y < 40)) or not target.Parent
+            say((win and "voided " or "miss ") .. target.Name .. " y=" .. tostring(y))
+        else
+            win = thf and thf.Position.Y > startY + 2
+            say((win and "flung " or "miss ") .. target.Name .. " y=" .. tostring(y))
+        end
+        if bav then pcall(function() bav:Destroy() end) end
         if guard then pcall(function() guard:Disconnect() end) end
         if not running then return end
         cleanup(home)
-        camOnMe()
+        spectate(target, true)
     end)
 end
 

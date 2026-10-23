@@ -1,4 +1,27 @@
 -- paste this on any device — fetches latest banish.lua
+local CoreGui = game:GetService("CoreGui")
+local gui = Instance.new("ScreenGui")
+gui.Name, gui.ResetOnSpawn = "BanishLoader", false
+pcall(function()
+    gui.Parent = CoreGui
+end)
+if not gui.Parent then
+    gui.Parent = game:GetService("Players").LocalPlayer:WaitForChild("PlayerGui")
+end
+local box = Instance.new("Frame", gui)
+box.Size, box.Position = UDim2.new(0, 420, 0, 120), UDim2.new(1, -440, 0, 20)
+box.BackgroundColor3, box.BorderSizePixel = Color3.fromRGB(18, 18, 24), 0
+Instance.new("UICorner", box).CornerRadius = UDim.new(0, 8)
+local title = Instance.new("TextLabel", box)
+title.Size, title.Position, title.BackgroundTransparency = UDim2.new(1, -20, 0, 24), UDim2.new(0, 10, 0, 8), 1
+title.Font, title.TextSize, title.TextColor3 = Enum.Font.GothamBold, 14, Color3.fromRGB(180, 125, 255)
+title.TextXAlignment, title.Text = Enum.TextXAlignment.Left, "Banish Loader"
+local status = Instance.new("TextLabel", box)
+status.Size, status.Position, status.BackgroundTransparency = UDim2.new(1, -20, 1, -42), UDim2.new(0, 10, 0, 34), 1
+status.Font, status.TextSize, status.TextWrapped = Enum.Font.Gotham, 13, true
+status.TextColor3, status.TextXAlignment, status.TextYAlignment = Color3.fromRGB(235, 235, 245), Enum.TextXAlignment.Left, Enum.TextYAlignment.Top
+status.Text = "Downloading banish"
+
 local function httpGet(url)
     local ok, body = pcall(function()
         return game:HttpGet(url)
@@ -26,12 +49,17 @@ if not src then
     src = httpGet("https://cdn.jsdelivr.net/gh/sp5-y/xbot@main/banish.lua?v=" .. nonce)
 end
 if not src then
-    warn("[banish] download failed")
+    status.Text = "Download failed"
     return
 end
+status.Text = "Starting"
 local fn, err = loadstring(src)
 if not fn then
-    warn("[banish] compile failed: " .. tostring(err))
+    status.Text = "Compile failed:\n" .. tostring(err)
     return
 end
-fn()
+local ok, runErr = pcall(fn)
+gui:Destroy()
+if not ok then
+    warn("[banish] runtime: " .. tostring(runErr))
+end

@@ -1,7 +1,5 @@
 --[[ banish.lua ]]--
--- .s <name>   spectate
--- .b [name]   same working fling, held until void
--- .f [name]   air-fling
+-- panel buttons or .s / .b / .f
 local env = _G
 pcall(function()
     if type(getgenv) == "function" and type(getgenv()) == "table" then
@@ -15,11 +13,13 @@ end
 local Players = game:GetService("Players")
 local RunSvc = game:GetService("RunService")
 local TCS = game:GetService("TextChatService")
+local CoreGui = game:GetService("CoreGui")
 local me = Players.LocalPlayer
 local cam = workspace.CurrentCamera
 local busy, specPl, running = false, nil, true
 local lastCmdAt, lastCmdKey = 0, ""
 local conns = {}
+local statusLbl, targetLbl, nameBox
 
 local function track(c)
     if c then
@@ -29,7 +29,20 @@ local function track(c)
 end
 
 local function say(t)
-    print("[banish] " .. tostring(t))
+    t = tostring(t)
+    print("[banish] " .. t)
+    if statusLbl then
+        statusLbl.Text = t
+    end
+end
+
+local function setTargetLabel()
+    if not targetLbl then return end
+    if specPl and specPl.Parent then
+        targetLbl.Text = "Target: " .. specPl.Name
+    else
+        targetLbl.Text = "Target: none"
+    end
 end
 
 local function hrpOf(p)
@@ -99,6 +112,7 @@ local function spectate(p, silent)
             cam.CameraSubject = hum or hrpOf(p)
         end
     end)
+    setTargetLabel()
     if not silent then say("spectating " .. p.Name) end
     return true
 end
@@ -152,6 +166,16 @@ local function cleanup(home)
     busy = false
 end
 
+local gui
+local function killGui()
+    pcall(function()
+        if gui then gui:Destroy() end
+        local old = CoreGui:FindFirstChild("BanishPanel")
+        if old then old:Destroy() end
+    end)
+    gui, statusLbl, targetLbl, nameBox = nil, nil, nil, nil
+end
+
 local function unload()
     running = false
     busy = false
@@ -169,6 +193,7 @@ local function unload()
             hum.AutoRotate = true
         end
     end)
+    killGui()
     if env.__banish_unload == unload then
         env.__banish_unload = nil
     end
@@ -176,11 +201,13 @@ local function unload()
 end
 env.__banish_unload = unload
 
--- The hit that actually worked: on their CFrame, collide, +Y 4200, 3-axis spin.
 local function hit(target, label)
-    if busy then return end
+    if busy then
+        say("busy")
+        return
+    end
     if not target or target == me then
-        say("no target — spectate someone or .s <name>")
+        say("no target — type a name or spectate")
         return
     end
     if not alive(target) then
@@ -192,6 +219,8 @@ local function hit(target, label)
         return
     end
     busy = true
+    specPl = target
+    setTargetLabel()
     local oldNoclip = env.MM_StandNoclip
     pcall(function()
         if env.MM_PauseStand then env.MM_PauseStand() end
@@ -211,17 +240,18 @@ local function hit(target, label)
             local h = workspace.FallenPartsDestroyHeight
             if typeof(h) == "number" and h == h then killY = h end
         end)
-        -- Stand hides under the map. Flinging from there just yeets us into the sky.
-        pcall(function()
+        -- Get ON them first. Do not start the punch from under the map.
+        for _ = 1, 8 do
             local mh = myHrp()
             local th = hrpOf(target)
-            if mh and th and mh.Position.Y < 50 then
-                say(string.format("lift from y=%.0f", mh.Position.Y))
+            if mh and th then
                 mh.Anchored = false
-                mh.CFrame = th.CFrame * CFrame.new(0, 2, 2)
-                RunSvc.Heartbeat:Wait()
+                mh.CFrame = th.CFrame
+                say(string.format("on them myY=%.0f tgtY=%.0f", mh.Position.Y, th.Position.Y))
+                break
             end
-        end)
+            RunSvc.Heartbeat:Wait()
+        end
         camOnMe()
         local spin = Vector3.new(9e4, 9e4, 9e4)
         local up = Vector3.new(0, 4200, 0)
@@ -306,6 +336,103 @@ local function hit(target, label)
     end)
 end
 
+local function typedTarget()
+    local q = nameBox and nameBox.Text or ""
+    q = (q:match("^%s*(.-)%s*$") or "")
+    if q ~= "" then return findPl(q) end
+    return currentTarget()
+end
+
+local function mkBtn(parent, text, x, color, fn)
+    local b = Instance.new("TextButton")
+    b.Size = UDim2.new(0, 88, 0, 28)
+    b.Position = UDim2.new(0, x, 1, -36)
+    b.BackgroundColor3 = color
+    b.BorderSizePixel = 0
+    b.Font = Enum.Font.GothamBold
+    b.TextSize = 12
+    b.TextColor3 = Color3.fromRGB(255, 255, 255)
+    b.Text = text
+    b.Parent = parent
+    Instance.new("UICorner", b).CornerRadius = UDim.new(0, 6)
+    b.MouseButton1Click:Connect(fn)
+    return b
+end
+
+local function makePanel()
+    killGui()
+    gui = Instance.new("ScreenGui")
+    gui.Name = "BanishPanel"
+    gui.ResetOnSpawn = false
+    gui.IgnoreGuiInset = true
+    pcall(function()
+        gui.Parent = CoreGui
+    end)
+    if not gui.Parent then
+        gui.Parent = me:FindFirstChildOfClass("PlayerGui") or me:WaitForChild("PlayerGui")
+    end
+    local box = Instance.new("Frame", gui)
+    box.Size = UDim2.new(0, 420, 0, 168)
+    box.Position = UDim2.new(1, -440, 0, 20)
+    box.BackgroundColor3 = Color3.fromRGB(18, 18, 24)
+    box.BorderSizePixel = 0
+    Instance.new("UICorner", box).CornerRadius = UDim.new(0, 8)
+    local title = Instance.new("TextLabel", box)
+    title.Size = UDim2.new(1, -20, 0, 22)
+    title.Position = UDim2.new(0, 10, 0, 8)
+    title.BackgroundTransparency = 1
+    title.Font = Enum.Font.GothamBold
+    title.TextSize = 14
+    title.TextColor3 = Color3.fromRGB(180, 125, 255)
+    title.TextXAlignment = Enum.TextXAlignment.Left
+    title.Text = "Banish"
+    targetLbl = Instance.new("TextLabel", box)
+    targetLbl.Size = UDim2.new(1, -20, 0, 16)
+    targetLbl.Position = UDim2.new(0, 10, 0, 30)
+    targetLbl.BackgroundTransparency = 1
+    targetLbl.Font = Enum.Font.Gotham
+    targetLbl.TextSize = 12
+    targetLbl.TextColor3 = Color3.fromRGB(180, 180, 195)
+    targetLbl.TextXAlignment = Enum.TextXAlignment.Left
+    targetLbl.Text = "Target: none"
+    statusLbl = Instance.new("TextLabel", box)
+    statusLbl.Size = UDim2.new(1, -20, 0, 36)
+    statusLbl.Position = UDim2.new(0, 10, 0, 48)
+    statusLbl.BackgroundTransparency = 1
+    statusLbl.Font = Enum.Font.Gotham
+    statusLbl.TextSize = 13
+    statusLbl.TextWrapped = true
+    statusLbl.TextColor3 = Color3.fromRGB(235, 235, 245)
+    statusLbl.TextXAlignment = Enum.TextXAlignment.Left
+    statusLbl.TextYAlignment = Enum.TextYAlignment.Top
+    statusLbl.Text = "Ready"
+    nameBox = Instance.new("TextBox", box)
+    nameBox.Size = UDim2.new(1, -20, 0, 28)
+    nameBox.Position = UDim2.new(0, 10, 0, 88)
+    nameBox.BackgroundColor3 = Color3.fromRGB(28, 28, 36)
+    nameBox.BorderSizePixel = 0
+    nameBox.Font = Enum.Font.Gotham
+    nameBox.TextSize = 13
+    nameBox.TextColor3 = Color3.fromRGB(235, 235, 245)
+    nameBox.PlaceholderText = "player name"
+    nameBox.PlaceholderColor3 = Color3.fromRGB(120, 120, 135)
+    nameBox.Text = ""
+    nameBox.ClearTextOnFocus = false
+    Instance.new("UICorner", nameBox).CornerRadius = UDim.new(0, 6)
+    mkBtn(box, "Spectate", 10, Color3.fromRGB(70, 70, 90), function()
+        if not spectate(typedTarget()) then say("no player") end
+    end)
+    mkBtn(box, "Banish", 108, Color3.fromRGB(140, 60, 200), function()
+        hit(typedTarget(), "banish")
+    end)
+    mkBtn(box, "Fling", 206, Color3.fromRGB(50, 110, 190), function()
+        hit(typedTarget(), "air-fling")
+    end)
+    mkBtn(box, "Close", 322, Color3.fromRGB(70, 50, 50), function()
+        unload()
+    end)
+end
+
 local function onChat(msg)
     if not running then return end
     msg = tostring(msg or ""):gsub("^%s+", ""):gsub("%s+$", "")
@@ -348,8 +475,12 @@ task.spawn(function()
         task.wait(0.25)
         if not running then break end
         local ok, p = pcall(fromCam)
-        if ok and p then specPl = p end
+        if ok and p then
+            specPl = p
+            setTargetLabel()
+        end
     end
 end)
 
-say("ready — .s name, .b void, .f air")
+makePanel()
+say("ready — use the panel or .s / .b / .f")

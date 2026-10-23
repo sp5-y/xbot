@@ -129,8 +129,36 @@ local function dropMovers()
     end)
 end
 
+local savedFPDH
+local function protectVoid(on)
+    pcall(function()
+        if on then
+            if type(savedFPDH) ~= "number" then
+                savedFPDH = workspace.FallenPartsDestroyHeight
+            end
+            workspace.FallenPartsDestroyHeight = -1e6
+        elseif type(savedFPDH) == "number" then
+            workspace.FallenPartsDestroyHeight = savedFPDH
+        end
+    end)
+end
+
+local function snapHome(home)
+    local mh = myHrp()
+    if not mh then return end
+    pcall(function()
+        mh.Anchored = false
+        mh.AssemblyLinearVelocity = Vector3.zero
+        mh.AssemblyAngularVelocity = Vector3.zero
+        mh.Velocity = Vector3.zero
+        mh.RotVelocity = Vector3.zero
+        if home then mh.CFrame = home end
+    end)
+end
+
 local function cleanup(home)
     pcall(function()
+        snapHome(home)
         local char = me.Character
         if not char then return end
         for _, p in ipairs(char:GetDescendants()) do
@@ -142,19 +170,20 @@ local function cleanup(home)
                 p.RotVelocity = Vector3.zero
             end
         end
+        snapHome(home)
         local hum = char:FindFirstChildOfClass("Humanoid")
         if hum then
             hum.PlatformStand = false
             hum.AutoRotate = true
             hum:SetStateEnabled(Enum.HumanoidStateType.FallingDown, true)
             hum:SetStateEnabled(Enum.HumanoidStateType.Ragdoll, true)
+            hum:SetStateEnabled(Enum.HumanoidStateType.Dead, true)
         end
         local anim = char:FindFirstChild("Animate")
         if anim then anim.Disabled = false end
-        local mh = myHrp()
-        if mh and home then mh.CFrame = home end
     end)
     dropMovers()
+    protectVoid(false)
     if _G.MM_ActionEnd then pcall(_G.MM_ActionEnd) end
     busy = false
 end
@@ -182,6 +211,7 @@ local function unload()
         local anim = char:FindFirstChild("Animate")
         if anim then anim.Disabled = false end
     end)
+    protectVoid(false)
     if env.__banish_unload == unload then
         env.__banish_unload = nil
     end
@@ -215,9 +245,8 @@ local function collideAll()
     end
 end
 
--- .f is the only hit that reliably unsticks a walking Humanoid.
--- Use that exact punch until they leave the floor, then invert Y and stay
--- on their CFrame until they die. Never sink while still glued.
+-- Stay glued to their CFrame. Velocity is only a hit; we never ride it
+-- into the void (that resets us, not them).
 local function banish(target)
     if busy then return end
     if not target or target == me then
@@ -243,11 +272,12 @@ local function banish(target)
             local h = workspace.FallenPartsDestroyHeight
             if typeof(h) == "number" and h == h then killY = h end
         end)
+        protectVoid(true)
         camOnMe()
         local spin = Vector3.new(9e4, 9e4, 9e4)
         local up = Vector3.new(0, 4200, 0)
-        local down = Vector3.new(0, -5200, 0)
-        local bav, guard
+        local bav, guard, hold
+        local abort = false
         local ok, err = pcall(function()
             local th0
             for _ = 1, 12 do
@@ -265,8 +295,10 @@ local function banish(target)
                 pcall(function()
                     hum0.PlatformStand = true
                     hum0.AutoRotate = false
+                    hum0.BreakJointsOnDeath = false
                     hum0:SetStateEnabled(Enum.HumanoidStateType.FallingDown, false)
                     hum0:SetStateEnabled(Enum.HumanoidStateType.Ragdoll, false)
+                    hum0:SetStateEnabled(Enum.HumanoidStateType.Dead, false)
                 end)
             end
             pcall(function()
@@ -300,6 +332,13 @@ local function banish(target)
                 end
                 return false
             end
+            local function stick(th)
+                local mh = myHrp()
+                if not (mh and th) then return mh end
+                mh.Anchored = false
+                mh.CFrame = th.CFrame
+                return mh
+            end
             local function punch(lin)
                 local char = me.Character
                 if not char then return end
@@ -316,12 +355,28 @@ local function banish(target)
                     end
                 end
             end
-            guard = track(RunSvc.Stepped:Connect(function()
+            local function unsafe(mh, th)
+                if not mh then return true end
+                if mh.Position.Y < 80 then return true end
+                if th and (mh.Position - th.Position).Magnitude > 40 then return true end
+                return false
+            end
+            guard = track(RunSvc.Stepped:Connect(function(_, dt)
                 pcall(function()
-                    if not running then return end
-                    local mh = myHrp()
+                    if not running or abort then return end
+                    dt = math.clamp(tonumber(dt) or 0.016, 0.008, 0.05)
                     local th = hrpOf(target)
+                    local mh = stick(th)
                     if not (mh and th) then return end
+                    if unsafe(mh, th) then
+                        stick(th)
+                        if unsafe(mh, th) then
+                            abort = true
+                            snapHome(home)
+                            say("aborted — kept us, not the void")
+                        end
+                        return
+                    end
                     local thum = target.Character and target.Character:FindFirstChildOfClass("Humanoid")
                     if phase == "pop" and loose(th, thum) then
                         phase = "sink"
@@ -337,12 +392,27 @@ local function banish(target)
                             phase = "pop"
                         end
                     end
-                    mh.Anchored = false
-                    mh.CFrame = th.CFrame
+                    -- Cap so one physics step cannot throw US through the map.
+                    local down = Vector3.new(0, -math.min(1800, 28 / dt), 0)
                     punch(phase == "sink" and down or up)
+                    stick(th)
                 end)
             end))
-            while running and tick() - t0 < 10 and alive(me) do
+            hold = track(RunSvc.Heartbeat:Connect(function()
+                pcall(function()
+                    if not running or abort then return end
+                    local th = hrpOf(target)
+                    local mh = stick(th)
+                    if mh and unsafe(mh, th) then
+                        stick(th)
+                        if unsafe(mh, th) then
+                            abort = true
+                            snapHome(home)
+                        end
+                    end
+                end)
+            end))
+            while running and not abort and tick() - t0 < 10 and alive(me) do
                 if not target.Parent or not alive(target) then break end
                 local th = hrpOf(target)
                 if not th or th.Position.Y <= killY + 80 or th.Position.Y < 40 then break end
@@ -356,7 +426,12 @@ local function banish(target)
         if not ok then say("error " .. tostring(err)) end
         if bav then pcall(function() bav:Destroy() end) end
         if guard then pcall(function() guard:Disconnect() end) end
-        if not running then return end
+        if hold then pcall(function() hold:Disconnect() end) end
+        snapHome(home)
+        if not running then
+            protectVoid(false)
+            return
+        end
         cleanup(home)
         spectate(target, true)
     end)
@@ -382,9 +457,10 @@ local function airFling(target)
     say("air-fling " .. target.Name)
     task.spawn(function()
         local home = myHrp() and myHrp().CFrame
+        protectVoid(true)
         camOnMe()
         local spin = Vector3.new(9e4, 9e4, 9e4)
-        local bav, guard
+        local bav, guard, hold
         pcall(function()
             local mh = myHrp()
             if not mh then return end
@@ -395,11 +471,19 @@ local function airFling(target)
             bav.Parent = mh
         end)
         local startY = 0
+        local function stick(th)
+            local mh = myHrp()
+            if mh and th then
+                mh.Anchored = false
+                mh.CFrame = th.CFrame
+            end
+            return mh
+        end
         guard = track(RunSvc.Stepped:Connect(function()
             pcall(function()
                 if not running then return end
-                local mh = myHrp()
                 local th = hrpOf(target)
+                local mh = stick(th)
                 if not (mh and th) then return end
                 local char = me.Character
                 for _, n in ipairs({"HumanoidRootPart", "Torso", "UpperTorso", "LowerTorso"}) do
@@ -414,7 +498,13 @@ local function airFling(target)
                         p.RotVelocity = spin
                     end
                 end
-                mh.CFrame = th.CFrame
+                stick(th)
+            end)
+        end))
+        hold = track(RunSvc.Heartbeat:Connect(function()
+            pcall(function()
+                if not running then return end
+                stick(hrpOf(target))
             end)
         end))
         local t0 = tick()
@@ -439,7 +529,12 @@ local function airFling(target)
         say(((thf and thf.Position.Y > startY + 2) and "flung " or "miss ") .. target.Name .. " y=" .. tostring(y))
         if bav then pcall(function() bav:Destroy() end) end
         if guard then pcall(function() guard:Disconnect() end) end
-        if not running then return end
+        if hold then pcall(function() hold:Disconnect() end) end
+        snapHome(home)
+        if not running then
+            protectVoid(false)
+            return
+        end
         cleanup(home)
         spectate(target, true)
     end)

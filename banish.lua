@@ -307,12 +307,12 @@ local function hit(target, label)
             local h = workspace.FallenPartsDestroyHeight
             if typeof(h) == "number" and h == h then killY = h end
         end)
-        -- FE Fling / IY: noclip US, zero our vel, BAV + BodyThrust. +4200 is what
-        -- launched the bot into the sky. https://github.com/retpirato/Roblox-Scripts
+        -- JackMcJagger FE Fling: noclip + BodyThrust (X/Z only, Y=0) + vel 0.
+        -- Any Y force or Massless launches US. Keep us glued with CFrame.
         dropMovers()
         camOnMe()
         local heavy = PhysicalProperties.new(100, 0.3, 0.5)
-        local thrust, bav, clip
+        local thrust, bav, clip, hold, draw
         pcall(function()
             local mh = myHrp()
             local hum = me.Character and me.Character:FindFirstChildOfClass("Humanoid")
@@ -323,7 +323,7 @@ local function hit(target, label)
             if not mh then return end
             mh.Anchored = false
             thrust = Instance.new("BodyThrust")
-            thrust.Force = label == "banish" and Vector3.new(2000, -4000, 2000) or Vector3.new(2000, 2000, 2000)
+            thrust.Force = Vector3.new(500, 0, 500)
             thrust.Location = mh.Position
             thrust.Parent = mh
             bav = Instance.new("BodyAngularVelocity")
@@ -337,37 +337,45 @@ local function hit(target, label)
             local th0 = hrpOf(target)
             startY = th0 and th0.Position.Y or 0
         end)
+        local function stick()
+            if not running then return end
+            local char = me.Character
+            local mh = myHrp()
+            local th = hrpOf(target)
+            if not (char and mh and th) then return end
+            for _, p in ipairs(char:GetDescendants()) do
+                if p:IsA("BasePart") then
+                    p.CanCollide = false
+                    p.Massless = false
+                    pcall(function()
+                        p.CustomPhysicalProperties = heavy
+                    end)
+                    p.AssemblyLinearVelocity = Vector3.zero
+                    p.Velocity = Vector3.zero
+                end
+            end
+            mh.Anchored = false
+            mh.CFrame = CFrame.new(th.Position) * (mh.CFrame - mh.CFrame.Position)
+            mh.AssemblyLinearVelocity = Vector3.zero
+            mh.Velocity = Vector3.zero
+            if thrust and thrust.Parent then
+                thrust.Force = Vector3.new(500, 0, 500)
+                thrust.Location = mh.Position
+            end
+        end
         clip = track(RunSvc.Stepped:Connect(function()
-            pcall(function()
-                if not running then return end
-                local char = me.Character
-                local mh = myHrp()
-                local th = hrpOf(target)
-                if not (char and mh) then return end
-                for _, p in ipairs(char:GetDescendants()) do
-                    if p:IsA("BasePart") then
-                        p.CanCollide = false
-                        p.Massless = true
-                        pcall(function()
-                            p.CustomPhysicalProperties = heavy
-                        end)
-                    end
-                end
-                mh.Anchored = false
-                mh.AssemblyLinearVelocity = Vector3.zero
-                mh.Velocity = Vector3.zero
-                if th then
-                    mh.CFrame = CFrame.new(th.Position) * (mh.CFrame - mh.CFrame.Position)
-                end
-                if thrust and thrust.Parent then
-                    thrust.Location = mh.Position
-                end
-            end)
+            pcall(stick)
+        end))
+        hold = track(RunSvc.Heartbeat:Connect(function()
+            pcall(stick)
+        end))
+        draw = track(RunSvc.RenderStepped:Connect(function()
+            pcall(stick)
         end))
         local t0 = tick()
-        local hold = label == "banish" and 8 or 5
+        local maxT = label == "banish" and 8 or 5
         local logged = false
-        while running and tick() - t0 < hold and alive(me) do
+        while running and tick() - t0 < maxT and alive(me) do
             if not target.Parent or not alive(target) then break end
             local th = hrpOf(target)
             local mh = myHrp()
@@ -400,6 +408,8 @@ local function hit(target, label)
         if thrust then pcall(function() thrust:Destroy() end) end
         if bav then pcall(function() bav:Destroy() end) end
         if clip then pcall(function() clip:Disconnect() end) end
+        if hold then pcall(function() hold:Disconnect() end) end
+        if draw then pcall(function() draw:Disconnect() end) end
         pcall(function()
             env.MM_StandNoclip = oldNoclip
         end)

@@ -272,8 +272,20 @@ local function eachBody(fn)
     end
 end
 
--- Replicate a downward slam (Heartbeat), zero it before our physics (Stepped)
--- so they get the hit and we do not ride it into the void.
+local function pauseStand()
+    pcall(function()
+        if _G.MM_PauseStand then _G.MM_PauseStand() end
+        _G.MM_StandPaused = true
+        _G.MM_FlingBusy = true
+        _G.MM_FollowGen = (tonumber(_G.MM_FollowGen) or 0) + 1
+        _G.MM_StandLoopAlive = false
+        _G.MM_Hiding = false
+    end)
+end
+
+-- Others simulate our velocity. A huge -Y makes us vanish on their screen
+-- while we still look stuck on them locally. Stay on their CFrame with
+-- zero linear vel; spin is what hits them.
 local function banish(target)
     if busy then return end
     if not target or target == me then
@@ -289,6 +301,7 @@ local function banish(target)
         return
     end
     busy = true
+    pauseStand()
     if _G.MM_DisableAntiFling then pcall(_G.MM_DisableAntiFling) end
     if _G.MM_ActionBegin then pcall(_G.MM_ActionBegin) end
     say("banish " .. target.Name)
@@ -301,9 +314,8 @@ local function banish(target)
         end)
         widenSim()
         camOnMe()
-        local slam = Vector3.new(0, -4200, 0)
         local spin = Vector3.new(9e4, 9e4, 9e4)
-        local bav, guard
+        local bav, guard, hold
         local ok, err = pcall(function()
             local th0
             for _ = 1, 12 do
@@ -334,8 +346,12 @@ local function banish(target)
                 bav.Parent = mh
             end)
             local function putOn(th)
+                local char = me.Character
                 local mh = myHrp()
-                if not (mh and th) then return end
+                if not (char and mh and th) then return end
+                pcall(function()
+                    char:PivotTo(th.CFrame)
+                end)
                 mh.Anchored = false
                 mh.CFrame = th.CFrame
                 eachBody(function(p)
@@ -343,19 +359,28 @@ local function banish(target)
                     p.Massless = false
                     p.CanCollide = true
                     p.CanTouch = true
-                    p.AssemblyLinearVelocity = slam
-                    p.Velocity = slam
+                    p.AssemblyLinearVelocity = Vector3.zero
+                    p.Velocity = Vector3.zero
                     p.AssemblyAngularVelocity = spin
                     p.RotVelocity = spin
                 end)
                 mh.CFrame = th.CFrame
             end
-            -- Stepped CFrame is what other clients actually see.
             guard = track(RunSvc.Stepped:Connect(function()
                 pcall(function()
                     if not running then return end
                     local th = hrpOf(target)
                     if th then putOn(th) end
+                end)
+            end))
+            hold = track(RunSvc.Heartbeat:Connect(function()
+                pcall(function()
+                    if not running then return end
+                    local th = hrpOf(target)
+                    local mh = myHrp()
+                    if mh and th then
+                        mh.CFrame = th.CFrame
+                    end
                 end)
             end))
             local t0 = tick()
@@ -379,6 +404,11 @@ local function banish(target)
         if not ok then say("error " .. tostring(err)) end
         if bav then pcall(function() bav:Destroy() end) end
         if guard then pcall(function() guard:Disconnect() end) end
+        if hold then pcall(function() hold:Disconnect() end) end
+        pcall(function()
+            _G.MM_FlingBusy = false
+            _G.MM_StandPaused = false
+        end)
         snapHome(home)
         if not running then return end
         cleanup(home)

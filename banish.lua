@@ -175,8 +175,9 @@ local function unload()
 end
 env.__banish_unload = unload
 
--- Proven hit: CFrame on them, collide, spin, punch. Same for .b and .f.
-local function hit(target, lin, label)
+-- Real character on them: camera on US, no linear slam (that flings the bot
+-- and only looks attached on our client). Spin is the hit.
+local function hit(target, label)
     if busy then return end
     if not target or target == me then
         say("no target — spectate someone or .s <name>")
@@ -238,8 +239,12 @@ local function hit(target, lin, label)
                 local th = hrpOf(target)
                 local char = me.Character
                 if not (mh and th and char) then return end
+                local at = th.CFrame * CFrame.new(0, 2, 0)
+                local tv = th.AssemblyLinearVelocity
+                if tv.Magnitude < 1 then tv = th.Velocity end
+                local follow = Vector3.new(tv.X, 0, tv.Z)
                 mh.Anchored = false
-                mh.CFrame = th.CFrame
+                mh.CFrame = at
                 for _, n in ipairs({"HumanoidRootPart", "Torso", "UpperTorso", "LowerTorso"}) do
                     local p = char:FindFirstChild(n)
                     if p and p:IsA("BasePart") then
@@ -247,15 +252,15 @@ local function hit(target, lin, label)
                         p.Anchored = false
                         p.Massless = false
                         if n == "HumanoidRootPart" then
-                            p.CFrame = th.CFrame
+                            p.CFrame = at
                         end
-                        p.AssemblyLinearVelocity = lin
-                        p.Velocity = lin
+                        p.AssemblyLinearVelocity = follow
+                        p.Velocity = follow
                         p.AssemblyAngularVelocity = spin
                         p.RotVelocity = spin
                     end
                 end
-                mh.CFrame = th.CFrame
+                mh.CFrame = at
             end)
         end))
         local t0 = tick()
@@ -283,7 +288,7 @@ local function hit(target, lin, label)
         if guard then pcall(function() guard:Disconnect() end) end
         if not running then return end
         cleanup(home)
-        spectate(target, true)
+        camOnMe()
     end)
 end
 
@@ -303,11 +308,11 @@ local function onChat(msg)
         return
     end
     if cmd == ".b" or cmd == ".banish" then
-        hit(rest ~= "" and findPl(rest) or currentTarget(), Vector3.new(0, -4200, 0), "banish")
+        hit(rest ~= "" and findPl(rest) or currentTarget(), "banish")
         return
     end
     if cmd == ".f" or cmd == ".fling" then
-        hit(rest ~= "" and findPl(rest) or currentTarget(), Vector3.new(0, 4200, 0), "air-fling")
+        hit(rest ~= "" and findPl(rest) or currentTarget(), "air-fling")
     end
 end
 

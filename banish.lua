@@ -59,6 +59,98 @@ local function myHrp()
     return hrpOf(me)
 end
 
+local function touchFn()
+    local fn = rawget(env, "firetouchinterest")
+    if type(fn) ~= "function" and type(firetouchinterest) == "function" then
+        fn = firetouchinterest
+    end
+    return type(fn) == "function" and fn or nil
+end
+
+local function bumpTouch(a, b)
+    local fn = touchFn()
+    if not (fn and a and b) then return end
+    pcall(fn, a, b, 0)
+    pcall(fn, a, b, 1)
+    pcall(fn, b, a, 0)
+    pcall(fn, b, a, 1)
+end
+
+local function isKillName(n)
+    n = tostring(n or ""):lower()
+    return n:find("kill", 1, true) or n:find("lava", 1, true) or n:find("void", 1, true)
+        or n:find("acid", 1, true) or n:find("death", 1, true)
+end
+
+local function findKillParts(fromPos)
+    local found = {}
+    local function consider(p)
+        if typeof(p) ~= "Instance" or not p:IsA("BasePart") then return end
+        if me.Character and p:IsDescendantOf(me.Character) then return end
+        if not isKillName(p.Name) and not isKillName(p.Parent and p.Parent.Name) then return end
+        local d = (p.Position - fromPos).Magnitude
+        found[#found + 1] = {p = p, d = d}
+    end
+    pcall(function()
+        for _, inst in ipairs(workspace:GetDescendants()) do
+            consider(inst)
+        end
+    end)
+    pcall(function()
+        local cs = game:GetService("CollectionService")
+        for _, tag in ipairs({"Kill", "KillBrick", "Lava", "Void", "Death"}) do
+            for _, inst in ipairs(cs:GetTagged(tag)) do
+                consider(inst)
+            end
+        end
+    end)
+    table.sort(found, function(a, b)
+        return a.d < b.d
+    end)
+    return found
+end
+
+local function tryKnife(target)
+    local char = me.Character
+    if not char then return end
+    local knife
+    local function grab(t)
+        if t and t:IsA("Tool") and tostring(t.Name):lower():find("knife", 1, true) then
+            knife = t
+        end
+    end
+    for _, ch in ipairs(char:GetChildren()) do grab(ch) end
+    if not knife then
+        local bp = me:FindFirstChild("Backpack")
+        if bp then
+            for _, ch in ipairs(bp:GetChildren()) do grab(ch) end
+            if knife then
+                pcall(function()
+                    local hum = char:FindFirstChildOfClass("Humanoid")
+                    if hum then hum:EquipTool(knife) end
+                end)
+            end
+        end
+    end
+    if not knife then return end
+    pcall(function()
+        local ks = knife:FindFirstChild("KnifeServer") or knife:FindFirstChild("Server")
+        if ks then
+            local slash = ks:FindFirstChild("SlashStart")
+            if slash then slash:FireServer(0.5) end
+        end
+        knife:Activate()
+    end)
+    local handle = knife:FindFirstChild("Handle") or knife:FindFirstChildWhichIsA("BasePart")
+    local tchar = target and target.Character
+    if handle and tchar then
+        for _, n in ipairs({"HumanoidRootPart", "Torso", "UpperTorso", "Head"}) do
+            local p = tchar:FindFirstChild(n)
+            if p then bumpTouch(handle, p) end
+        end
+    end
+end
+
 local function findPl(q)
     if not q or q == "" then return end
     q = q:lower()
@@ -307,29 +399,27 @@ local function hit(target, label)
             local h = workspace.FallenPartsDestroyHeight
             if typeof(h) == "number" and h == h then killY = h end
         end)
-        -- Air: FE sideways thrust + spin (they go up).
-        -- Banish: no spin/thrust. Stay on their XZ, never ride Y up, stomp down.
+        -- MM2 only kills on the server: knife/gun, KillBrick.Touched, or Y <= FPDH.
+        -- Air: FE sideways + spin. Banish: pulse down (IY style), shove into kill parts, slash if we have the knife.
         dropMovers()
         camOnMe()
         local heavy = PhysicalProperties.new(100, 0.3, 0.5)
         local down = label == "banish"
-        local thrust, bav, sink, clip, hold, draw
+        local thrust, bav, clip, hold, draw
         pcall(function()
             local mh = myHrp()
             local hum = me.Character and me.Character:FindFirstChildOfClass("Humanoid")
             if hum then
                 hum.PlatformStand = true
                 hum.AutoRotate = false
+                pcall(function()
+                    hum:SetStateEnabled(Enum.HumanoidStateType.FallingDown, false)
+                    hum:SetStateEnabled(Enum.HumanoidStateType.Ragdoll, false)
+                end)
             end
             if not mh then return end
             mh.Anchored = false
-            if down then
-                sink = Instance.new("BodyVelocity")
-                sink.MaxForce = Vector3.new(0, 1e9, 0)
-                sink.P = 1e5
-                sink.Velocity = Vector3.new(0, -900, 0)
-                sink.Parent = mh
-            else
+            if not down then
                 thrust = Instance.new("BodyThrust")
                 thrust.Force = Vector3.new(500, 0, 500)
                 thrust.Location = mh.Position
@@ -342,61 +432,119 @@ local function hit(target, label)
             end
         end)
         local startY = 0
+        local bricks = {}
         pcall(function()
             local th0 = hrpOf(target)
             startY = th0 and th0.Position.Y or 0
+            if down and th0 then
+                bricks = findKillParts(th0.Position)
+            end
         end)
         local ceilY = startY
-        local function stick()
-            if not running then return end
-            local char = me.Character
-            local mh = myHrp()
-            local th = hrpOf(target)
-            if not (char and mh and th) then return end
-            local pos = th.Position
-            local yVel = 0
-            if down then
-                if th.Position.Y < ceilY then
-                    ceilY = th.Position.Y
-                end
-                pos = Vector3.new(th.Position.X, math.min(th.Position.Y, ceilY), th.Position.Z)
-                yVel = -900
+        if down then
+            if bricks[1] then
+                say(string.format("killpart %s d=%.0f", bricks[1].p.Name, bricks[1].d))
+            else
+                say("no killpart — pulse void")
             end
+            tryKnife(target)
+        end
+        local function dress(char, collide)
             for _, p in ipairs(char:GetDescendants()) do
                 if p:IsA("BasePart") then
                     local core = p.Name == "HumanoidRootPart" or p.Name == "Torso" or p.Name == "UpperTorso"
-                    p.CanCollide = down and core
+                    p.CanCollide = collide and core
+                    p.CanTouch = true
                     p.Massless = false
                     pcall(function()
                         p.CustomPhysicalProperties = heavy
                     end)
                 end
             end
-            mh.Anchored = false
-            mh.CFrame = CFrame.new(pos) * (mh.CFrame - mh.CFrame.Position)
-            local v = Vector3.new(0, yVel, 0)
-            mh.AssemblyLinearVelocity = v
-            mh.Velocity = v
-            if sink and sink.Parent then
-                sink.Velocity = v
+        end
+        local function lockOn(th, mh, vel)
+            if th.Position.Y < ceilY then
+                ceilY = th.Position.Y
             end
-            if thrust and thrust.Parent then
-                thrust.Force = Vector3.new(500, 0, 500)
-                thrust.Location = mh.Position
+            local y = down and math.min(th.Position.Y, ceilY) or th.Position.Y
+            mh.Anchored = false
+            mh.CFrame = CFrame.new(th.Position.X, y, th.Position.Z) * (mh.CFrame - mh.CFrame.Position)
+            mh.AssemblyLinearVelocity = vel
+            mh.Velocity = vel
+        end
+        local function punchVec(th, mh)
+            local maxDown = math.max(mh.Position.Y - (killY + 140), 50) / 0.02
+            local y = -math.min(3800, maxDown)
+            local x, z = 0, 0
+            local b = bricks[1]
+            if b and b.d < 180 then
+                local to = b.p.Position - th.Position
+                x, z = to.X * 8, to.Z * 8
+            end
+            return Vector3.new(x, y, z)
+        end
+        local function pokeKills(th)
+            local tchar = target.Character
+            if not tchar then return end
+            for i = 1, math.min(#bricks, 4) do
+                local brick = bricks[i].p
+                if brick and brick.Parent then
+                    for _, n in ipairs({"HumanoidRootPart", "Torso", "UpperTorso", "Head"}) do
+                        local p = tchar:FindFirstChild(n)
+                        if p then bumpTouch(p, brick) end
+                    end
+                end
             end
         end
-        clip = track(RunSvc.Stepped:Connect(function()
-            pcall(stick)
-        end))
-        hold = track(RunSvc.Heartbeat:Connect(function()
-            pcall(stick)
-        end))
-        draw = track(RunSvc.RenderStepped:Connect(function()
-            pcall(stick)
-        end))
+        if down then
+            clip = track(RunSvc.Stepped:Connect(function()
+                pcall(function()
+                    if not running then return end
+                    local char, mh, th = me.Character, myHrp(), hrpOf(target)
+                    if not (char and mh and th) then return end
+                    dress(char, true)
+                    lockOn(th, mh, punchVec(th, mh))
+                    pokeKills(th)
+                end)
+            end))
+            hold = track(RunSvc.Heartbeat:Connect(function()
+                pcall(function()
+                    if not running then return end
+                    local char, mh, th = me.Character, myHrp(), hrpOf(target)
+                    if not (char and mh and th) then return end
+                    dress(char, true)
+                    lockOn(th, mh, Vector3.zero)
+                end)
+            end))
+        else
+            local function stick()
+                if not running then return end
+                local char, mh, th = me.Character, myHrp(), hrpOf(target)
+                if not (char and mh and th) then return end
+                dress(char, false)
+                mh.Anchored = false
+                mh.CFrame = CFrame.new(th.Position) * (mh.CFrame - mh.CFrame.Position)
+                mh.AssemblyLinearVelocity = Vector3.zero
+                mh.Velocity = Vector3.zero
+                if thrust and thrust.Parent then
+                    thrust.Force = Vector3.new(500, 0, 500)
+                    thrust.Location = mh.Position
+                end
+            end
+            clip = track(RunSvc.Stepped:Connect(function()
+                pcall(stick)
+            end))
+            hold = track(RunSvc.Heartbeat:Connect(function()
+                pcall(stick)
+            end))
+            draw = track(RunSvc.RenderStepped:Connect(function()
+                pcall(stick)
+            end))
+        end
         local t0 = tick()
         local maxT = down and 8 or 5
         local logged = false
+        local nextSlash = t0
         while running and tick() - t0 < maxT and alive(me) do
             if not target.Parent or not alive(target) then break end
             local th = hrpOf(target)
@@ -405,6 +553,11 @@ local function hit(target, label)
             if not logged and mh then
                 logged = true
                 say(string.format("touch %s myY=%.0f tgtY=%.0f", target.Name, mh.Position.Y, th.Position.Y))
+            end
+            if down and tick() >= nextSlash then
+                nextSlash = tick() + 0.35
+                tryKnife(target)
+                pokeKills(th)
             end
             if bav then
                 bav.AngularVelocity = Vector3.new(0, 99999, 0)
@@ -429,7 +582,6 @@ local function hit(target, label)
         end
         if thrust then pcall(function() thrust:Destroy() end) end
         if bav then pcall(function() bav:Destroy() end) end
-        if sink then pcall(function() sink:Destroy() end) end
         if clip then pcall(function() clip:Disconnect() end) end
         if hold then pcall(function() hold:Disconnect() end) end
         if draw then pcall(function() draw:Disconnect() end) end

@@ -399,8 +399,8 @@ local function hit(target, label)
             local h = workspace.FallenPartsDestroyHeight
             if typeof(h) == "number" and h == h then killY = h end
         end)
-        -- MM2 only kills on the server: knife/gun, KillBrick.Touched, or Y <= FPDH.
-        -- Air: FE sideways + spin. Banish: pulse down (IY style), shove into kill parts, slash if we have the knife.
+        -- Air: FE sideways + spin.
+        -- Banish: noclip (collide = random fling). Match their XZ, pulse only -Y, stay on them until dead.
         dropMovers()
         camOnMe()
         local heavy = PhysicalProperties.new(100, 0.3, 0.5)
@@ -440,20 +440,14 @@ local function hit(target, label)
                 bricks = findKillParts(th0.Position)
             end
         end)
-        local ceilY = startY
         if down then
-            if bricks[1] then
-                say(string.format("killpart %s d=%.0f", bricks[1].p.Name, bricks[1].d))
-            else
-                say("no killpart — pulse void")
-            end
             tryKnife(target)
         end
-        local function dress(char, collide)
+        local cores = {"HumanoidRootPart", "Torso", "UpperTorso", "LowerTorso", "Head"}
+        local function dress(char)
             for _, p in ipairs(char:GetDescendants()) do
                 if p:IsA("BasePart") then
-                    local core = p.Name == "HumanoidRootPart" or p.Name == "Torso" or p.Name == "UpperTorso"
-                    p.CanCollide = collide and core
+                    p.CanCollide = false
                     p.CanTouch = true
                     p.Massless = false
                     pcall(function()
@@ -462,34 +456,34 @@ local function hit(target, label)
                 end
             end
         end
-        local function lockOn(th, mh, vel)
-            if th.Position.Y < ceilY then
-                ceilY = th.Position.Y
+        local function applyVel(char, vel)
+            for _, n in ipairs(cores) do
+                local p = char:FindFirstChild(n)
+                if p and p:IsA("BasePart") then
+                    p.AssemblyLinearVelocity = vel
+                    p.Velocity = vel
+                end
             end
-            local y = down and math.min(th.Position.Y, ceilY) or th.Position.Y
+        end
+        local function lockOn(th, mh, vel)
             mh.Anchored = false
-            mh.CFrame = CFrame.new(th.Position.X, y, th.Position.Z) * (mh.CFrame - mh.CFrame.Position)
-            mh.AssemblyLinearVelocity = vel
-            mh.Velocity = vel
+            mh.CFrame = CFrame.new(th.Position) * (mh.CFrame - mh.CFrame.Position)
+            applyVel(mh.Parent, vel)
         end
         local function punchVec(th, mh)
-            local maxDown = math.max(mh.Position.Y - (killY + 140), 50) / 0.02
-            local y = -math.min(3800, maxDown)
-            local x, z = 0, 0
-            local b = bricks[1]
-            if b and b.d < 180 then
-                local to = b.p.Position - th.Position
-                x, z = to.X * 8, to.Z * 8
-            end
-            return Vector3.new(x, y, z)
+            local tv = th.AssemblyLinearVelocity
+            if tv.Magnitude < 1 then tv = th.Velocity end
+            local maxDown = math.max(mh.Position.Y - (killY + 140), 80) / 0.016
+            local y = -math.min(tv.Y < -8 and 8000 or 5200, maxDown)
+            return Vector3.new(tv.X, y, tv.Z)
         end
-        local function pokeKills(th)
+        local function pokeKills()
             local tchar = target.Character
             if not tchar then return end
             for i = 1, math.min(#bricks, 4) do
                 local brick = bricks[i].p
                 if brick and brick.Parent then
-                    for _, n in ipairs({"HumanoidRootPart", "Torso", "UpperTorso", "Head"}) do
+                    for _, n in ipairs(cores) do
                         local p = tchar:FindFirstChild(n)
                         if p then bumpTouch(p, brick) end
                     end
@@ -502,9 +496,9 @@ local function hit(target, label)
                     if not running then return end
                     local char, mh, th = me.Character, myHrp(), hrpOf(target)
                     if not (char and mh and th) then return end
-                    dress(char, true)
+                    dress(char)
                     lockOn(th, mh, punchVec(th, mh))
-                    pokeKills(th)
+                    pokeKills()
                 end)
             end))
             hold = track(RunSvc.Heartbeat:Connect(function()
@@ -512,7 +506,7 @@ local function hit(target, label)
                     if not running then return end
                     local char, mh, th = me.Character, myHrp(), hrpOf(target)
                     if not (char and mh and th) then return end
-                    dress(char, true)
+                    dress(char)
                     lockOn(th, mh, Vector3.zero)
                 end)
             end))
@@ -521,11 +515,10 @@ local function hit(target, label)
                 if not running then return end
                 local char, mh, th = me.Character, myHrp(), hrpOf(target)
                 if not (char and mh and th) then return end
-                dress(char, false)
+                dress(char)
                 mh.Anchored = false
                 mh.CFrame = CFrame.new(th.Position) * (mh.CFrame - mh.CFrame.Position)
-                mh.AssemblyLinearVelocity = Vector3.zero
-                mh.Velocity = Vector3.zero
+                applyVel(char, Vector3.zero)
                 if thrust and thrust.Parent then
                     thrust.Force = Vector3.new(500, 0, 500)
                     thrust.Location = mh.Position
@@ -542,22 +535,21 @@ local function hit(target, label)
             end))
         end
         local t0 = tick()
-        local maxT = down and 8 or 5
-        local logged = false
+        local maxT = down and 12 or 5
         local nextSlash = t0
+        local lastSay = 0
         while running and tick() - t0 < maxT and alive(me) do
             if not target.Parent or not alive(target) then break end
             local th = hrpOf(target)
-            local mh = myHrp()
             if not th then break end
-            if not logged and mh then
-                logged = true
-                say(string.format("touch %s myY=%.0f tgtY=%.0f", target.Name, mh.Position.Y, th.Position.Y))
+            if tick() - lastSay > 0.4 then
+                lastSay = tick()
+                say(string.format("hold %s tgtY=%.0f vy=%.0f", target.Name, th.Position.Y, th.AssemblyLinearVelocity.Y))
             end
             if down and tick() >= nextSlash then
                 nextSlash = tick() + 0.35
                 tryKnife(target)
-                pokeKills(th)
+                pokeKills()
             end
             if bav then
                 bav.AngularVelocity = Vector3.new(0, 99999, 0)
